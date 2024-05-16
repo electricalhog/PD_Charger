@@ -1,3 +1,0 @@
-[submodule "STM32CubeIDE/PD"]
-	path = STM32CubeIDE/PD
-	url = https://github.com/ReclaimerLabs/FUSB302
