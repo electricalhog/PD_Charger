@@ -90,14 +90,14 @@ static void setCurrent(double current);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-static setVoltage(double voltage){
+static void setVoltage(double voltage){
 	voltage_set = 0;
 	volts = voltage; // save local value to global for safe-keeping
 	DAC_volts = HAL_DAC_GetValue(&hdac3, DAC_CHANNEL_1); // save starting condition from DAC
 	HAL_TIM_Base_Start_IT(&htim3);
 }
 
-static setCurrent(double current){
+static void setCurrent(double current){
 	current_set = 0;
 	amps = current; // save local value to global for safe-keeping
 	DAC_amps = HAL_DAC_GetValue(&hdac1, DAC_CHANNEL_1); // save starting condition from DAC
@@ -198,7 +198,7 @@ int main(void)
   HAL_OPAMP_Start(&hopamp3);
 
 
-  HAL_GPIO_WritePin(Run_GPIO_Port, Run_Pin, RESET);
+  HAL_GPIO_WritePin(Run_GPIO_Port, Run_Pin, SET);
   HAL_GPIO_WritePin(SYNC_GPIO_Port, SYNC_Pin, RESET);
   HAL_GPIO_WritePin(Discharge_GPIO_Port, Discharge_Pin, SET);
   HAL_GPIO_WritePin(Enable_GPIO_Port, Enable_Pin, RESET);
