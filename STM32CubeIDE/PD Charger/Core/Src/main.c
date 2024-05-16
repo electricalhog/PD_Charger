@@ -62,7 +62,7 @@ static double amps;
 static uint32_t DAC_volts;
 static uint32_t DAC_amps;
 const int slew_volts = 1; // multiples of 12mV/us
-static char slew_amps = 1; //multiples of 2.4mA/us
+const int slew_amps = 1; //multiples of 2.4mA/us
 static char voltage_set;
 static char current_set;
 /* USER CODE END PV */
