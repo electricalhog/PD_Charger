@@ -1,0 +1,9 @@
+{
+    "files.associations": {
+        "stm32g4xx_hal.h": "c",
+        "fusb302.h": "c",
+        "main.h": "c",
+        "stm32g4xx_hal_gpio.h": "c",
+        "stm32g4xx_hal_exti.h": "c"
+    }
+}

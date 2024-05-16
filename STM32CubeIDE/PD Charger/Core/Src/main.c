@@ -52,10 +52,19 @@ OPAMP_HandleTypeDef hopamp1;
 OPAMP_HandleTypeDef hopamp2;
 OPAMP_HandleTypeDef hopamp3;
 
+TIM_HandleTypeDef htim3;
+
 PCD_HandleTypeDef hpcd_USB_FS;
 
 /* USER CODE BEGIN PV */
-
+static double volts;
+static double amps;
+static uint32_t DAC_volts;
+static uint32_t DAC_amps;
+const int slew_volts = 1; // multiples of 12mV/us
+static char slew_amps = 1; //multiples of 2.4mA/us
+static char voltage_set;
+static char current_set;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -70,13 +79,75 @@ static void MX_ADC1_Init(void);
 static void MX_ADC2_Init(void);
 static void MX_OPAMP2_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
-
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
+static int DAC_Voltage(double voltage);
+static void setVoltage(double voltage);
+static int DAC_Current(double current);
+static void setCurrent(double current);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static setVoltage(double voltage){
+	voltage_set = 0;
+	volts = voltage; // save local value to global for safe-keeping
+	DAC_volts = HAL_DAC_GetValue(&hdac3, DAC_CHANNEL_1); // save starting condition from DAC
+	HAL_TIM_Base_Start_IT(&htim3);
+}
 
+static setCurrent(double current){
+	current_set = 0;
+	amps = current; // save local value to global for safe-keeping
+	DAC_amps = HAL_DAC_GetValue(&hdac1, DAC_CHANNEL_1); // save starting condition from DAC
+	HAL_TIM_Base_Start_IT(&htim3);
+}
+
+static int DAC_Voltage(double voltage){ // voltage to DAC scaling function
+	int v = (int)(voltage-5.2733)/0.0119755;
+	return (v>0) ? v : 0;
+}
+
+static int DAC_Current(double current){ // current to DAC scaling function
+	int c = (int)((current*0.02*10)+0.25)*(4095/2);
+	return (c>0) ? c : 0;
+}
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  if (htim->Instance == TIM3) // 1us ISR for soft-slewing
+  {
+	if(voltage_set != 1) // voltage soft-slew active
+	{
+      if (DAC_volts < DAC_Voltage(volts)) // has not reached set-point
+      {
+      	DAC_volts += slew_volts; // increment by constant
+      	HAL_DAC_SetValue(&hdac3, DAC_CHANNEL_1, DAC_ALIGN_12B_R, DAC_volts); // write to DAC
+      }
+      else
+      {
+      	voltage_set = 1;
+      }
+	}
+	if(current_set != 1) // current soft-slew active
+	{
+      if (DAC_amps < DAC_Current(amps)) // has not reached set-point
+      {
+      	DAC_amps += slew_amps; // increment by constant
+      	HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, DAC_amps); // write to DAC
+      }
+      else
+      {
+      	current_set = 1;
+      }
+	}
+	if (current_set && voltage_set) // soft-slew complete
+	{
+		HAL_TIM_Base_Stop_IT(&htim3); // turn of timer
+	}
+  }
+}
 /* USER CODE END 0 */
 
 /**
@@ -117,15 +188,28 @@ int main(void)
   MX_ADC2_Init();
   MX_OPAMP2_Init();
   MX_I2C1_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
 
   HAL_DAC_Start(&hdac1, DAC_CHANNEL_1);
   HAL_DAC_Start(&hdac3, DAC_CHANNEL_1);
+  HAL_OPAMP_Start(&hopamp1);
+  HAL_OPAMP_Start(&hopamp2);
+  HAL_OPAMP_Start(&hopamp3);
 
-  HAL_GPIO_WritePin(Run_GPIO_Port, Run_Pin, SET);
+
+  HAL_GPIO_WritePin(Run_GPIO_Port, Run_Pin, RESET);
   HAL_GPIO_WritePin(SYNC_GPIO_Port, SYNC_Pin, RESET);
-  HAL_GPIO_WritePin(Discharge_GPIO_Port, Discharge_Pin, RESET);
+  HAL_GPIO_WritePin(Discharge_GPIO_Port, Discharge_Pin, SET);
   HAL_GPIO_WritePin(Enable_GPIO_Port, Enable_Pin, RESET);
+
+
+  HAL_Delay(2500);
+  setCurrent(3);
+  while(!current_set);
+  HAL_Delay(2500);
+  setCurrent(5);
+  while(!current_set);
 
 
   /* USER CODE END 2 */
@@ -166,7 +250,7 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLN = 12;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV4;
-  RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV2;
+  RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV6;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -565,6 +649,51 @@ static void MX_OPAMP3_Init(void)
   /* USER CODE BEGIN OPAMP3_Init 2 */
 
   /* USER CODE END OPAMP3_Init 2 */
+
+}
+
+/**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 0;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 15;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
 
 }
 
