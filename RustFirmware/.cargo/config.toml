@@ -1,0 +1,10 @@
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+# see `probe-rs chip list` for a list of chips
+runner = "probe-rs run --chip STM32G431CBUx"
+
+[build]
+target = "thumbv7em-none-eabi"
+
+
+[env]
+DEFMT_LOG = "trace"

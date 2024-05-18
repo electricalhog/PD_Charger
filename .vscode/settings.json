@@ -1,9 +1,15 @@
 {
     "files.associations": {
+        "*.h": "c",
         "stm32g4xx_hal.h": "c",
         "fusb302.h": "c",
         "main.h": "c",
         "stm32g4xx_hal_gpio.h": "c",
         "stm32g4xx_hal_exti.h": "c"
-    }
+    },
+    // turn off VSCode trying to build the rust crate as if it were to run on the computer it's building on
+    "rust-analyzer.cargo.target": "thumbv7em-none-eabi",
+    "rust-analyzer.check.allTargets": false,
+    // "rust-analyzer.diagnostics.disabled": ["unsafe-impl-for-safe-trait"],
+    "[rust]": {"editor.formatOnSave": true}
 }
