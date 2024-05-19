@@ -1,2 +1,0 @@
-cargo:rustc-cfg=feature="has-basepri"
-cargo:rustc-cfg=feature="has-native-rmw"
