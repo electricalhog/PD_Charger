@@ -1,0 +1,5 @@
+cargo:rustc-cfg=cortex_m
+cargo:rustc-cfg=armv7m
+cargo:rustc-link-search=C:\Users\elect\Documents\GitHub\PD_Charger\RustFirmware\target\thumbv7em-none-eabi\debug\build\cortex-m-rt-773d9ba7d3a4db09\out
+cargo:rerun-if-changed=build.rs
+cargo:rerun-if-changed=link.x.in

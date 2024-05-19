@@ -28,6 +28,17 @@ extern "C" {
 
 /* Includes ------------------------------------------------------------------*/
 #include "stm32g4xx_hal.h"
+#include "stm32g4xx_ll_ucpd.h"
+#include "stm32g4xx_ll_bus.h"
+#include "stm32g4xx_ll_cortex.h"
+#include "stm32g4xx_ll_rcc.h"
+#include "stm32g4xx_ll_system.h"
+#include "stm32g4xx_ll_utils.h"
+#include "stm32g4xx_ll_pwr.h"
+#include "stm32g4xx_ll_gpio.h"
+#include "stm32g4xx_ll_dma.h"
+
+#include "stm32g4xx_ll_exti.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -58,6 +69,8 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define Reg_EN_Pin GPIO_PIN_13
+#define Reg_EN_GPIO_Port GPIOC
 #define Vinsense_Pin GPIO_PIN_0
 #define Vinsense_GPIO_Port GPIOA
 #define Voutsense_Pin GPIO_PIN_1
@@ -68,8 +81,8 @@ void Error_Handler(void);
 #define Vadj_GPIO_Port GPIOA
 #define Vctrli_Pin GPIO_PIN_4
 #define Vctrli_GPIO_Port GPIOA
-#define Run_Pin GPIO_PIN_5
-#define Run_GPIO_Port GPIOA
+#define UVLO_Pin GPIO_PIN_5
+#define UVLO_GPIO_Port GPIOA
 #define VadjA6_Pin GPIO_PIN_6
 #define VadjA6_GPIO_Port GPIOA
 #define VadjA7_Pin GPIO_PIN_7
@@ -80,16 +93,12 @@ void Error_Handler(void);
 #define ISmon_GPIO_Port GPIOB
 #define ISmonB2_Pin GPIO_PIN_2
 #define ISmonB2_GPIO_Port GPIOB
+#define I2C2_INT_Pin GPIO_PIN_10
+#define I2C2_INT_GPIO_Port GPIOA
 #define Discharge_Pin GPIO_PIN_10
 #define Discharge_GPIO_Port GPIOC
 #define Enable_Pin GPIO_PIN_11
 #define Enable_GPIO_Port GPIOC
-#define I2C1_SDA_Pin GPIO_PIN_7
-#define I2C1_SDA_GPIO_Port GPIOB
-#define I2C1_SCL_Pin GPIO_PIN_8
-#define I2C1_SCL_GPIO_Port GPIOB
-#define I2C1_INT_Pin GPIO_PIN_9
-#define I2C1_INT_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 
