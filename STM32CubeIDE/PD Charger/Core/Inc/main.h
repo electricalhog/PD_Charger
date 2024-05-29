@@ -50,6 +50,8 @@ extern "C" {
 
 /* USER CODE END EM */
 
+void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
+
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);
 
@@ -68,14 +70,12 @@ void Error_Handler(void);
 #define Vadj_GPIO_Port GPIOA
 #define Vctrli_Pin GPIO_PIN_4
 #define Vctrli_GPIO_Port GPIOA
-#define Run_Pin GPIO_PIN_5
-#define Run_GPIO_Port GPIOA
 #define VadjA6_Pin GPIO_PIN_6
 #define VadjA6_GPIO_Port GPIOA
 #define VadjA7_Pin GPIO_PIN_7
 #define VadjA7_GPIO_Port GPIOA
-#define SYNC_Pin GPIO_PIN_0
-#define SYNC_GPIO_Port GPIOB
+#define nPGOOD_Pin GPIO_PIN_0
+#define nPGOOD_GPIO_Port GPIOB
 #define ISmon_Pin GPIO_PIN_1
 #define ISmon_GPIO_Port GPIOB
 #define ISmonB2_Pin GPIO_PIN_2
@@ -84,6 +84,8 @@ void Error_Handler(void);
 #define Discharge_GPIO_Port GPIOC
 #define Enable_Pin GPIO_PIN_11
 #define Enable_GPIO_Port GPIOC
+#define SYNC_Pin GPIO_PIN_3
+#define SYNC_GPIO_Port GPIOB
 #define I2C1_SDA_Pin GPIO_PIN_7
 #define I2C1_SDA_GPIO_Port GPIOB
 #define I2C1_SCL_Pin GPIO_PIN_8
