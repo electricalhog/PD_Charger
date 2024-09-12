@@ -1,0 +1,118 @@
+(footprint "960-21-xx-D"
+	(version 20240108)
+	(generator "pcbnew")
+	(generator_version "8.0")
+	(layer "F.Cu")
+	(property "Reference" "REF**"
+		(at 0 -0.5 0)
+		(unlocked yes)
+		(layer "F.SilkS")
+		(uuid "9b390b64-0a13-4fa6-bee4-7eeef1e3d090")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.1)
+			)
+		)
+	)
+	(property "Value" "960-21-xx-D"
+		(at 0 1 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(uuid "0cdea202-a885-4644-836d-5aee358787ea")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "79f27f20-2485-403f-904f-4c0a82fc2391")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "dfac4bdd-4e0f-4f27-9218-94d07755e53c")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "6f642ef9-3127-44c4-8815-230d5018b197")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr smd)
+	(fp_rect
+		(start -10.5 -10.5)
+		(end 10.5 10.5)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(fill none)
+		(layer "F.SilkS")
+		(uuid "5bcce357-cb0c-43ec-9ca7-7b3c2ca271d8")
+	)
+	(fp_rect
+		(start -10.5 -10.5)
+		(end 10.5 10.5)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(fill none)
+		(layer "Dwgs.User")
+		(uuid "f77c8566-aec6-4b65-adb3-edc1f09fd32d")
+	)
+	(fp_text user "${REFERENCE}"
+		(at 0 2.5 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(uuid "7d2f12e0-3a20-40af-9b36-b82254215af7")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(pad "" np_thru_hole circle
+		(at -13.93 13.93)
+		(size 3.18 3.18)
+		(drill 3.18)
+		(layers "F&B.Cu" "*.Mask")
+		(uuid "cf48bd47-f9e0-47fc-97f8-b0554cbd8573")
+	)
+	(pad "" np_thru_hole circle
+		(at 13.93 -13.93)
+		(size 3.18 3.18)
+		(drill 3.18)
+		(layers "F&B.Cu" "*.Mask")
+		(uuid "47d75f26-e35c-4ef1-971b-db60e97aab81")
+	)
+)

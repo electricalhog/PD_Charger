@@ -647,127 +647,6 @@
 				)
 			)
 		)
-		(symbol "Device:NetTie_2"
-			(pin_numbers hide)
-			(pin_names
-				(offset 0) hide)
-			(exclude_from_sim no)
-			(in_bom no)
-			(on_board yes)
-			(property "Reference" "NT"
-				(at 0 1.27 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Value" "NetTie_2"
-				(at 0 -1.27 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Footprint" ""
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(hide yes)
-				)
-			)
-			(property "Datasheet" "~"
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(hide yes)
-				)
-			)
-			(property "Description" "Net tie, 2 pins"
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(hide yes)
-				)
-			)
-			(property "ki_keywords" "net tie short"
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(hide yes)
-				)
-			)
-			(property "ki_fp_filters" "Net*Tie*"
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(hide yes)
-				)
-			)
-			(symbol "NetTie_2_0_1"
-				(polyline
-					(pts
-						(xy -1.27 0) (xy 1.27 0)
-					)
-					(stroke
-						(width 0.254)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-			)
-			(symbol "NetTie_2_1_1"
-				(pin passive line
-					(at -2.54 0 0)
-					(length 2.54)
-					(name "1"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "1"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at 2.54 0 180)
-					(length 2.54)
-					(name "2"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "2"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-			)
-		)
 		(symbol "Device:R"
 			(pin_numbers hide)
 			(pin_names
@@ -880,6 +759,187 @@
 						)
 					)
 					(number "2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+			)
+		)
+		(symbol "Device:R_Shunt"
+			(pin_numbers hide)
+			(pin_names
+				(offset 0)
+			)
+			(exclude_from_sim no)
+			(in_bom yes)
+			(on_board yes)
+			(property "Reference" "R"
+				(at -4.445 0 90)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Value" "R_Shunt"
+				(at -2.54 0 90)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Footprint" ""
+				(at -1.778 0 90)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "Datasheet" "~"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "Description" "Shunt resistor"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "ki_keywords" "R res shunt resistor"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "ki_fp_filters" "R_*Shunt*"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(symbol "R_Shunt_0_1"
+				(rectangle
+					(start -1.016 -2.54)
+					(end 1.016 2.54)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 0 -2.54) (xy 1.27 -2.54)
+					)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 1.27 2.54) (xy 0 2.54)
+					)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+			)
+			(symbol "R_Shunt_1_1"
+				(pin passive line
+					(at 0 5.08 270)
+					(length 2.54)
+					(name "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at 3.81 2.54 180)
+					(length 2.54)
+					(name "2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at 3.81 -2.54 180)
+					(length 2.54)
+					(name "3"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "3"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at 0 -5.08 90)
+					(length 2.54)
+					(name "4"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "4"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1494,6 +1554,104 @@
 				)
 			)
 		)
+		(symbol "Mechanical:Heatsink"
+			(pin_names
+				(offset 1.016)
+			)
+			(exclude_from_sim yes)
+			(in_bom yes)
+			(on_board yes)
+			(property "Reference" "HS"
+				(at 0 5.08 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Value" "Heatsink"
+				(at 0 -1.27 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Footprint" ""
+				(at 0.3048 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "Datasheet" "~"
+				(at 0.3048 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "Description" "Heatsink"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "ki_keywords" "thermal heat temperature"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "ki_fp_filters" "Heatsink_*"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(symbol "Heatsink_0_1"
+				(polyline
+					(pts
+						(xy -0.3302 1.27) (xy -0.9652 1.27) (xy -0.9652 3.81) (xy -1.6002 3.81) (xy -1.6002 1.27) (xy -2.2352 1.27)
+						(xy -2.2352 3.81) (xy -2.8702 3.81) (xy -2.8702 0) (xy -0.9652 0)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type background)
+					)
+				)
+				(polyline
+					(pts
+						(xy -0.3302 1.27) (xy -0.3302 3.81) (xy 0.3048 3.81) (xy 0.3048 1.27) (xy 0.9398 1.27) (xy 0.9398 3.81)
+						(xy 1.5748 3.81) (xy 1.5748 1.27) (xy 2.2098 1.27) (xy 2.2098 3.81) (xy 2.8448 3.81) (xy 2.8448 0)
+						(xy -0.9652 0)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type background)
+					)
+				)
+			)
+		)
 		(symbol "Simulation_SPICE:NMOS"
 			(pin_numbers hide)
 			(pin_names
@@ -1905,12 +2063,6 @@
 		)
 	)
 	(junction
-		(at 146.05 38.1)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "00a91035-03dc-4e0d-9389-426646dd75e5")
-	)
-	(junction
 		(at 76.2 109.22)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -1933,12 +2085,6 @@
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "1d310627-993d-4f59-bb80-5056e717f7ef")
-	)
-	(junction
-		(at 215.9 25.4)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "1fec5b2f-e021-45f1-8567-b2768d458cc4")
 	)
 	(junction
 		(at 127 99.06)
@@ -2035,12 +2181,6 @@
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "6ea87023-4126-411b-8c63-bd83890b2edf")
-	)
-	(junction
-		(at 138.43 38.1)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "6f4422ee-0495-4b1b-a1f4-c3e68c76123b")
 	)
 	(junction
 		(at 175.26 104.14)
@@ -2175,6 +2315,12 @@
 		(uuid "eaab7416-160f-4e27-9257-7f7718f9e355")
 	)
 	(junction
+		(at 215.9 25.4)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "f0982149-d6d3-44f9-b1f8-69ac9110cd01")
+	)
+	(junction
 		(at 116.84 50.8)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -2208,7 +2354,7 @@
 	)
 	(wire
 		(pts
-			(xy 138.43 29.21) (xy 138.43 33.02)
+			(xy 139.7 30.48) (xy 139.7 34.29)
 		)
 		(stroke
 			(width 0)
@@ -2265,16 +2411,6 @@
 			(type default)
 		)
 		(uuid "119e6945-3d3a-4bdf-bd09-6f7409cc2a70")
-	)
-	(wire
-		(pts
-			(xy 146.05 38.1) (xy 148.59 38.1)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "12f343f9-a0ff-4b7e-bfbc-0a24fa1ece19")
 	)
 	(wire
 		(pts
@@ -2788,7 +2924,7 @@
 	)
 	(wire
 		(pts
-			(xy 146.05 29.21) (xy 146.05 33.02)
+			(xy 144.78 30.48) (xy 144.78 34.29)
 		)
 		(stroke
 			(width 0)
@@ -2898,6 +3034,16 @@
 	)
 	(wire
 		(pts
+			(xy 147.32 38.1) (xy 148.59 38.1)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "80a8f2bd-8070-4a46-9755-d8c9216dea4e")
+	)
+	(wire
+		(pts
 			(xy 115.57 114.3) (xy 120.65 114.3)
 		)
 		(stroke
@@ -2978,16 +3124,6 @@
 	)
 	(wire
 		(pts
-			(xy 134.62 38.1) (xy 138.43 38.1)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "94948890-1257-4f72-b83e-8e619d150abf")
-	)
-	(wire
-		(pts
 			(xy 200.66 50.8) (xy 193.04 50.8)
 		)
 		(stroke
@@ -3038,13 +3174,23 @@
 	)
 	(wire
 		(pts
-			(xy 215.9 17.78) (xy 215.9 20.32)
+			(xy 218.44 19.05) (xy 218.44 21.59)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
 		(uuid "a30925a6-8a1d-4564-acf2-fa7b2473e9a4")
+	)
+	(wire
+		(pts
+			(xy 134.62 38.1) (xy 137.16 38.1)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "a3f3560d-cfd7-4166-a92a-09a979037313")
 	)
 	(wire
 		(pts
@@ -3088,7 +3234,7 @@
 	)
 	(wire
 		(pts
-			(xy 223.52 17.78) (xy 223.52 20.32)
+			(xy 223.52 19.05) (xy 223.52 21.59)
 		)
 		(stroke
 			(width 0)
@@ -3567,7 +3713,7 @@
 		(uuid "fa265436-5642-45b1-9d41-82b4f63275f2")
 	)
 	(label "ISN"
-		(at 223.52 17.78 270)
+		(at 223.52 19.05 270)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -3587,6 +3733,17 @@
 			(justify left bottom)
 		)
 		(uuid "03183e71-78d1-4d3e-9764-e6c169500f05")
+	)
+	(label "VOUTa"
+		(at 170.18 25.4 0)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 0.635 0.635)
+			)
+			(justify left bottom)
+		)
+		(uuid "0349e92e-1138-4768-a812-eb0af995e869")
 	)
 	(label "VREF"
 		(at 111.76 76.2 0)
@@ -3699,7 +3856,7 @@
 		(uuid "2a442c4b-a96a-4d48-b1cf-59a976157f66")
 	)
 	(label "LSN"
-		(at 146.05 29.21 270)
+		(at 144.78 30.48 270)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -3741,6 +3898,17 @@
 			(justify right bottom)
 		)
 		(uuid "5c1ba6ef-7f15-47f8-a853-c42a98a22aba")
+	)
+	(label "SW1a"
+		(at 147.32 38.1 0)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 0.635 0.635)
+			)
+			(justify left bottom)
+		)
+		(uuid "5d3a8942-2c37-4d1b-b745-5a1d0079ab85")
 	)
 	(label "VOUT"
 		(at 198.12 101.6 0)
@@ -3842,7 +4010,7 @@
 		(uuid "7e5bfaa3-8c89-4429-ae43-23b2504bc7f6")
 	)
 	(label "LSP"
-		(at 138.43 29.21 270)
+		(at 139.7 30.48 270)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -3897,7 +4065,7 @@
 		(uuid "a7804aeb-7bc1-4982-94aa-482bd92d8f9f")
 	)
 	(label "ISP"
-		(at 215.9 17.78 270)
+		(at 218.44 19.05 270)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -4195,7 +4363,7 @@
 	)
 	(hierarchical_label "VOUT"
 		(shape output)
-		(at 223.52 25.4 0)
+		(at 226.06 25.4 0)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -4342,17 +4510,17 @@
 		)
 	)
 	(symbol
-		(lib_id "Device:NetTie_2")
-		(at 215.9 22.86 270)
+		(lib_id "Mechanical:Heatsink")
+		(at 152.4 50.8 0)
 		(unit 1)
-		(exclude_from_sim no)
-		(in_bom no)
+		(exclude_from_sim yes)
+		(in_bom yes)
 		(on_board yes)
 		(dnp no)
 		(fields_autoplaced yes)
-		(uuid "04075c39-093f-467c-af43-db9cccedceb1")
-		(property "Reference" "NT2"
-			(at 217.17 22.8599 90)
+		(uuid "03f59cda-974e-4489-a185-1a459c0d8d79")
+		(property "Reference" "HS1"
+			(at 156.21 47.6249 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -4360,8 +4528,17 @@
 				(justify left)
 			)
 		)
-		(property "Value" "NetTie_2"
-			(at 218.44 22.86 0)
+		(property "Value" "960-21-18-D-AB-0"
+			(at 156.21 50.1649 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Library:960-21-xx-D"
+			(at 152.7048 50.8 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -4369,8 +4546,8 @@
 				(hide yes)
 			)
 		)
-		(property "Footprint" ""
-			(at 215.9 22.86 0)
+		(property "Datasheet" "https://mm.digikey.com/Volume0/opasdata/d220001/medias/docus/693/960_Series.pdf"
+			(at 152.7048 50.8 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -4378,34 +4555,19 @@
 				(hide yes)
 			)
 		)
-		(property "Datasheet" "~"
-			(at 215.9 22.86 0)
+		(property "Description" "Heatsink"
+			(at 152.4 50.8 0)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
 				(hide yes)
 			)
-		)
-		(property "Description" "Net tie, 2 pins"
-			(at 215.9 22.86 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "2"
-			(uuid "dcf341a4-0368-432f-8169-98d44d68a06a")
-		)
-		(pin "1"
-			(uuid "25038f9c-b4ee-4c3a-9113-f2a43423ee73")
 		)
 		(instances
-			(project "PD Charger"
+			(project ""
 				(path "/2223e2d2-71c8-4f08-b970-c0182a3b98e5/5a0868fc-b097-40a9-b835-fc14670ffda4"
-					(reference "NT2")
+					(reference "HS1")
 					(unit 1)
 				)
 			)
@@ -4473,76 +4635,6 @@
 			(project "PD Charger"
 				(path "/2223e2d2-71c8-4f08-b970-c0182a3b98e5/5a0868fc-b097-40a9-b835-fc14670ffda4"
 					(reference "TP1")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Device:NetTie_2")
-		(at 223.52 22.86 270)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom no)
-		(on_board yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "16186d45-4f2a-414b-a7be-dfa6f017c753")
-		(property "Reference" "NT1"
-			(at 224.79 22.8599 90)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "NetTie_2"
-			(at 226.06 22.86 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Footprint" ""
-			(at 223.52 22.86 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" "~"
-			(at 223.52 22.86 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "Net tie, 2 pins"
-			(at 223.52 22.86 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "2"
-			(uuid "b3ffe616-b4a4-46c5-86a9-50a01a6f1bce")
-		)
-		(pin "1"
-			(uuid "eaa317e7-2b1e-46ab-83f6-98f09742f870")
-		)
-		(instances
-			(project ""
-				(path "/2223e2d2-71c8-4f08-b970-c0182a3b98e5/5a0868fc-b097-40a9-b835-fc14670ffda4"
-					(reference "NT1")
 					(unit 1)
 				)
 			)
@@ -4863,74 +4955,6 @@
 			(project "PD Charger"
 				(path "/2223e2d2-71c8-4f08-b970-c0182a3b98e5/5a0868fc-b097-40a9-b835-fc14670ffda4"
 					(reference "Q3")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Device:R")
-		(at 219.71 25.4 90)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "3db2fca6-4a92-4339-af08-222b6e701644")
-		(property "Reference" "R6"
-			(at 219.71 29.21 90)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "20m"
-			(at 219.71 31.75 90)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "Resistor_SMD:R_1206_3216Metric"
-			(at 219.71 27.178 90)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" "https://www.ohmite.com/assets/docs/res_lvk.pdf?r=false"
-			(at 219.71 25.4 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" ""
-			(at 219.71 25.4 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "1"
-			(uuid "b253558b-97d7-4f5a-9698-e0c672985c91")
-		)
-		(pin "2"
-			(uuid "97b795a0-2e10-4c08-b7e4-2049fa43a9b4")
-		)
-		(instances
-			(project "PD Charger"
-				(path "/2223e2d2-71c8-4f08-b970-c0182a3b98e5/5a0868fc-b097-40a9-b835-fc14670ffda4"
-					(reference "R6")
 					(unit 1)
 				)
 			)
@@ -5695,16 +5719,17 @@
 		)
 	)
 	(symbol
-		(lib_id "Device:R")
-		(at 142.24 38.1 90)
+		(lib_id "Device:R_Shunt")
+		(at 142.24 38.1 270)
+		(mirror x)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
 		(on_board yes)
 		(dnp no)
-		(uuid "6708fa5d-6f24-43de-b71d-b75329ae1ea3")
+		(uuid "604d498b-1fc2-4439-9de3-a3fd1f28c588")
 		(property "Reference" "R5"
-			(at 142.24 33.02 90)
+			(at 142.24 41.91 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5712,14 +5737,14 @@
 			)
 		)
 		(property "Value" "5m"
-			(at 142.24 35.56 90)
+			(at 142.24 44.45 90)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_1206_3216Metric"
+		(property "Footprint" "Resistor_SMD:R_Shunt_Ohmite_LVK12"
 			(at 142.24 39.878 90)
 			(effects
 				(font
@@ -5728,7 +5753,7 @@
 				(hide yes)
 			)
 		)
-		(property "Datasheet" "https://www.ohmite.com/assets/docs/res_lvt.pdf?r=false"
+		(property "Datasheet" "~"
 			(at 142.24 38.1 0)
 			(effects
 				(font
@@ -5737,7 +5762,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "Shunt resistor"
 			(at 142.24 38.1 0)
 			(effects
 				(font
@@ -5745,12 +5770,18 @@
 				)
 				(hide yes)
 			)
-		)
-		(pin "1"
-			(uuid "5753dfbe-54d9-4284-b069-6c4aa5b937a6")
 		)
 		(pin "2"
-			(uuid "8c5ee9e0-1e52-4b93-a670-16e059443a08")
+			(uuid "0fd7e94b-8ae9-4922-b052-52897c33243d")
+		)
+		(pin "3"
+			(uuid "7244a94e-2591-4cc5-a1c3-2a15f0c8f204")
+		)
+		(pin "1"
+			(uuid "23f05d57-8fa5-48a5-b23f-3fb99d5a9dad")
+		)
+		(pin "4"
+			(uuid "db6778e8-431b-4cff-be9e-cd36a777aeee")
 		)
 		(instances
 			(project "PD Charger"
@@ -5964,75 +5995,6 @@
 			(project "PD Charger"
 				(path "/2223e2d2-71c8-4f08-b970-c0182a3b98e5/5a0868fc-b097-40a9-b835-fc14670ffda4"
 					(reference "C2")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Device:NetTie_2")
-		(at 146.05 35.56 90)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom no)
-		(on_board yes)
-		(dnp no)
-		(uuid "6fa59a5c-6536-4583-893e-4e4eb829c528")
-		(property "Reference" "NT4"
-			(at 146.05 35.56 90)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-			)
-		)
-		(property "Value" "NetTie_2"
-			(at 143.51 35.56 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Footprint" ""
-			(at 146.05 35.56 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" "~"
-			(at 146.05 35.56 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "Net tie, 2 pins"
-			(at 146.05 35.56 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "2"
-			(uuid "bc89d7fa-d161-4a1d-973c-bfe0b315a905")
-		)
-		(pin "1"
-			(uuid "add1b895-9851-4c9f-9525-97ddc4dc0e59")
-		)
-		(instances
-			(project "PD Charger"
-				(path "/2223e2d2-71c8-4f08-b970-c0182a3b98e5/5a0868fc-b097-40a9-b835-fc14670ffda4"
-					(reference "NT4")
 					(unit 1)
 				)
 			)
@@ -8082,6 +8044,80 @@
 		)
 	)
 	(symbol
+		(lib_id "Device:R_Shunt")
+		(at 220.98 25.4 90)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "cd0a526a-22fb-43fc-9dfd-14b4a5082f4f")
+		(property "Reference" "R6"
+			(at 220.98 29.21 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "12m"
+			(at 220.98 31.75 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_Shunt_Ohmite_LVK12"
+			(at 220.98 27.178 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 220.98 25.4 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Shunt resistor"
+			(at 220.98 25.4 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "2"
+			(uuid "338d7663-e532-41b9-9dc5-ba94669fcb2b")
+		)
+		(pin "3"
+			(uuid "e34f2582-bc0e-40f7-a6a6-8cbfae2f1223")
+		)
+		(pin "1"
+			(uuid "9a2f596a-b930-4cd0-b25a-696055656152")
+		)
+		(pin "4"
+			(uuid "a27194a0-c774-47bd-85d0-f6bf7c4b6764")
+		)
+		(instances
+			(project ""
+				(path "/2223e2d2-71c8-4f08-b970-c0182a3b98e5/5a0868fc-b097-40a9-b835-fc14670ffda4"
+					(reference "R6")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "Device:C")
 		(at 116.84 80.01 0)
 		(unit 1)
@@ -9181,75 +9217,6 @@
 			(project "PD Charger"
 				(path "/2223e2d2-71c8-4f08-b970-c0182a3b98e5/5a0868fc-b097-40a9-b835-fc14670ffda4"
 					(reference "#PWR011")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Device:NetTie_2")
-		(at 138.43 35.56 90)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom no)
-		(on_board yes)
-		(dnp no)
-		(uuid "f582a508-7cac-4c79-a480-4b70b8c8a135")
-		(property "Reference" "NT3"
-			(at 134.62 35.56 90)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-			)
-		)
-		(property "Value" "NetTie_2"
-			(at 135.89 35.56 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Footprint" ""
-			(at 138.43 35.56 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" "~"
-			(at 138.43 35.56 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "Net tie, 2 pins"
-			(at 138.43 35.56 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "2"
-			(uuid "76b2ca86-0724-4e58-9884-a48df6c50b4a")
-		)
-		(pin "1"
-			(uuid "541bdfba-a474-493a-bb01-32cbef4efe85")
-		)
-		(instances
-			(project "PD Charger"
-				(path "/2223e2d2-71c8-4f08-b970-c0182a3b98e5/5a0868fc-b097-40a9-b835-fc14670ffda4"
-					(reference "NT3")
 					(unit 1)
 				)
 			)
