@@ -184,6 +184,7 @@
         0.2,
         0.25,
         0.3,
+        0.4,
         0.5
       ],
       "tuning_pattern_settings": {
@@ -634,7 +635,7 @@
     },
     "net_format_name": "KiCad",
     "page_layout_descr_file": "",
-    "plot_directory": "",
+    "plot_directory": "Schematic/",
     "spice_current_sheet_as_root": false,
     "spice_external_command": "spice \"%I\"",
     "spice_model_current_sheet_as_root": true,
