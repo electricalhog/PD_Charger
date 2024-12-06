@@ -4144,15 +4144,15 @@
 			(pintype "passive")
 			(uuid "8e66ad7c-326a-4526-82fa-08ab6c936c02")
 		)
-		(model "${KICAD8_3DMODEL_DIR}/Inductor_SMD.3dshapes/L_Vishay_IHLP-6767.wrl"
+		(model "${KIPRJMOD}/Library.pretty/IHLP6767GZ.STEP"
 			(offset
-				(xyz 0 0 0)
+				(xyz -6.4 0.1 -2.5)
 			)
 			(scale
 				(xyz 1 1 1)
 			)
 			(rotate
-				(xyz 0 0 0)
+				(xyz -90 0 0)
 			)
 		)
 	)
@@ -5858,6 +5858,326 @@
 			)
 		)
 	)
+	(footprint "Connector_AMASS:AMASS_XT60PW-M_1x02_P7.20mm_Horizontal"
+		(layer "F.Cu")
+		(uuid "3902da79-b54c-48dc-8c2b-5d7e60829c53")
+		(at 142.85 96.4 -90)
+		(descr "Connector XT60 Horizontal PCB Female, https://www.tme.eu/Document/b13629717d44ae038681dba08d18c0b6/XT60PW-M.pdf")
+		(tags "RC Connector XT60")
+		(property "Reference" "J3"
+			(at 3.6 -17.5 90)
+			(layer "F.SilkS")
+			(uuid "f6f5d8e5-8cd9-49bb-811d-571f1ea7382e")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.15)
+				)
+			)
+		)
+		(property "Value" "XT60_M"
+			(at 3.6 4 90)
+			(layer "F.Fab")
+			(uuid "d439fdc4-0506-4cc4-a902-99e460dc5740")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.15)
+				)
+			)
+		)
+		(property "Footprint" "Connector_AMASS:AMASS_XT60PW-M_1x02_P7.20mm_Horizontal"
+			(at 0 0 -90)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "98c2710e-8e0c-46cf-a793-f0d28d06302a")
+			(effects
+				(font
+					(size 1.27 1.27)
+					(thickness 0.15)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 0 0 -90)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "40297661-f735-4bcf-bff0-e15b64c0d5d2")
+			(effects
+				(font
+					(size 1.27 1.27)
+					(thickness 0.15)
+				)
+			)
+		)
+		(property "Description" "Generic connector, single row, 01x02, script generated"
+			(at 0 0 -90)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "c21e8366-8ae0-4ba1-b074-02cdabdc3ea2")
+			(effects
+				(font
+					(size 1.27 1.27)
+					(thickness 0.15)
+				)
+			)
+		)
+		(property ki_fp_filters "Connector*:*_1x??_*")
+		(path "/55f2d745-08ee-4453-b318-a111e5416074")
+		(sheetname "Root")
+		(sheetfile "PD Charger.kicad_sch")
+		(attr through_hole)
+		(fp_line
+			(start 2.31 1.96)
+			(end 6.05 1.96)
+			(stroke
+				(width 0.12)
+				(type solid)
+			)
+			(layer "F.SilkS")
+			(uuid "d83267e5-a7d9-43b3-b71b-c95a34a1502d")
+		)
+		(fp_line
+			(start -4.26 -16.46)
+			(end -4.26 -2.15)
+			(stroke
+				(width 0.12)
+				(type solid)
+			)
+			(layer "F.SilkS")
+			(uuid "f531ae34-8bb4-439c-98f9-a8f3c4ce8bc9")
+		)
+		(fp_line
+			(start -4.26 -16.46)
+			(end 11.46 -16.46)
+			(stroke
+				(width 0.12)
+				(type solid)
+			)
+			(layer "F.SilkS")
+			(uuid "fb9b64dc-dccb-4c62-a1b8-bdde756296f5")
+		)
+		(fp_line
+			(start 11.46 -16.46)
+			(end 11.46 -2.15)
+			(stroke
+				(width 0.12)
+				(type solid)
+			)
+			(layer "F.SilkS")
+			(uuid "21bd2294-b8b8-4170-b4d3-a56598c6e8b1")
+		)
+		(fp_arc
+			(start -2.266806 1.372958)
+			(mid -3.727162 -0.126139)
+			(end -4.26 -2.15)
+			(stroke
+				(width 0.12)
+				(type solid)
+			)
+			(layer "F.SilkS")
+			(uuid "141dc76b-3c69-4f31-9df4-aa7f86d5c58d")
+		)
+		(fp_arc
+			(start 11.46 -2.15)
+			(mid 10.653852 0.294722)
+			(end 8.551648 1.780413)
+			(stroke
+				(width 0.12)
+				(type solid)
+			)
+			(layer "F.SilkS")
+			(uuid "5f165c36-b8ec-4944-a8f2-0e1a89308c41")
+		)
+		(fp_line
+			(start 11.85 2.55)
+			(end -4.65 2.55)
+			(stroke
+				(width 0.05)
+				(type solid)
+			)
+			(layer "F.CrtYd")
+			(uuid "78ef8107-1317-472e-8e4a-c884c87138e7")
+		)
+		(fp_line
+			(start -4.65 -16.85)
+			(end -4.65 2.55)
+			(stroke
+				(width 0.05)
+				(type solid)
+			)
+			(layer "F.CrtYd")
+			(uuid "bfe9be37-6350-4a92-a7d5-db49df196abd")
+		)
+		(fp_line
+			(start -4.65 -16.85)
+			(end 11.85 -16.85)
+			(stroke
+				(width 0.05)
+				(type solid)
+			)
+			(layer "F.CrtYd")
+			(uuid "b067fe7b-e4d9-4262-8987-492b1cfe5f0f")
+		)
+		(fp_line
+			(start 11.85 -16.85)
+			(end 11.85 2.55)
+			(stroke
+				(width 0.05)
+				(type solid)
+			)
+			(layer "F.CrtYd")
+			(uuid "71529efe-c2b5-439e-bdab-a5de02b4242b")
+		)
+		(fp_line
+			(start -0.15 1.85)
+			(end 7.35 1.85)
+			(stroke
+				(width 0.1)
+				(type solid)
+			)
+			(layer "F.Fab")
+			(uuid "70be7d64-f4ac-44bd-8d4f-1c344582455f")
+		)
+		(fp_line
+			(start -4.15 -16.35)
+			(end -4.15 -2.15)
+			(stroke
+				(width 0.1)
+				(type solid)
+			)
+			(layer "F.Fab")
+			(uuid "f20c49cf-3d10-4a81-b899-d2275030319b")
+		)
+		(fp_line
+			(start -4.15 -16.35)
+			(end 11.35 -16.35)
+			(stroke
+				(width 0.1)
+				(type solid)
+			)
+			(layer "F.Fab")
+			(uuid "4cc592c6-890f-4a23-bafc-60f32c983f64")
+		)
+		(fp_line
+			(start 11.35 -16.35)
+			(end 11.35 -2.15)
+			(stroke
+				(width 0.1)
+				(type solid)
+			)
+			(layer "F.Fab")
+			(uuid "6796c76d-bc5b-44fb-a817-c6033a9e19d3")
+		)
+		(fp_arc
+			(start -0.15 1.85)
+			(mid -2.978427 0.678427)
+			(end -4.15 -2.15)
+			(stroke
+				(width 0.1)
+				(type solid)
+			)
+			(layer "F.Fab")
+			(uuid "a3632bb0-fa05-44b0-90d5-b47e2d50a531")
+		)
+		(fp_arc
+			(start 11.35 -2.15)
+			(mid 10.178427 0.678427)
+			(end 7.35 1.85)
+			(stroke
+				(width 0.1)
+				(type solid)
+			)
+			(layer "F.Fab")
+			(uuid "e5d270f6-1f2d-4bdb-a7b9-cec0faa70498")
+		)
+		(fp_text user "-"
+			(at -2.8 2.5 90)
+			(layer "F.SilkS")
+			(uuid "62eab908-7772-41d0-af7d-dda8a980077f")
+			(effects
+				(font
+					(size 1.5 1.5)
+					(thickness 0.15)
+				)
+			)
+		)
+		(fp_text user "+"
+			(at 9.5 2.5 90)
+			(layer "F.SilkS")
+			(uuid "733da30c-3155-4627-9378-02fd9ad20a2d")
+			(effects
+				(font
+					(size 1.5 1.5)
+					(thickness 0.15)
+				)
+			)
+		)
+		(fp_text user "${REFERENCE}"
+			(at 3.6 -3.6 90)
+			(layer "F.Fab")
+			(uuid "2f5ad8c5-1d91-4ece-8a38-4dc9da5d0f10")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.15)
+				)
+			)
+		)
+		(pad "" thru_hole rect
+			(at -3.15 -6 270)
+			(size 0.9 2)
+			(drill oval 0.6 1.7)
+			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
+			(uuid "d9f8828d-0ed6-4fef-ac13-701af7367652")
+		)
+		(pad "" thru_hole rect
+			(at 10.35 -6 270)
+			(size 0.9 2)
+			(drill oval 0.6 1.7)
+			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
+			(uuid "c2e415dd-1c67-43b3-9e3a-4377ee6246bf")
+		)
+		(pad "1" thru_hole roundrect
+			(at 0 0 270)
+			(size 4.1 4.1)
+			(drill 2.7)
+			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
+			(roundrect_rratio 0.25)
+			(net 6 "GND")
+			(pinfunction "Pin_1")
+			(pintype "passive")
+			(uuid "629c0fb6-fd4d-4931-86a0-5b3b72d54103")
+		)
+		(pad "2" thru_hole circle
+			(at 7.2 0 270)
+			(size 4.1 4.1)
+			(drill 2.7)
+			(layers "*.Cu" "*.Mask")
+			(remove_unused_layers no)
+			(net 68 "VBUS")
+			(pinfunction "Pin_2")
+			(pintype "passive")
+			(uuid "44350bb3-b3bf-4a32-9c05-02c0e0ee6b96")
+		)
+		(model "${KIPRJMOD}/Library.pretty/XT60PW-M.stp"
+			(offset
+				(xyz 3.6 -0.5 4.3)
+			)
+			(scale
+				(xyz 1 1 1)
+			)
+			(rotate
+				(xyz -90 0 180)
+			)
+		)
+	)
 	(footprint "Capacitor_SMD:C_0603_1608Metric"
 		(layer "F.Cu")
 		(uuid "3e9b7e91-a69c-484b-8755-55b1fc1e167b")
@@ -6633,7 +6953,7 @@
 		(at 55.15 103.6 90)
 		(descr "Connector XT60 Horizontal PCB Female, https://www.tme.eu/Document/b13629717d44ae038681dba08d18c0b6/XT60PW-M.pdf")
 		(tags "RC Connector XT60")
-		(property "Reference" "J3"
+		(property "Reference" "J2"
 			(at 3.6 -17.5 90)
 			(layer "F.SilkS")
 			(uuid "f6f5d8e5-8cd9-49bb-811d-571f1ea7382e")
@@ -6935,15 +7255,15 @@
 			(pintype "passive")
 			(uuid "44350bb3-b3bf-4a32-9c05-02c0e0ee6b96")
 		)
-		(model "${KICAD8_3DMODEL_DIR}/Connector_AMASS.3dshapes/AMASS_XT60PW-M_1x02_P7.20mm_Horizontal.wrl"
+		(model "${KIPRJMOD}/Library.pretty/XT60PW-M.stp"
 			(offset
-				(xyz 0 0 0)
+				(xyz 3.6 -0.5 4.3)
 			)
 			(scale
 				(xyz 1 1 1)
 			)
 			(rotate
-				(xyz 0 0 0)
+				(xyz -90 0 180)
 			)
 		)
 	)
@@ -10965,7 +11285,7 @@
 			(thermal_bridge_angle 45)
 			(uuid "06b9309a-5cb0-4f9f-b890-676cc0b74731")
 		)
-		(model "${KICAD_3D_MODELS}/EPC_FETs/D0606F.step"
+		(model "${KIPRJMOD}/EPC-KiCad-Library/Ki3DModels/D0606F.step"
 			(offset
 				(xyz 0 0 0)
 			)
@@ -13063,7 +13383,7 @@
 			(thermal_bridge_angle 45)
 			(uuid "d54c38c1-d99a-49e0-a248-54a67450f16b")
 		)
-		(model "${KICAD_3D_MODELS}/EPC_FETs/D0606F.step"
+		(model "${KIPRJMOD}/EPC-KiCad-Library/Ki3DModels/D0606F.step"
 			(offset
 				(xyz 0 0 0)
 			)
@@ -13916,326 +14236,6 @@
 			(uuid "35746e12-0ff0-41a0-9020-7a6141b93c4e")
 		)
 		(model "${KICAD8_3DMODEL_DIR}/Capacitor_SMD.3dshapes/C_1206_3216Metric.wrl"
-			(offset
-				(xyz 0 0 0)
-			)
-			(scale
-				(xyz 1 1 1)
-			)
-			(rotate
-				(xyz 0 0 0)
-			)
-		)
-	)
-	(footprint "Connector_AMASS:AMASS_XT60PW-M_1x02_P7.20mm_Horizontal"
-		(layer "F.Cu")
-		(uuid "768fbf13-8829-47ed-a5a9-a51723122ebc")
-		(at 142.85 96.4 -90)
-		(descr "Connector XT60 Horizontal PCB Female, https://www.tme.eu/Document/b13629717d44ae038681dba08d18c0b6/XT60PW-M.pdf")
-		(tags "RC Connector XT60")
-		(property "Reference" "J2"
-			(at 3.6 -17.5 -90)
-			(layer "F.SilkS")
-			(uuid "373e585b-ef08-4d4b-88f7-d7f85290b05d")
-			(effects
-				(font
-					(size 1 1)
-					(thickness 0.15)
-				)
-			)
-		)
-		(property "Value" "Conn_01x02"
-			(at 3.6 4 -90)
-			(layer "F.Fab")
-			(uuid "1d24ccd5-bb25-4c31-97b8-ad1c25abccfd")
-			(effects
-				(font
-					(size 1 1)
-					(thickness 0.15)
-				)
-			)
-		)
-		(property "Footprint" "Connector_AMASS:AMASS_XT60PW-M_1x02_P7.20mm_Horizontal"
-			(at 0 0 -90)
-			(unlocked yes)
-			(layer "F.Fab")
-			(hide yes)
-			(uuid "dedd1d02-107f-4ead-b873-6afbb52e3d8d")
-			(effects
-				(font
-					(size 1.27 1.27)
-					(thickness 0.15)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 0 0 -90)
-			(unlocked yes)
-			(layer "F.Fab")
-			(hide yes)
-			(uuid "5f51d34e-d546-415e-a8f6-d2acc3fda1ca")
-			(effects
-				(font
-					(size 1.27 1.27)
-					(thickness 0.15)
-				)
-			)
-		)
-		(property "Description" "Generic connector, single row, 01x02, script generated (kicad-library-utils/schlib/autogen/connector/)"
-			(at 0 0 -90)
-			(unlocked yes)
-			(layer "F.Fab")
-			(hide yes)
-			(uuid "5c68c01f-e644-4f51-a741-8216c939e482")
-			(effects
-				(font
-					(size 1.27 1.27)
-					(thickness 0.15)
-				)
-			)
-		)
-		(property ki_fp_filters "Connector*:*_1x??_*")
-		(path "/0d9c04b9-32e5-4162-b2a8-5157b33daa89")
-		(sheetname "Root")
-		(sheetfile "PD Charger.kicad_sch")
-		(attr through_hole)
-		(fp_line
-			(start 2.31 1.96)
-			(end 6.05 1.96)
-			(stroke
-				(width 0.12)
-				(type solid)
-			)
-			(layer "F.SilkS")
-			(uuid "2ed4167b-7698-4981-9516-962d5c48960c")
-		)
-		(fp_line
-			(start -4.26 -16.46)
-			(end -4.26 -2.15)
-			(stroke
-				(width 0.12)
-				(type solid)
-			)
-			(layer "F.SilkS")
-			(uuid "280fba39-ff5f-49cf-ad5d-dba1a30afffd")
-		)
-		(fp_line
-			(start -4.26 -16.46)
-			(end 11.46 -16.46)
-			(stroke
-				(width 0.12)
-				(type solid)
-			)
-			(layer "F.SilkS")
-			(uuid "d4a9fa5d-aa41-4694-9684-0193fda17393")
-		)
-		(fp_line
-			(start 11.46 -16.46)
-			(end 11.46 -2.15)
-			(stroke
-				(width 0.12)
-				(type solid)
-			)
-			(layer "F.SilkS")
-			(uuid "5b6ddaab-aba4-4b5f-b667-94890216f53d")
-		)
-		(fp_arc
-			(start -2.266806 1.372958)
-			(mid -3.727162 -0.126139)
-			(end -4.26 -2.15)
-			(stroke
-				(width 0.12)
-				(type solid)
-			)
-			(layer "F.SilkS")
-			(uuid "73b93de8-0949-4614-afd8-2c6e3c98b15c")
-		)
-		(fp_arc
-			(start 11.46 -2.15)
-			(mid 10.653852 0.294722)
-			(end 8.551648 1.780413)
-			(stroke
-				(width 0.12)
-				(type solid)
-			)
-			(layer "F.SilkS")
-			(uuid "c05a640a-5223-4497-a8e7-968fc455e8ab")
-		)
-		(fp_line
-			(start 11.85 2.55)
-			(end -4.65 2.55)
-			(stroke
-				(width 0.05)
-				(type solid)
-			)
-			(layer "F.CrtYd")
-			(uuid "1381e903-891b-473e-82f5-76e041137fda")
-		)
-		(fp_line
-			(start -4.65 -16.85)
-			(end -4.65 2.55)
-			(stroke
-				(width 0.05)
-				(type solid)
-			)
-			(layer "F.CrtYd")
-			(uuid "7e277796-3fa0-4bb4-89d4-e196dbd15fb0")
-		)
-		(fp_line
-			(start -4.65 -16.85)
-			(end 11.85 -16.85)
-			(stroke
-				(width 0.05)
-				(type solid)
-			)
-			(layer "F.CrtYd")
-			(uuid "c76da894-c268-402d-a97c-6814b98371de")
-		)
-		(fp_line
-			(start 11.85 -16.85)
-			(end 11.85 2.55)
-			(stroke
-				(width 0.05)
-				(type solid)
-			)
-			(layer "F.CrtYd")
-			(uuid "74a1ec97-6bda-476f-904c-1fa65698d1c0")
-		)
-		(fp_line
-			(start -0.15 1.85)
-			(end 7.35 1.85)
-			(stroke
-				(width 0.1)
-				(type solid)
-			)
-			(layer "F.Fab")
-			(uuid "2ee7a19c-951a-4ef5-9a1e-f1be065d50ac")
-		)
-		(fp_line
-			(start -4.15 -16.35)
-			(end -4.15 -2.15)
-			(stroke
-				(width 0.1)
-				(type solid)
-			)
-			(layer "F.Fab")
-			(uuid "fb3c1965-fe6b-4a61-8c3a-08f3fd3616ee")
-		)
-		(fp_line
-			(start -4.15 -16.35)
-			(end 11.35 -16.35)
-			(stroke
-				(width 0.1)
-				(type solid)
-			)
-			(layer "F.Fab")
-			(uuid "7c044b8c-fc19-4825-8a16-f0df7c0b7b0e")
-		)
-		(fp_line
-			(start 11.35 -16.35)
-			(end 11.35 -2.15)
-			(stroke
-				(width 0.1)
-				(type solid)
-			)
-			(layer "F.Fab")
-			(uuid "422f7418-de71-43b3-8548-e8ca41a199ff")
-		)
-		(fp_arc
-			(start -0.15 1.85)
-			(mid -2.978427 0.678427)
-			(end -4.15 -2.15)
-			(stroke
-				(width 0.1)
-				(type solid)
-			)
-			(layer "F.Fab")
-			(uuid "388334ad-b9e7-400b-8f2a-4ef195e4226a")
-		)
-		(fp_arc
-			(start 11.35 -2.15)
-			(mid 10.178427 0.678427)
-			(end 7.35 1.85)
-			(stroke
-				(width 0.1)
-				(type solid)
-			)
-			(layer "F.Fab")
-			(uuid "0d276e9a-11b5-4e53-b124-42bcc45bd500")
-		)
-		(fp_text user "-"
-			(at -2.8 2.5 -90)
-			(layer "F.SilkS")
-			(uuid "159c0c5f-4929-4097-8fe0-4201db062bf6")
-			(effects
-				(font
-					(size 1.5 1.5)
-					(thickness 0.15)
-				)
-			)
-		)
-		(fp_text user "+"
-			(at 9.5 2.5 -90)
-			(layer "F.SilkS")
-			(uuid "cb5f8566-4b96-4624-905e-df073fe7ab74")
-			(effects
-				(font
-					(size 1.5 1.5)
-					(thickness 0.15)
-				)
-			)
-		)
-		(fp_text user "${REFERENCE}"
-			(at 3.6 -3.6 -90)
-			(layer "F.Fab")
-			(uuid "aaff0fd2-bcd4-420d-af3e-cae555b8ee88")
-			(effects
-				(font
-					(size 1 1)
-					(thickness 0.15)
-				)
-			)
-		)
-		(pad "" thru_hole rect
-			(at -3.15 -6 270)
-			(size 0.9 2)
-			(drill oval 0.6 1.7)
-			(layers "*.Cu" "*.Mask")
-			(remove_unused_layers no)
-			(uuid "25db5048-4a2c-4ab7-8235-aac5669be42d")
-		)
-		(pad "" thru_hole rect
-			(at 10.35 -6 270)
-			(size 0.9 2)
-			(drill oval 0.6 1.7)
-			(layers "*.Cu" "*.Mask")
-			(remove_unused_layers no)
-			(uuid "01e6315c-d8c9-47c4-820b-d16ca233086e")
-		)
-		(pad "1" thru_hole roundrect
-			(at 0 0 270)
-			(size 4.1 4.1)
-			(drill 2.7)
-			(layers "*.Cu" "*.Mask")
-			(remove_unused_layers no)
-			(roundrect_rratio 0.25)
-			(net 6 "GND")
-			(pinfunction "Pin_1")
-			(pintype "passive")
-			(uuid "95b46ed0-2ddb-4bb4-a606-090b84eaf07d")
-		)
-		(pad "2" thru_hole circle
-			(at 7.2 0 270)
-			(size 4.1 4.1)
-			(drill 2.7)
-			(layers "*.Cu" "*.Mask")
-			(remove_unused_layers no)
-			(net 68 "VBUS")
-			(pinfunction "Pin_2")
-			(pintype "passive")
-			(uuid "01fa103f-8bd1-4704-9fa4-429dd24378ac")
-		)
-		(model "${KICAD8_3DMODEL_DIR}/Connector_AMASS.3dshapes/AMASS_XT60PW-M_1x02_P7.20mm_Horizontal.wrl"
 			(offset
 				(xyz 0 0 0)
 			)
@@ -21900,7 +21900,7 @@
 			(thermal_bridge_angle 45)
 			(uuid "645d1321-aaac-4288-86a4-881858e4580f")
 		)
-		(model "${KICAD_3D_MODELS}/EPC_FETs/D0606F.step"
+		(model "${KIPRJMOD}/EPC-KiCad-Library/Ki3DModels/D0606F.step"
 			(offset
 				(xyz 0 0 0)
 			)
@@ -26997,7 +26997,7 @@
 			(thermal_bridge_angle 45)
 			(uuid "57f0a77f-98e8-40a9-8d26-286e12edb02b")
 		)
-		(model "${KICAD_3D_MODELS}/EPC_FETs/D0606F.step"
+		(model "${KIPRJMOD}/EPC-KiCad-Library/Ki3DModels/D0606F.step"
 			(offset
 				(xyz 0 0 0)
 			)
@@ -30604,6 +30604,17 @@
 			(pinfunction "2")
 			(pintype "passive")
 			(uuid "f5453b26-0b6a-405c-9fef-5e8fb2ad9e1e")
+		)
+		(model "${KICAD8_3DMODEL_DIR}/Inductor_SMD.3dshapes/L_Sunlord_SWPA5040S.step"
+			(offset
+				(xyz 0 0 0)
+			)
+			(scale
+				(xyz 1 1 1)
+			)
+			(rotate
+				(xyz 0 0 0)
+			)
 		)
 	)
 	(footprint "TestPoint:TestPoint_Keystone_5000-5004_Miniature"
@@ -47239,7 +47250,7 @@
 				(xy 105.710232 115.510234) (xy 105.710234 115.510233) (xy 105.744028 115.459657) (xy 105.7529 115.415056)
 				(xy 105.752899 114.784943) (xy 105.744028 114.740341) (xy 105.744027 114.74034) (xy 105.744027 114.740338)
 				(xy 105.739354 114.729056) (xy 105.742607 114.727708) (xy 105.727921 114.680797) (xy 105.727901 114.67859)
-				(xy 105.727901 114.674696) (xy 105.727901 114.674695) (xy 105.711303 114.634625) (xy 105.689399 114.581743)
+				(xy 105.727901 114.674696) (xy 105.727901 114.674695) (xy 105.711505 114.635114) (xy 105.689399 114.581743)
 				(xy 105.618257 114.510601) (xy 105.611196 114.50354) (xy 105.611181 114.503527) (xy 105.474611 114.366957)
 				(xy 105.474603 114.366947) (xy 105.393256 114.2856) (xy 105.336384 114.262044) (xy 105.336382 114.262042)
 				(xy 105.336382 114.262043) (xy 105.300305 114.247099) (xy 105.281653 114.247099) (xy 105.214614 114.227414)
@@ -47456,7 +47467,7 @@
 				(xy 83.79773 115.7221) (xy 83.730691 115.702415) (xy 83.684936 115.649611) (xy 83.674992 115.580453)
 				(xy 83.704017 115.516897) (xy 83.710049 115.510419) (xy 83.710231 115.510236) (xy 83.710232 115.510234)
 				(xy 83.710234 115.510233) (xy 83.744028 115.459657) (xy 83.744757 115.455992) (xy 83.7529 115.415058)
-				(xy 83.7529 114.638418) (xy 83.752899 114.638414) (xy 83.751892 114.634657) (xy 83.738081 114.58311)
+				(xy 83.7529 114.638418) (xy 83.752899 114.638414) (xy 83.7507 114.630208) (xy 83.738081 114.58311)
 				(xy 83.737292 114.580164) (xy 83.737291 114.580163) (xy 83.733962 114.567736) (xy 83.697376 114.504368)
 				(xy 83.574751 114.381743) (xy 83.445635 114.252626) (xy 83.382265 114.216038) (xy 83.311585 114.1971)
 				(xy 83.311584 114.1971) (xy 82.836694 114.1971) (xy 82.769655 114.177415) (xy 82.7239 114.124611)
@@ -57040,7 +57051,8 @@
 			(layer "F.Cu")
 			(pts
 				(xy 104.919334 114.018841) (xy 104.975267 114.060713) (xy 104.999684 114.126177) (xy 105 114.135023)
-				(xy 105 114.523099) (xy 104.980315 114.590138) (xy 104.927511 114.635893) (xy 104.876001 114.647099)
+				(xy 105 114.391934) (xy 104.980315 114.458973) (xy 104.975267 114.466245) (xy 104.906648 114.557908)
+				(xy 104.903466 114.566439) (xy 104.861591 114.62237) (xy 104.796126 114.646784) (xy 104.787287 114.647099)
 				(xy 104.684944 114.647099) (xy 104.64034 114.655971) (xy 104.629054 114.660646) (xy 104.627512 114.656923)
 				(xy 104.582225 114.671067) (xy 104.514858 114.652532) (xy 104.492422 114.634766) (xy 104.461192 114.603536)
 				(xy 104.461185 114.60353) (xy 104.291951 114.434296) (xy 104.258466 114.372973) (xy 104.26345 114.303281)
