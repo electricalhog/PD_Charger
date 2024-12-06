@@ -12,8 +12,8 @@
 			(exclude_from_sim no)
 			(in_bom yes)
 			(on_board yes)
-			(property "Reference" "U2"
-				(at 0 24.892 0)
+			(property "Reference" "U"
+				(at 0 2.54 0)
 				(effects
 					(font
 						(size 1.524 1.524)
@@ -21,15 +21,15 @@
 				)
 			)
 			(property "Value" "LMR36006BRNXT"
-				(at 0 22.352 0)
+				(at 0 0 0)
 				(effects
 					(font
 						(size 1.524 1.524)
 					)
 				)
 			)
-			(property "Footprint" "Library:RNX0012B"
-				(at 0 -2.54 0)
+			(property "Footprint" "RNX0012B"
+				(at 0 0 0)
 				(effects
 					(font
 						(size 1.27 1.27)
@@ -84,6 +84,54 @@
 				)
 			)
 			(symbol "LMR36006BRNXT_0_1"
+				(polyline
+					(pts
+						(xy -15.24 -20.32) (xy 15.24 -20.32)
+					)
+					(stroke
+						(width 0.2032)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy -15.24 20.32) (xy -15.24 -20.32)
+					)
+					(stroke
+						(width 0.2032)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 15.24 -20.32) (xy 15.24 20.32)
+					)
+					(stroke
+						(width 0.2032)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 15.24 20.32) (xy -15.24 20.32)
+					)
+					(stroke
+						(width 0.2032)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
 				(pin power_in line
 					(at -20.32 2.54 0)
 					(length 5.08)
@@ -298,19 +346,6 @@
 								(size 1.27 1.27)
 							)
 						)
-					)
-				)
-			)
-			(symbol "LMR36006BRNXT_1_1"
-				(rectangle
-					(start -15.24 20.32)
-					(end 15.24 -20.32)
-					(stroke
-						(width 0)
-						(type default)
-					)
-					(fill
-						(type background)
 					)
 				)
 			)
@@ -753,127 +788,6 @@
 				)
 			)
 		)
-		(symbol "Device:NetTie_2"
-			(pin_numbers hide)
-			(pin_names
-				(offset 0) hide)
-			(exclude_from_sim no)
-			(in_bom no)
-			(on_board yes)
-			(property "Reference" "NT"
-				(at 0 1.27 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Value" "NetTie_2"
-				(at 0 -1.27 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Footprint" ""
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(hide yes)
-				)
-			)
-			(property "Datasheet" "~"
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(hide yes)
-				)
-			)
-			(property "Description" "Net tie, 2 pins"
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(hide yes)
-				)
-			)
-			(property "ki_keywords" "net tie short"
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(hide yes)
-				)
-			)
-			(property "ki_fp_filters" "Net*Tie*"
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(hide yes)
-				)
-			)
-			(symbol "NetTie_2_0_1"
-				(polyline
-					(pts
-						(xy -1.27 0) (xy 1.27 0)
-					)
-					(stroke
-						(width 0.254)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-			)
-			(symbol "NetTie_2_1_1"
-				(pin passive line
-					(at -2.54 0 0)
-					(length 2.54)
-					(name "1"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "1"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at 2.54 0 180)
-					(length 2.54)
-					(name "2"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "2"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-			)
-		)
 		(symbol "Device:R"
 			(pin_numbers hide)
 			(pin_names
@@ -997,9 +911,9 @@
 		)
 		(symbol "power:GND"
 			(power)
+			(pin_numbers hide)
 			(pin_names
-				(offset 0)
-			)
+				(offset 0) hide)
 			(exclude_from_sim no)
 			(in_bom yes)
 			(on_board yes)
@@ -1073,8 +987,8 @@
 			(symbol "GND_1_1"
 				(pin power_in line
 					(at 0 0 270)
-					(length 0) hide
-					(name "GND"
+					(length 0)
+					(name "~"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1198,10 +1112,6 @@
 		(at 158.75 104.14)
 		(uuid "074c6e0d-fdeb-4650-b0cd-2baac71ab115")
 	)
-	(no_connect
-		(at 158.75 109.22)
-		(uuid "ead46171-9b1a-4464-a45d-7a0f43237cf4")
-	)
 	(wire
 		(pts
 			(xy 170.942 101.6) (xy 180.594 101.6)
@@ -1261,6 +1171,16 @@
 			(type default)
 		)
 		(uuid "2c4f4fc1-bc7e-443d-845d-271c0e942fdf")
+	)
+	(wire
+		(pts
+			(xy 113.03 101.6) (xy 118.11 101.6)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "32f596f7-7468-403e-9fb5-1a9331f38716")
 	)
 	(wire
 		(pts
@@ -1514,16 +1434,16 @@
 		)
 		(uuid "113107af-5c6f-423a-8a14-c6bf42456eed")
 	)
-	(label "EN"
-		(at 118.11 101.6 180)
+	(label "VCC"
+		(at 166.37 109.22 0)
 		(fields_autoplaced yes)
 		(effects
 			(font
-				(size 0.635 0.635)
+				(size 1.27 1.27)
 			)
-			(justify right bottom)
+			(justify left bottom)
 		)
-		(uuid "2af8821b-8586-4356-970b-ee19a8cab246")
+		(uuid "96aacc08-9b77-4b9a-bad3-d35794480782")
 	)
 	(label "BST"
 		(at 158.75 93.98 0)
@@ -1535,6 +1455,18 @@
 			(justify left bottom)
 		)
 		(uuid "aebed0c6-1163-430f-a45c-928cd586fb4b")
+	)
+	(hierarchical_label "PGOOD"
+		(shape output)
+		(at 158.75 109.22 0)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "2e5fcb0b-3610-4082-9040-83ac9a476c0e")
 	)
 	(hierarchical_label "VOUT"
 		(shape output)
@@ -1606,7 +1538,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "Unpolarized capacitor"
 			(at 201.93 105.41 0)
 			(effects
 				(font
@@ -1684,7 +1616,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
 			(at 170.942 124.46 0)
 			(effects
 				(font
@@ -1751,7 +1683,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "Resistor"
 			(at 170.942 109.982 0)
 			(effects
 				(font
@@ -1811,7 +1743,7 @@
 				(hide yes)
 			)
 		)
-		(property "Datasheet" "https://www.ti.com/lit/ds/symlink/lmr36006.pdf"
+		(property "Datasheet" "LMR36006BRNXT"
 			(at 138.43 109.22 0)
 			(effects
 				(font
@@ -1912,7 +1844,7 @@
 				(hide yes)
 			)
 		)
-		(property "Datasheet" "https://www.vishay.com/docs/84830/plzseries.pdf"
+		(property "Datasheet" "~"
 			(at 213.36 105.41 0)
 			(effects
 				(font
@@ -1921,7 +1853,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "Zener diode"
 			(at 213.36 105.41 0)
 			(effects
 				(font
@@ -1991,7 +1923,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "Unpolarized capacitor"
 			(at 101.6 97.79 0)
 			(effects
 				(font
@@ -2069,7 +2001,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
 			(at 101.6 101.6 0)
 			(effects
 				(font
@@ -2136,7 +2068,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
 			(at 113.03 109.22 0)
 			(effects
 				(font
@@ -2202,7 +2134,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
 			(at 180.594 109.22 0)
 			(effects
 				(font
@@ -2269,7 +2201,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "Unpolarized capacitor"
 			(at 91.44 97.79 0)
 			(effects
 				(font
@@ -2348,7 +2280,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "Resistor"
 			(at 170.942 118.618 0)
 			(effects
 				(font
@@ -2367,75 +2299,6 @@
 			(project "PD Charger"
 				(path "/2223e2d2-71c8-4f08-b970-c0182a3b98e5/ac916dc0-126e-4456-8ac4-6182257da33b"
 					(reference "R20")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Device:NetTie_2")
-		(at 115.57 101.6 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom no)
-		(on_board yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "a122b891-b778-4344-85b3-92a56db6e018")
-		(property "Reference" "NT6"
-			(at 115.57 96.52 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "NetTie_2"
-			(at 115.57 99.06 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Footprint" "NetTie:NetTie-2_SMD_Pad0.5mm"
-			(at 115.57 101.6 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" "~"
-			(at 115.57 101.6 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "Net tie, 2 pins"
-			(at 115.57 101.6 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "1"
-			(uuid "5e498466-6e39-49d2-8662-7fa45986bc14")
-		)
-		(pin "2"
-			(uuid "24e01601-5acc-4a48-a4ee-bda7c3fc6c7d")
-		)
-		(instances
-			(project ""
-				(path "/2223e2d2-71c8-4f08-b970-c0182a3b98e5/ac916dc0-126e-4456-8ac4-6182257da33b"
-					(reference "NT6")
 					(unit 1)
 				)
 			)
@@ -2486,7 +2349,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "Unpolarized capacitor"
 			(at 161.036 97.79 0)
 			(effects
 				(font
@@ -2544,7 +2407,7 @@
 				(hide yes)
 			)
 		)
-		(property "Datasheet" "https://www.we-online.com/components/products/datasheet/74438335330.pdf"
+		(property "Datasheet" "~"
 			(at 167.132 101.6 0)
 			(effects
 				(font
@@ -2553,7 +2416,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "Inductor"
 			(at 167.132 101.6 0)
 			(effects
 				(font
@@ -2622,7 +2485,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
 			(at 113.03 121.92 0)
 			(effects
 				(font
@@ -2689,7 +2552,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "Unpolarized capacitor"
 			(at 180.594 105.41 0)
 			(effects
 				(font
@@ -2708,6 +2571,74 @@
 			(project "PD Charger"
 				(path "/2223e2d2-71c8-4f08-b970-c0182a3b98e5/ac916dc0-126e-4456-8ac4-6182257da33b"
 					(reference "C32")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:R")
+		(at 162.56 109.22 90)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "cc620a9b-78b6-4ad3-8ea3-cce85699f42b")
+		(property "Reference" "R26"
+			(at 162.56 102.87 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "100k"
+			(at 162.56 105.41 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
+			(at 162.56 110.998 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 162.56 109.22 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 162.56 109.22 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "f1f4c7ce-f86b-4254-b1a2-96ff6f40df6f")
+		)
+		(pin "2"
+			(uuid "b95a7e2b-c875-410f-8d61-d1f6e6646ea7")
+		)
+		(instances
+			(project "PD Charger"
+				(path "/2223e2d2-71c8-4f08-b970-c0182a3b98e5/ac916dc0-126e-4456-8ac4-6182257da33b"
+					(reference "R26")
 					(unit 1)
 				)
 			)
@@ -2759,7 +2690,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "Unpolarized capacitor"
 			(at 191.262 105.41 0)
 			(effects
 				(font
@@ -2828,7 +2759,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "Unpolarized capacitor"
 			(at 161.036 118.618 0)
 			(effects
 				(font
@@ -2897,7 +2828,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "Unpolarized capacitor"
 			(at 113.03 118.11 0)
 			(effects
 				(font

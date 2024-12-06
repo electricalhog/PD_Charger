@@ -507,7 +507,7 @@
 				)
 			)
 			(property "Datasheet" "http://www.aosmd.com/res/data_sheets/AON6411.pdf"
-				(at 0 0 90)
+				(at 5.08 -3.81 0)
 				(effects
 					(font
 						(size 1.27 1.27)
@@ -516,7 +516,7 @@
 					(hide yes)
 				)
 			)
-			(property "Description" "P-Channel MOSFET, -85A Id, -20V Vds, DFN-8"
+			(property "Description" "-85A Id, -20V Vds, P-Channel MOSFET, DFN-8"
 				(at 0 0 0)
 				(effects
 					(font
@@ -805,9 +805,9 @@
 		)
 		(symbol "power:+3V3"
 			(power)
+			(pin_numbers hide)
 			(pin_names
-				(offset 0)
-			)
+				(offset 0) hide)
 			(exclude_from_sim no)
 			(in_bom yes)
 			(on_board yes)
@@ -905,8 +905,8 @@
 			(symbol "+3V3_1_1"
 				(pin power_in line
 					(at 0 0 90)
-					(length 0) hide
-					(name "+3V3"
+					(length 0)
+					(name "~"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -925,9 +925,9 @@
 		)
 		(symbol "power:GND"
 			(power)
+			(pin_numbers hide)
 			(pin_names
-				(offset 0)
-			)
+				(offset 0) hide)
 			(exclude_from_sim no)
 			(in_bom yes)
 			(on_board yes)
@@ -1001,8 +1001,8 @@
 			(symbol "GND_1_1"
 				(pin power_in line
 					(at 0 0 270)
-					(length 0) hide
-					(name "GND"
+					(length 0)
+					(name "~"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1179,7 +1179,7 @@
 				(hide yes)
 			)
 		)
-		(property "Datasheet" "https://toshiba.semicon-storage.com/info/SSM6N17FU_datasheet_en_20140301.pdf?did=19758&prodName=SSM6N17FU"
+		(property "Datasheet" "~"
 			(at 147.32 111.76 0)
 			(effects
 				(font
@@ -1188,7 +1188,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "Dual NMOS transistor, 6 pin package"
 			(at 142.24 111.76 0)
 			(effects
 				(font
@@ -1278,7 +1278,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "Power symbol creates a global label with name \"+3V3\""
 			(at 137.16 104.14 0)
 			(effects
 				(font
@@ -1334,7 +1334,7 @@
 				(hide yes)
 			)
 		)
-		(property "Datasheet" "https://www.vishay.com/docs/62247/sir5607dp.pdf"
+		(property "Datasheet" "http://www.aosmd.com/res/data_sheets/AON6411.pdf"
 			(at 124.46 90.17 90)
 			(effects
 				(font
@@ -1344,7 +1344,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "-85A Id, -20V Vds, P-Channel MOSFET, DFN-8"
 			(at 124.46 90.17 0)
 			(effects
 				(font
@@ -1449,7 +1449,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "Resistor"
 			(at 137.16 107.95 0)
 			(effects
 				(font
@@ -1518,7 +1518,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
 			(at 144.78 116.84 0)
 			(effects
 				(font
@@ -1575,7 +1575,7 @@
 				(hide yes)
 			)
 		)
-		(property "Datasheet" "https://www.vishay.com/docs/62247/sir5607dp.pdf"
+		(property "Datasheet" "http://www.aosmd.com/res/data_sheets/AON6411.pdf"
 			(at 139.7 90.17 90)
 			(effects
 				(font
@@ -1585,7 +1585,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "-85A Id, -20V Vds, P-Channel MOSFET, DFN-8"
 			(at 139.7 90.17 0)
 			(effects
 				(font
@@ -1691,7 +1691,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" ""
+		(property "Description" "Resistor"
 			(at 132.08 91.44 0)
 			(effects
 				(font
