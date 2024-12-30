@@ -1,0 +1,6 @@
+../Utilities/GUI_INTERFACE/bsp_gui.c:61:19:BSP_GUI_LoadDataFromFlash	38
+../Utilities/GUI_INTERFACE/bsp_gui.c:195:19:BSP_GUI_SaveDataInFlash	40
+../Utilities/GUI_INTERFACE/bsp_gui.c:368:26:SavePDOInFlash	5
+../Utilities/GUI_INTERFACE/bsp_gui.c:456:26:SaveSettingsInFlash	6
+../Utilities/GUI_INTERFACE/bsp_gui.c:560:26:LoadPDOFromFlash	2
+../Utilities/GUI_INTERFACE/bsp_gui.c:579:26:LoadSettingsFromFlash	1
