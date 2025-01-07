@@ -2205,7 +2205,7 @@
 		(uuid "b473c136-b77b-49ee-bce4-36b9580505a1")
 	)
 	(junction
-		(at 143.51 87.63)
+		(at 127 87.63)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "be755099-9ab5-49da-97f9-cb8e05fb1cfd")
@@ -2888,16 +2888,6 @@
 	)
 	(wire
 		(pts
-			(xy 135.89 92.71) (xy 119.38 92.71)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "8086a24c-7cc8-4807-926f-5f0c50b82eca")
-	)
-	(wire
-		(pts
 			(xy 73.66 77.47) (xy 88.9 77.47)
 		)
 		(stroke
@@ -2968,7 +2958,7 @@
 	)
 	(wire
 		(pts
-			(xy 143.51 87.63) (xy 143.51 92.71)
+			(xy 127 87.63) (xy 127 92.71)
 		)
 		(stroke
 			(width 0)
@@ -3085,16 +3075,6 @@
 			(type default)
 		)
 		(uuid "a999ffab-c74e-49c4-add6-fc052fb05d12")
-	)
-	(wire
-		(pts
-			(xy 135.89 87.63) (xy 119.38 87.63)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "aac66f2c-0664-4961-a25e-3b2621c1e28e")
 	)
 	(wire
 		(pts
@@ -3602,7 +3582,7 @@
 		(uuid "84a5e602-cb40-4beb-bef5-61babfa6266b")
 	)
 	(label "G2"
-		(at 143.51 92.71 0)
+		(at 127 92.71 0)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -3990,16 +3970,16 @@
 	)
 	(symbol
 		(lib_id "Device:R")
-		(at 139.7 92.71 90)
-		(mirror x)
+		(at 123.19 92.71 90)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
 		(on_board yes)
 		(dnp no)
+		(fields_autoplaced yes)
 		(uuid "032ba0bd-144e-4b3f-aa7a-6df47cf99723")
 		(property "Reference" "R7"
-			(at 139.7 99.06 90)
+			(at 123.19 86.36 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -4007,7 +3987,7 @@
 			)
 		)
 		(property "Value" "1"
-			(at 139.7 96.52 90)
+			(at 123.19 88.9 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -4015,7 +3995,7 @@
 			)
 		)
 		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
-			(at 139.7 90.932 90)
+			(at 123.19 94.488 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -4024,7 +4004,7 @@
 			)
 		)
 		(property "Datasheet" "~"
-			(at 139.7 92.71 0)
+			(at 123.19 92.71 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -4033,7 +4013,7 @@
 			)
 		)
 		(property "Description" "Resistor"
-			(at 139.7 92.71 0)
+			(at 123.19 92.71 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5672,7 +5652,7 @@
 	)
 	(symbol
 		(lib_id "Connector:TestPoint")
-		(at 143.51 87.63 0)
+		(at 127 87.63 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom no)
@@ -5681,7 +5661,7 @@
 		(fields_autoplaced yes)
 		(uuid "68e82fb1-d2c5-4dad-a339-49ed2891af51")
 		(property "Reference" "TP9"
-			(at 146.05 83.0579 0)
+			(at 129.54 83.0579 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5690,7 +5670,7 @@
 			)
 		)
 		(property "Value" "TestPoint"
-			(at 146.05 85.5979 0)
+			(at 129.54 85.5979 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5699,7 +5679,7 @@
 			)
 		)
 		(property "Footprint" "TestPoint:TestPoint_Pad_D1.0mm"
-			(at 148.59 87.63 0)
+			(at 132.08 87.63 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5708,7 +5688,7 @@
 			)
 		)
 		(property "Datasheet" "~"
-			(at 148.59 87.63 0)
+			(at 132.08 87.63 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5717,7 +5697,7 @@
 			)
 		)
 		(property "Description" "test point"
-			(at 143.51 87.63 0)
+			(at 127 87.63 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -6076,7 +6056,7 @@
 	)
 	(symbol
 		(lib_id "Device:R")
-		(at 139.7 87.63 90)
+		(at 123.19 87.63 90)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -6085,7 +6065,7 @@
 		(fields_autoplaced yes)
 		(uuid "7c682d67-9a17-44be-bd2b-48f7e2c8f81a")
 		(property "Reference" "R4"
-			(at 139.7 81.28 90)
+			(at 123.19 81.28 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -6093,7 +6073,7 @@
 			)
 		)
 		(property "Value" "2.2"
-			(at 139.7 83.82 90)
+			(at 123.19 83.82 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -6101,7 +6081,7 @@
 			)
 		)
 		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
-			(at 139.7 89.408 90)
+			(at 123.19 89.408 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -6110,7 +6090,7 @@
 			)
 		)
 		(property "Datasheet" "~"
-			(at 139.7 87.63 0)
+			(at 123.19 87.63 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -6119,7 +6099,7 @@
 			)
 		)
 		(property "Description" "Resistor"
-			(at 139.7 87.63 0)
+			(at 123.19 87.63 0)
 			(effects
 				(font
 					(size 1.27 1.27)
