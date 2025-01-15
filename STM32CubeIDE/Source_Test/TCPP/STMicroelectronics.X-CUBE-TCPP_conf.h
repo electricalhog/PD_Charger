@@ -6,7 +6,7 @@
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2024 STMicroelectronics.
+  * Copyright (c) 2025 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -27,7 +27,7 @@
 
 /**
 	MiddleWare name : STMicroelectronics.X-CUBE-TCPP.4.1.0
-	MiddleWare fileName : ./STMicroelectronics.X-CUBE-TCPP_conf.h
+	MiddleWare fileName : STMicroelectronics.X-CUBE-TCPP_conf.h
 	MiddleWare version :
 */
 /*---------- USBPD_PWR_VSENSE_RA  -----------*/
