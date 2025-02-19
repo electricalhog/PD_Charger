@@ -73,6 +73,28 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define Input_en_Pin GPIO_PIN_6
+#define Input_en_GPIO_Port GPIOC
+#define Output_en_Pin GPIO_PIN_7
+#define Output_en_GPIO_Port GPIOC
+#define Output_dischg_Pin GPIO_PIN_8
+#define Output_dischg_GPIO_Port GPIOC
+#define VSgood_Pin GPIO_PIN_9
+#define VSgood_GPIO_Port GPIOC
+#define FiveVgood_Pin GPIO_PIN_8
+#define FiveVgood_GPIO_Port GPIOA
+#define ThreeVgood_Pin GPIO_PIN_9
+#define ThreeVgood_GPIO_Port GPIOA
+#define PH_2_P_Pin GPIO_PIN_14
+#define PH_2_P_GPIO_Port GPIOA
+#define PH_1_P_Pin GPIO_PIN_15
+#define PH_1_P_GPIO_Port GPIOA
+#define PH_1_N_Pin GPIO_PIN_10
+#define PH_1_N_GPIO_Port GPIOC
+#define PH_2_N_Pin GPIO_PIN_11
+#define PH_2_N_GPIO_Port GPIOC
+#define ISgood_Pin GPIO_PIN_2
+#define ISgood_GPIO_Port GPIOD
 
 /* USER CODE BEGIN Private defines */
 

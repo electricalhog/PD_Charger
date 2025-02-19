@@ -1,0 +1,132 @@
+Configuration	Source_Test
+STM32CubeMX 	6.12.0
+Date	01/16/2025
+MCU	STM32G431RBTx
+
+
+
+PERIPHERALS	MODES	FUNCTIONS	PINS
+ADC1	IN1 Single-ended	ADC1_IN1	PA0
+ADC2	IN3 Single-ended	ADC2_IN3	PA6
+ADC2	IN4 Single-ended	ADC2_IN4	PA7
+ADC2	IN5 Single-ended	ADC2_IN5	PC4
+ADC2	IN13 Single-ended	ADC2_IN13	PA5
+ADC2	IN17 Single-ended	ADC2_IN17	PA4
+I2C1	I2C	I2C1_SCL	PB8-BOOT0
+I2C1	I2C	I2C1_SDA	PB9
+LPUART1	Asynchronous	LPUART1_RX	PA3
+LPUART1	Asynchronous	LPUART1_TX	PA2
+SYS	SysTick	SYS_VS_Systick	VP_SYS_VS_Systick
+SYS	Dead Battery Signals disabled	SYS_VS_DBSignals	VP_SYS_VS_DBSignals
+TIM8	Internal Clock	TIM8_VS_ClockSourceINT	VP_TIM8_VS_ClockSourceINT
+TIM8	PWM Generation CH1 CH1N	TIM8_CH1	PA15
+TIM8	PWM Generation CH1 CH1N	TIM8_CH1N	PC10
+TIM8	PWM Generation CH2 CH2N	TIM8_CH2	PA14
+TIM8	PWM Generation CH2 CH2N	TIM8_CH2N	PC11
+TIM8	Activate Break Input	TIM8_BKIN	PD2
+TIM8	Activate Break Input 2	TIM8_BKIN2	PC9
+UCPD1	Source	UCPD1_CC1	PB6
+UCPD1	Source	UCPD1_CC2	PB4
+
+
+
+Pin Nb	PINs	FUNCTIONs	LABELs
+12	PA0	ADC1_IN1	
+14	PA2	LPUART1_TX	
+17	PA3	LPUART1_RX	
+18	PA4	ADC2_IN17	VSmon
+19	PA5	ADC2_IN13	VDmon
+20	PA6	ADC2_IN3	ISmon
+21	PA7	ADC2_IN4	ILmon
+22	PC4	ADC2_IN5	IDmon
+38	PC6	GPIO_Output	Input_en
+39	PC7	GPIO_Output	Output_en
+40	PC8	GPIO_Output	Output_dischg
+41	PC9	TIM8_BKIN2	VSgood
+42	PA8	GPIO_Input	FiveVgood
+43	PA9	GPIO_Input	ThreeVgood
+50	PA14	TIM8_CH2	PH_2_P
+51	PA15	TIM8_CH1	PH_1_P
+52	PC10	TIM8_CH1N	PH_1_N
+53	PC11	TIM8_CH2N	PH_2_N
+55	PD2	TIM8_BKIN	ISgood
+57	PB4	UCPD1_CC2	
+59	PB6	UCPD1_CC1	
+61	PB8-BOOT0	I2C1_SCL	
+62	PB9	I2C1_SDA	
+PERIPHERALS	MODES	FUNCTIONS	PINS
+ADC1	IN1 Single-ended	ADC1_IN1	PA0
+ADC2	IN3 Single-ended	ADC2_IN3	PA6
+ADC2	IN4 Single-ended	ADC2_IN4	PA7
+ADC2	IN5 Single-ended	ADC2_IN5	PC4
+ADC2	IN13 Single-ended	ADC2_IN13	PA5
+ADC2	IN17 Single-ended	ADC2_IN17	PA4
+I2C1	I2C	I2C1_SCL	PB8-BOOT0
+I2C1	I2C	I2C1_SDA	PB9
+LPUART1	Asynchronous	LPUART1_RX	PA3
+LPUART1	Asynchronous	LPUART1_TX	PA2
+SYS	SysTick	SYS_VS_Systick	VP_SYS_VS_Systick
+SYS	Dead Battery Signals disabled	SYS_VS_DBSignals	VP_SYS_VS_DBSignals
+TIM8	Internal Clock	TIM8_VS_ClockSourceINT	VP_TIM8_VS_ClockSourceINT
+TIM8	PWM Generation CH1 CH1N	TIM8_CH1	PA15
+TIM8	PWM Generation CH1 CH1N	TIM8_CH1N	PC10
+TIM8	PWM Generation CH2 CH2N	TIM8_CH2	PA14
+TIM8	PWM Generation CH2 CH2N	TIM8_CH2N	PC11
+TIM8	Activate Break Input	TIM8_BKIN	PD2
+TIM8	Activate Break Input 2	TIM8_BKIN2	PC9
+UCPD1	Source	UCPD1_CC1	PB6
+UCPD1	Source	UCPD1_CC2	PB4
+
+
+
+Pin Nb	PINs	FUNCTIONs	LABELs
+12	PA0	ADC1_IN1	
+14	PA2	LPUART1_TX	
+17	PA3	LPUART1_RX	
+18	PA4	ADC2_IN17	VSmon
+19	PA5	ADC2_IN13	VDmon
+20	PA6	ADC2_IN3	ISmon
+21	PA7	ADC2_IN4	ILmon
+22	PC4	ADC2_IN5	IDmon
+38	PC6	GPIO_Output	Input_en
+39	PC7	GPIO_Output	Output_en
+40	PC8	GPIO_Output	Output_dischg
+41	PC9	TIM8_BKIN2	VSgood
+42	PA8	GPIO_Input	FiveVgood
+43	PA9	GPIO_Input	ThreeVgood
+50	PA14	TIM8_CH2	PH_2_P
+51	PA15	TIM8_CH1	PH_1_P
+52	PC10	TIM8_CH1N	PH_1_N
+53	PC11	TIM8_CH2N	PH_2_N
+55	PD2	TIM8_BKIN	ISgood
+57	PB4	UCPD1_CC2	
+59	PB6	UCPD1_CC1	
+61	PB8-BOOT0	I2C1_SCL	
+62	PB9	I2C1_SDA	
+
+
+
+SOFTWARE PROJECT
+
+Project Settings : 
+Project Name : Source_Test
+Project Folder : C:\Users\elect\Documents\GitHub\PD_Charger\STM32CubeIDE\Source_Test
+Toolchain / IDE : STM32CubeIDE
+Firmware Package Name and Version : STM32Cube FW_G4 V1.6.1
+
+
+Code Generation Settings : 
+STM32Cube MCU packages and embedded software packs : Copy only the necessary library files
+Generate peripheral initialization as a pair of '.c/.h' files per peripheral : No
+Backup previously generated files when re-generating : No
+Delete previously generated files when not re-generated : Yes
+Set all free pins as analog (to optimize the power consumption) : No
+
+
+Toolchains Settings : 
+Compiler Optimizations : 
+
+
+
+
+
