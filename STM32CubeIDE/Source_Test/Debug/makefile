@@ -74,8 +74,8 @@ all: main-build
 main-build: Source_Test.elf secondary-outputs
 
 # Tool invocations
-Source_Test.elf Source_Test.map: $(OBJS) $(USER_OBJS) C:\Users\elect\Documents\GitHub\PD_Charger\STM32CubeIDE\Source_Test\STM32G431RBTX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "Source_Test.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"C:\Users\elect\Documents\GitHub\PD_Charger\STM32CubeIDE\Source_Test\STM32G431RBTX_FLASH.ld" --specs=nosys.specs -Wl,-Map="Source_Test.map" -Wl,--gc-sections -static -L../Middlewares/ST/STM32_USBPD_Library/Core/lib --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+Source_Test.elf Source_Test.map: $(OBJS) $(USER_OBJS) /home/daniel/GitHub/PD_Charger/STM32CubeIDE/Source_Test/STM32G431RBTX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "Source_Test.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"/home/daniel/GitHub/PD_Charger/STM32CubeIDE/Source_Test/STM32G431RBTX_FLASH.ld" --specs=nosys.specs -Wl,-Map="Source_Test.map" -Wl,--gc-sections -static -L../Middlewares/ST/STM32_USBPD_Library/Core/lib --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 
