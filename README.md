@@ -3,8 +3,8 @@ This prototype board is being used as a hardware test platform for the fully int
 ## Testing
 So far the board has been proven to work with ST's UCPDMon software as a Power Delivery Source and also control the 4-switch buck-boost controller.
 
-![Efficiency curve](Media/Screenshot from 2025-02-20 11-48-38.png)
+![Efficiency curve](Media/excel_screenshot.png)
 
-![Top of board}(Media/IMG_0329.JPEG)
+![Top of board](Media/IMG_0329.JPEG)
 
-![Bottom of board][Media/IMG_0330.JPEG)
+![Bottom of board](Media/IMG_0330.JPEG)
