@@ -49,15 +49,15 @@
 	(constraint hole_size (min 0.2mm) (max 6.3mm)))
 
 (rule "Minimum Via Hole Size"
-	(constraint hole_size (min 0.2mm))
+	(constraint hole_size (min 0.15mm))
 	(condition "A.Type == 'via'"))
 
 (rule "Minimum Via Diameter"
-	(constraint via_diameter (min 0.45mm))
+	(constraint via_diameter (min 0.25mm))
 	(condition "A.Type == 'via'"))
 
 (rule "PTH Hole Size"
-	(constraint hole_size (min 0.2mm) (max 6.35mm))
+	(constraint hole_size (min 0.15mm) (max 6.35mm))
 	(condition "A.isPlated()"))
 
 (rule "Minimum Non-plated Hole Size"
