@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": "../../stm32f334-buck-boost/firmware"
+		},
+		{
+			"path": ".."
+		}
+	],
+	"settings": {}
+}

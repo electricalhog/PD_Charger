@@ -21,6 +21,7 @@
 #include "cmsis_os.h"
 #include "app_tcpp.h"
 #include "usbpd.h"
+#include "state_machine.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -626,10 +627,13 @@ void StartDefaultTask(void const * argument)
 
   HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_2);
+
+  StateMachine_Init();
   
   /* Infinite loop */
   for(;;)
   {
+    StateMachine_Task();
     osDelay(1);
   }
   /* USER CODE END 5 */
