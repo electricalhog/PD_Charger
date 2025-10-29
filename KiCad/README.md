@@ -4,4 +4,4 @@
 ![https://github.com/electricalhog/PD_Charger/blob/main/KiCad/PD%20Charger%20Board.png](https://github.com/electricalhog/PD_Charger/blob/main/KiCad/PD%20Charger%20Board.png)
 *Board rendering*
 
-[Digi-Key Cart](https://www.digikey.com/short/v39zppv0)
+[Digi-Key Cart](https://www.digikey.com/en/mylists/list/EXQTTTFIJZ)
