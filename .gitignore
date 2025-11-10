@@ -1,0 +1,9 @@
+# Ignore STM32CubeIDE build output directories
+/STM32CubeIDE/**/Debug/
+/STM32CubeIDE/**/Release/
+/STM32CubeIDE/**/build/
+
+# Optional: common binary outputs (kept under build dirs above)
+#*.elf
+#*.hex
+#*.bin

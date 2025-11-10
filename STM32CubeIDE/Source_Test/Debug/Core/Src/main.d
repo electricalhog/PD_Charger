@@ -76,7 +76,8 @@ Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
  ../Middlewares/ST/STM32_USBPD_Library/Devices/STM32G4XX/inc/usbpd_hw_if.h \
  ../USBPD/usbpd_devices_conf.h \
  ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_ll_tim.h \
- ../USBPD/usbpd_pwr_user.h ../USBPD/usbpd_pwr_if.h
+ ../USBPD/usbpd_pwr_user.h ../USBPD/usbpd_pwr_if.h \
+ ../Core/Inc/state_machine.h
 ../Core/Inc/main.h:
 ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal.h:
 ../Core/Inc/stm32g4xx_hal_conf.h:
@@ -162,3 +163,4 @@ Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
 ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_ll_tim.h:
 ../USBPD/usbpd_pwr_user.h:
 ../USBPD/usbpd_pwr_if.h:
+../Core/Inc/state_machine.h:
