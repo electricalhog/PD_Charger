@@ -4,38 +4,70 @@
 #ifndef POWER_STAGE_H
 #define POWER_STAGE_H
 
+#include "main.h"
 #include <stdint.h>
 #include <stdbool.h>
+
+// Switching frequency used to size HRTIM period (main.c uses this)
+#ifndef SWITCHING_FREQUENCY_HZ
+#define SWITCHING_FREQUENCY_HZ 200000u // 200 kHz default
+#endif
+
+// ADC channel mapping (adjust to your board)
+#define PS_ADCx                 ADC1
+#define PS_ADC_CLK_ENABLE()     __HAL_RCC_ADC12_CLK_ENABLE()
+
+// TODO: set these to the actual ADC channels
+#define PS_CH_VIN               ADC_CHANNEL_1
+#define PS_CH_VOUT              ADC_CHANNEL_2
+#define PS_CH_IIN_AVG           ADC_CHANNEL_3
+#define PS_CH_IOUT_AVG          ADC_CHANNEL_4
+#define PS_CH_IL_INSTANT        ADC_CHANNEL_5   // inductor current (fast)
+
+// Scaling (adjust to your dividers/shunts)
+typedef struct {
+  float vin_gain;    // V/LSB
+  float vout_gain;   // V/LSB
+  float iin_gain;    // A/LSB
+  float iout_gain;   // A/LSB
+  float il_gain;     // A/LSB (instantaneous)
+  uint16_t adc_fullscale; // e.g., 4095 for 12-bit
+} PS_Scaling;
+
+typedef struct {
+  float vin, vout, iin_avg, iout_avg, il_inst;
+} PS_Meas;
+
+typedef struct {
+  float vout_ref_V;     // output voltage target
+  float iout_ref_A;     // output current limit (CC fallback)
+  float il_peak_A_min;  // minimum allowed IL peak
+  float il_peak_A_max;  // maximum allowed IL peak
+  float slope_A_per_s;  // digital slope compensation (approx)
+  // PI gains for voltage loop
+  float kp_v, ki_v;
+} PS_ControlCfg;
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef struct {
-  uint32_t vbus_target_mv;   // requested VBUS in mV
-  uint32_t iout_limit_ma;    // requested current limit in mA
-  bool     enabled;          // converter enabled state
-} PS_Config_t;
-
-// Initialize GPIO/ADC/HRTIM glue needed by the power stage. Does not enable power.
 void PS_Init(void);
+void PS_SetScaling(const PS_Scaling* s);
+void PS_SetControlCfg(const PS_ControlCfg* c);
 
-// Enable/Disable the power stage output path (Type-C power switch + PWM).
-void PS_Enable(bool en);
+// Start closed-loop current-mode test
+void PS_StartClosedLoop(float vout_ref_V, float iout_ref_A);
 
-// Update targets (voltage/current). No ramp implemented yet.
-void PS_SetTargets_mV_mA(uint32_t vbus_mv, uint32_t iout_ma);
+// Optional: manual PWM test already present
+void PS_HRTIM_TestStart(uint16_t ta_cmp, uint16_t tb_cmp, uint16_t period);
 
-// Read instantaneous measurements (VBUS in mV, Iout in mA). Returns false on failure.
-bool PS_GetMeasurements_mV_mA(uint16_t* vbus_mv, int16_t* iout_ma);
+// Latest measurements (thread-safe snapshot accessor)
+bool PS_GetMeas(PS_Meas* out);
 
-// Query whether output is considered ON (based on enable and measured VBUS > threshold)
-bool PS_IsOn(void);
-
-// Test helpers for HRTIM switching waveforms (no control loop)
-// duty in permille (0..1000), deadtime in timer ticks
-void PS_HRTIM_TestStart(uint16_t dutyA_permille, uint16_t dutyB_permille, uint16_t deadtime_ticks);
-void PS_HRTIM_TestStop(void);
+// To be called from IRQs (wired internally, exposed for clarity)
+void PS_OnHrtimPeriod(void);       // per-cycle update
+void PS_OnIlAnalogWatchdog(void);  // cycle-by-cycle trip
 
 #ifdef __cplusplus
 }

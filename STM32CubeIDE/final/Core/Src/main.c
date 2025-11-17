@@ -384,7 +384,15 @@ static void MX_HRTIM1_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN HRTIM1_Init 2 */
+  uint32_t sysclk = HAL_RCC_GetSysClockFreq(); // HRTIM kernel follows SYSCLK
+  uint16_t period_ticks = (uint16_t)((sysclk / SWITCHING_FREQUENCY_HZ) * 32u);
 
+  pTimeBaseCfg.Period = period_ticks - 1;
+
+  // Update all time-bases that drive outputs, not just MASTER
+  if (HAL_HRTIM_TimeBaseConfig(&hhrtim1, HRTIM_TIMERINDEX_MASTER, &pTimeBaseCfg) != HAL_OK) { Error_Handler(); }
+  if (HAL_HRTIM_TimeBaseConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A, &pTimeBaseCfg) != HAL_OK) { Error_Handler(); }
+  if (HAL_HRTIM_TimeBaseConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_B, &pTimeBaseCfg) != HAL_OK) { Error_Handler(); }
   /* USER CODE END HRTIM1_Init 2 */
   HAL_HRTIM_MspPostInit(&hhrtim1);
 
