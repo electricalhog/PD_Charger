@@ -34,7 +34,7 @@
 /* USER CODE END Includes */
 
 /* Define   ------------------------------------------------------------------*/
-#define PORT0_NB_SOURCEPDO         4U   /* Number of Source PDOs (applicable for port 0)   */
+#define PORT0_NB_SOURCEPDO         1U   /* Number of Source PDOs (applicable for port 0)   */
 #define PORT0_NB_SINKPDO           0U   /* Number of Sink PDOs (applicable for port 0)     */
 #define PORT1_NB_SOURCEPDO         0U   /* Number of Source PDOs (applicable for port 1)   */
 #define PORT1_NB_SINKPDO           0U   /* Number of Sink PDOs (applicable for port 1)     */
@@ -88,47 +88,42 @@ uint8_t USBPD_NbPDO[4] = {(PORT0_NB_SINKPDO),
 /* Definition of Source PDO for Port 0 */
 uint32_t PORT0_PDO_ListSRC[USBPD_MAX_NB_PDO] =
 {
-  /* PDO 1: 5V @ 3A */
+  /* PDO 1 */
   (
-    USBPD_PDO_TYPE_FIXED |
-    USBPD_PDO_SRC_FIXED_SET_VOLTAGE(5000U) |
-    USBPD_PDO_SRC_FIXED_SET_MAX_CURRENT(3000U) |
-    USBPD_PDO_SRC_FIXED_PEAKCURRENT_EQUAL |
-    USBPD_PDO_SRC_FIXED_UNCHUNK_NOT_SUPPORTED |
-    USBPD_PDO_SRC_FIXED_DRD_SUPPORTED |
-    USBPD_PDO_SRC_FIXED_USBCOMM_NOT_SUPPORTED |
-    USBPD_PDO_SRC_FIXED_EXT_POWER_NOT_AVAILABLE |
-    USBPD_PDO_SRC_FIXED_USBSUSPEND_NOT_SUPPORTED |
-    USBPD_PDO_SRC_FIXED_DRP_NOT_SUPPORTED
+    USBPD_PDO_TYPE_FIXED                 | /* Fixed supply PDO            */
+
+    USBPD_PDO_SRC_FIXED_SET_VOLTAGE(5000U)         | /* Voltage in mV               */
+    USBPD_PDO_SRC_FIXED_SET_MAX_CURRENT(100U)     | /* Max current in mA           */
+    USBPD_PDO_SRC_FIXED_PEAKCURRENT_EQUAL          | /* Peak Current info           */
+
+    /* Common definitions applicable to all PDOs, defined only in PDO 1 */
+    USBPD_PDO_SRC_FIXED_UNCHUNK_NOT_SUPPORTED      | /* Unchunked Extended Messages */
+    USBPD_PDO_SRC_FIXED_DRD_SUPPORTED          | /* Dual-Role Data              */
+    USBPD_PDO_SRC_FIXED_USBCOMM_NOT_SUPPORTED      | /* USB Communications          */
+    USBPD_PDO_SRC_FIXED_EXT_POWER_NOT_AVAILABLE    | /* External Power              */
+    USBPD_PDO_SRC_FIXED_USBSUSPEND_NOT_SUPPORTED   | /* USB Suspend Supported		 */
+    USBPD_PDO_SRC_FIXED_DRP_NOT_SUPPORTED            /* Dual-Role Power             */
   ),
 
-  /* PDO 2: 9V @ 3A */
+  /* PDO 2 */
   (
-    USBPD_PDO_TYPE_FIXED |
-    USBPD_PDO_SRC_FIXED_SET_VOLTAGE(9000U) |
-    USBPD_PDO_SRC_FIXED_SET_MAX_CURRENT(3000U) |
-    USBPD_PDO_SRC_FIXED_PEAKCURRENT_EQUAL
+    USBPD_PDO_TYPE_FIXED                        | /* Fixed supply                */
+
+    USBPD_PDO_SRC_FIXED_SET_VOLTAGE(5000U)         | /* Voltage in mV               */
+    USBPD_PDO_SRC_FIXED_SET_MAX_CURRENT(1500U)     | /* Max current in mA           */
+    USBPD_PDO_SRC_FIXED_PEAKCURRENT_EQUAL            /* Peak Current info           */
   ),
 
-  /* PDO 3: 15V @ 3A */
-  (
-    USBPD_PDO_TYPE_FIXED |
-    USBPD_PDO_SRC_FIXED_SET_VOLTAGE(15000U) |
-    USBPD_PDO_SRC_FIXED_SET_MAX_CURRENT(3000U) |
-    USBPD_PDO_SRC_FIXED_PEAKCURRENT_EQUAL
-  ),
+  /* PDO 3 */ (0x00000000U),
 
-  /* PDO 4: 20V @ 5A (E-marker cable required) */
-  (
-    USBPD_PDO_TYPE_FIXED |
-    USBPD_PDO_SRC_FIXED_SET_VOLTAGE(20000U) |
-    USBPD_PDO_SRC_FIXED_SET_MAX_CURRENT(5000U) |
-    USBPD_PDO_SRC_FIXED_PEAKCURRENT_EQUAL
-  ),
+  /* PDO 4 */ (0x00000000U),
 
   /* PDO 5 */ (0x00000000U),
+
   /* PDO 6 */ (0x00000000U),
+
   /* PDO 7 */ (0x00000000U),
+
 };
 
 /* Definition of Sink PDO for Port 0 */

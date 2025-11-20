@@ -25,8 +25,6 @@
 #include "usbpd.h"
 #include "tracer_emb.h"
 #include "gui_api.h"
-#include "src1m1_conf.h"
-#include "app_tcpp.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 /* USER CODE END Includes */
@@ -229,8 +227,6 @@ void DMA1_Channel4_IRQHandler(void)
 
   /* USER CODE END DMA1_Channel4_IRQn 1 */
 }
-
-/* EXTI9_5_IRQHandler is provided by the USBPD/TCPP middleware. Removed here to avoid duplication. */
 
 /**
   * @brief This function handles UCPD1 interrupt / UCPD1 wake-up interrupt through EXTI line 43.

@@ -27,7 +27,7 @@
 
 /**
 	MiddleWare name : STMicroelectronics.X-CUBE-TCPP.4.2.0
-	MiddleWare fileName : ./STMicroelectronics.X-CUBE-TCPP_conf.h
+	MiddleWare fileName : STMicroelectronics.X-CUBE-TCPP_conf.h
 	MiddleWare version :
 */
 /*---------- USBPD_PWR_VSENSE_RA  -----------*/

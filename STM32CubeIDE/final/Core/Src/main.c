@@ -44,6 +44,10 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+COMP_HandleTypeDef hcomp1;
+COMP_HandleTypeDef hcomp4;
+
+DAC_HandleTypeDef hdac3;
 
 HRTIM_HandleTypeDef hhrtim1;
 
@@ -62,6 +66,9 @@ static void MX_DMA_Init(void);
 static void MX_HRTIM1_Init(void);
 static void MX_UCPD1_Init(void);
 static void MX_LPUART1_UART_Init(void);
+static void MX_COMP1_Init(void);
+static void MX_COMP4_Init(void);
+static void MX_DAC3_Init(void);
 void StartDefaultTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
@@ -106,6 +113,9 @@ int main(void)
   MX_HRTIM1_Init();
   MX_UCPD1_Init();
   MX_LPUART1_UART_Init();
+  MX_COMP1_Init();
+  MX_COMP4_Init();
+  MX_DAC3_Init();
   MX_TCPP_Init();
   /* USER CODE BEGIN 2 */
   // Initialize buck-boost power stage glue (ADC, GPIO)
@@ -205,6 +215,124 @@ void SystemClock_Config(void)
 }
 
 /**
+  * @brief COMP1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_COMP1_Init(void)
+{
+
+  /* USER CODE BEGIN COMP1_Init 0 */
+
+  /* USER CODE END COMP1_Init 0 */
+
+  /* USER CODE BEGIN COMP1_Init 1 */
+
+  /* USER CODE END COMP1_Init 1 */
+  hcomp1.Instance = COMP1;
+  hcomp1.Init.InputPlus = COMP_INPUT_PLUS_IO1;
+  hcomp1.Init.InputMinus = COMP_INPUT_MINUS_DAC3_CH1;
+  hcomp1.Init.OutputPol = COMP_OUTPUTPOL_NONINVERTED;
+  hcomp1.Init.Hysteresis = COMP_HYSTERESIS_NONE;
+  hcomp1.Init.BlankingSrce = COMP_BLANKINGSRC_NONE;
+  hcomp1.Init.TriggerMode = COMP_TRIGGERMODE_NONE;
+  if (HAL_COMP_Init(&hcomp1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN COMP1_Init 2 */
+
+  /* USER CODE END COMP1_Init 2 */
+
+}
+
+/**
+  * @brief COMP4 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_COMP4_Init(void)
+{
+
+  /* USER CODE BEGIN COMP4_Init 0 */
+
+  /* USER CODE END COMP4_Init 0 */
+
+  /* USER CODE BEGIN COMP4_Init 1 */
+
+  /* USER CODE END COMP4_Init 1 */
+  hcomp4.Instance = COMP4;
+  hcomp4.Init.InputPlus = COMP_INPUT_PLUS_IO1;
+  hcomp4.Init.InputMinus = COMP_INPUT_MINUS_DAC3_CH2;
+  hcomp4.Init.OutputPol = COMP_OUTPUTPOL_NONINVERTED;
+  hcomp4.Init.Hysteresis = COMP_HYSTERESIS_NONE;
+  hcomp4.Init.BlankingSrce = COMP_BLANKINGSRC_NONE;
+  hcomp4.Init.TriggerMode = COMP_TRIGGERMODE_EVENT_RISING;
+  if (HAL_COMP_Init(&hcomp4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN COMP4_Init 2 */
+
+  /* USER CODE END COMP4_Init 2 */
+
+}
+
+/**
+  * @brief DAC3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_DAC3_Init(void)
+{
+
+  /* USER CODE BEGIN DAC3_Init 0 */
+
+  /* USER CODE END DAC3_Init 0 */
+
+  DAC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN DAC3_Init 1 */
+
+  /* USER CODE END DAC3_Init 1 */
+
+  /** DAC Initialization
+  */
+  hdac3.Instance = DAC3;
+  if (HAL_DAC_Init(&hdac3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** DAC channel OUT1 config
+  */
+  sConfig.DAC_HighFrequency = DAC_HIGH_FREQUENCY_INTERFACE_MODE_AUTOMATIC;
+  sConfig.DAC_DMADoubleDataMode = DISABLE;
+  sConfig.DAC_SignedFormat = DISABLE;
+  sConfig.DAC_SampleAndHold = DAC_SAMPLEANDHOLD_DISABLE;
+  sConfig.DAC_Trigger = DAC_TRIGGER_NONE;
+  sConfig.DAC_Trigger2 = DAC_TRIGGER_NONE;
+  sConfig.DAC_OutputBuffer = DAC_OUTPUTBUFFER_DISABLE;
+  sConfig.DAC_ConnectOnChipPeripheral = DAC_CHIPCONNECT_INTERNAL;
+  sConfig.DAC_UserTrimming = DAC_TRIMMING_FACTORY;
+  if (HAL_DAC_ConfigChannel(&hdac3, &sConfig, DAC_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** DAC channel OUT2 config
+  */
+  if (HAL_DAC_ConfigChannel(&hdac3, &sConfig, DAC_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN DAC3_Init 2 */
+
+  /* USER CODE END DAC3_Init 2 */
+
+}
+
+/**
   * @brief HRTIM1 Initialization Function
   * @param None
   * @retval None
@@ -216,6 +344,7 @@ static void MX_HRTIM1_Init(void)
 
   /* USER CODE END HRTIM1_Init 0 */
 
+  HRTIM_EventCfgTypeDef pEventCfg = {0};
   HRTIM_FaultCfgTypeDef pFaultCfg = {0};
   HRTIM_FaultBlankingCfgTypeDef pFaultBlkCfg = {0};
   HRTIM_TimeBaseCfgTypeDef pTimeBaseCfg = {0};
@@ -239,6 +368,24 @@ static void MX_HRTIM1_Init(void)
     Error_Handler();
   }
   if (HAL_HRTIM_PollForDLLCalibration(&hhrtim1, 10) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_HRTIM_EventPrescalerConfig(&hhrtim1, HRTIM_EVENTPRESCALER_DIV1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  pEventCfg.Source = HRTIM_EEV2SRC_COMP4_OUT;
+  pEventCfg.Polarity = HRTIM_EVENTPOLARITY_HIGH;
+  pEventCfg.Sensitivity = HRTIM_EVENTSENSITIVITY_RISINGEDGE;
+  pEventCfg.FastMode = HRTIM_EVENTFASTMODE_DISABLE;
+  if (HAL_HRTIM_EventConfig(&hhrtim1, HRTIM_EVENT_2, &pEventCfg) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  pEventCfg.Source = HRTIM_EEV4SRC_COMP1_OUT;
+  pEventCfg.Sensitivity = HRTIM_EVENTSENSITIVITY_LEVEL;
+  if (HAL_HRTIM_EventConfig(&hhrtim1, HRTIM_EVENT_4, &pEventCfg) != HAL_OK)
   {
     Error_Handler();
   }
@@ -541,7 +688,7 @@ static void MX_DMA_Init(void)
   NVIC_SetPriority(DMA1_Channel2_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(),3, 0));
   NVIC_EnableIRQ(DMA1_Channel2_IRQn);
   /* DMA1_Channel3_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, 3, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel3_IRQn);
   /* DMA1_Channel4_IRQn interrupt configuration */
   NVIC_SetPriority(DMA1_Channel4_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(),3, 0));
