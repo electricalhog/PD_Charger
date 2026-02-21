@@ -1,0 +1,9 @@
+{
+    "makefile.launchConfigurations": [
+        {
+            "cwd": "/home/daniel/GitHub/PD_Charger/STM32CubeIDE/final/build",
+            "binaryPath": "/home/daniel/GitHub/PD_Charger/STM32CubeIDE/final/build/final.elf",
+            "binaryArgs": []
+        }
+    ]
+}

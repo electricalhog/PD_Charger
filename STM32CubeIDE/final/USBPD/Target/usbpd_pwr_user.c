@@ -1,21 +1,21 @@
 /* USER CODE BEGIN Header */
 /**
-  ******************************************************************************
-  * @file    usbpd_pwr_user.c
-  * @author  MCD Application Team
-  * @brief   USBPD PWR user code
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2025 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
-  */
+ ******************************************************************************
+ * @file    usbpd_pwr_user.c
+ * @author  MCD Application Team
+ * @brief   USBPD PWR user code
+ ******************************************************************************
+ * @attention
+ *
+ * Copyright (c) 2025 STMicroelectronics.
+ * All rights reserved.
+ *
+ * This software is licensed under terms that can be found in the LICENSE file
+ * in the root directory of this software component.
+ * If no LICENSE file comes with this software, it is provided AS-IS.
+ *
+ ******************************************************************************
+ */
 /* USER CODE END Header */
 
 /* Includes ------------------------------------------------------------------*/
@@ -377,8 +377,8 @@ __weak int32_t BSP_USBPD_PWR_VBUSSetVoltage_Fixed(uint32_t Instance,
   }
   else
   {
-    // Store requested targets; actual regulation handled by control loop (TBD)
-    PS_SetTargets_mV_mA(VbusTargetInmv, OperatingCurrent);
+    // Start closed-loop regulation at the negotiated voltage/current
+    PS_StartClosedLoop((float)VbusTargetInmv / 1000.0f, (float)MaxOperatingCurrent / 1000.0f);
   }
   return ret;
   /* USER CODE END BSP_USBPD_PWR_VBUSSetVoltage_Fixed */
@@ -490,7 +490,8 @@ __weak int32_t BSP_USBPD_PWR_VBUSGetVoltage(uint32_t Instance, uint32_t *pVoltag
   }
   else
   {
-    uint16_t vbus_mv = 0; int16_t i_ma = 0;
+    uint16_t vbus_mv = 0;
+    int16_t i_ma = 0;
     PS_GetMeasurements_mV_mA(&vbus_mv, &i_ma);
     val = vbus_mv;
     ret = BSP_ERROR_NONE;
@@ -520,7 +521,8 @@ __weak int32_t BSP_USBPD_PWR_VBUSGetCurrent(uint32_t Instance, int32_t *pCurrent
   }
   else
   {
-    uint16_t vbus_mv = 0; int16_t i_ma = 0;
+    uint16_t vbus_mv = 0;
+    int16_t i_ma = 0;
     PS_GetMeasurements_mV_mA(&vbus_mv, &i_ma);
     *pCurrent = i_ma;
     ret = BSP_ERROR_NONE;

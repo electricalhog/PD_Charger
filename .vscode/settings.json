@@ -6,5 +6,10 @@
         "stm32g4xx_hal_gpio.h": "c",
         "stm32g4xx_hal_exti.h": "c"
     },
-    "cmake.sourceDirectory": "/home/daniel/GitHub/PD_Charger/STM32CubeIDE/final"
+    "cmake.sourceDirectory": "/home/daniel/GitHub/PD_Charger/STM32CubeIDE/final",
+    "makefile.makefilePath": "STM32CubeIDE/final/Makefile",
+    "C_Cpp.default.includePath": [
+        "jkhg"
+    ],
+    "C_Cpp.default.intelliSenseMode": "gcc-arm",
 }
