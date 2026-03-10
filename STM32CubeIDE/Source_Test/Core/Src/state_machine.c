@@ -1,128 +1,77 @@
 #include "state_machine.h"
+#include "power_stage.h"
 #include "main.h"
 
-// Define states
-typedef enum {
-    STATE_INIT,
-    STATE_MEASURE,
-    STATE_REGULATE,
-    STATE_CALCULATE_DUTY,
-    STATE_ERROR
-} State_t;
+/*
+ * Application-level state machine.
+ *
+ * The regulator's own state machine (INIT → IDLE → RUNNING → FAULT) is
+ * fully managed inside power_stage.c.  This module is a thin coordinator
+ * that initialises the power stage and monitors its status from the default
+ * FreeRTOS task context.
+ *
+ * Actual voltage/current regulation is interrupt-driven (TIM6 slope comp,
+ * HRTIM period, TIM7 PID) and requires no polling from this task.
+ */
 
 typedef enum {
-    NONE,
-    BUCK,
-    BOOST,
-    BUCKBOOST,
-    ERROR
-} RegulationType_t;
+    STATE_INIT    = 0,
+    STATE_IDLE    = 1,
+    STATE_RUNNING = 2,
+    STATE_ERROR   = 3,
+} AppState_t;
 
-static State_t currentState = STATE_INIT;
+static AppState_t s_app_state = STATE_INIT;
 
-static RegulationType_t regulationType = NONE;
-
-// Define voltage thresholds
-#define BUCK_VOLTAGE_THRESHOLD 1.33f
-#define BUCK_BUCKBOOST_VOLTAGE_THRESHOLD 1.18f
-#define BOOST_BUCKBOOST_VOLTAGE_THRESHOLD 0.85f
-#define BOOST_VOLTAGE_THRESHOLD 0.75f
-
-// Example variables
-static float outputVoltage = 0.0f;
-static float inputVoltage = 0.0f;
-static float targetVoltage = 5.0f;
-static float dutyCycle = 0.0f;
-
-void StateMachine_Init(void) {
-    currentState = STATE_INIT;
+void StateMachine_Init(void)
+{
+    s_app_state = STATE_INIT;
 }
 
-void StateMachine_Task(void) {
-    switch (currentState) {
+void StateMachine_Task(void)
+{
+    switch (s_app_state)
+    {
         case STATE_INIT:
-            // Initialization logic
-            currentState = STATE_MEASURE;
+            /* Initialise the power stage hardware (post-CubeMX MX_* calls). */
+            PS_Init();
+            s_app_state = STATE_IDLE;
             break;
 
-        case STATE_MEASURE:
-            // Perform measurement
-            outputVoltage = 3.3f; // Example
-            currentState = STATE_REGULATE;
-            break;
-
-        case STATE_REGULATE:
-            // Determine regulation type
-            switch (regulationType) { // TODO: make discrete fumction
-                case NONE:
-                    // No regulation needed
-                    break;
-                case BUCK:
-                    // Buck mode
-                    if ((inputVoltage / outputVoltage) < BOOST_VOLTAGE_THRESHOLD) {
-                        // Switch to boost mode
-                        regulationType = BOOST;
-                        // Buck mode config
-                    }
-                    else if ((inputVoltage / outputVoltage) < BUCK_BUCKBOOST_VOLTAGE_THRESHOLD) {
-                        // Switch to buck-boost mode
-                        regulationType = BUCKBOOST;
-                        // Buck-boost mode config
-                    }
-                    break;
-                case BOOST:
-                    // Boost mode
-                    if ((inputVoltage / outputVoltage) > BUCK_VOLTAGE_THRESHOLD) {
-                        // Switch to buck mode
-                        regulationType = BUCK;
-                        // Boost mode config
-                    }
-                    else if ((inputVoltage / outputVoltage) > BOOST_BUCKBOOST_VOLTAGE_THRESHOLD) {
-                        // Switch to buck-boost mode
-                        regulationType = BUCKBOOST;
-                        // Buck-boost mode config
-                    }
-                    break;
-                case BUCKBOOST:
-                    // Buck-boost mode
-                    if ((inputVoltage / outputVoltage) > BUCK_VOLTAGE_THRESHOLD) {
-                        // Switch to buck mode
-                        regulationType = BUCK;
-                        // Buck-boost mode config
-                    }
-                    else if ((inputVoltage / outputVoltage) < BOOST_VOLTAGE_THRESHOLD) {
-                        // Switch to boost mode
-                        regulationType = BOOST;
-                        // Buck-boost mode config
-                    }
-                    break;
-                case ERROR:
-                    // Handle error
-                    //TODO: what is an error?
-                    break;
+        case STATE_IDLE:
+            /* Power stage is IDLE — waiting for the USB PD stack to negotiate
+             * a contract and call regulator_set_target_voltage() + PS_Start().
+             * Poll for unexpected fault transitions. */
+            if (PS_GetState() == PS_STATE_FAULT) {
+                s_app_state = STATE_ERROR;
+            } else if (PS_GetState() == PS_STATE_RUNNING) {
+                s_app_state = STATE_RUNNING;
             }
-            currentState = STATE_CALCULATE_DUTY;
             break;
 
-        case STATE_CALCULATE_DUTY:
-            // Calculate duty cycle
-            // TODO: PID control logic
-            PID.calculate(outputVoltage, targetVoltage);
-            dutyCycle += PID.error;
-            if (dutyCycle > 100.0f) {
-                dutyCycle = 100.0f;
-            } else if (dutyCycle < 0.0f) {
-                dutyCycle = 0.0f;
+        case STATE_RUNNING:
+            /* Regulation is fully interrupt-driven; nothing to do here except
+             * monitor for fault conditions. */
+            if (PS_GetState() == PS_STATE_FAULT) {
+                s_app_state = STATE_ERROR;
+            } else if (PS_GetState() == PS_STATE_IDLE) {
+                /* Regulator stopped (e.g. 0 V setpoint from PD stack). */
+                s_app_state = STATE_IDLE;
             }
             break;
 
         case STATE_ERROR:
-            // Handle error
-            Error_Handler();
+            /* Fault is latched. The USB PD stack is expected to detect the
+             * fault via regulator_fault, disconnect VBUS, and call
+             * regulator_clear_fault() once the hardware fault clears.
+             * Transition back to IDLE when the power stage clears itself. */
+            if (PS_GetState() == PS_STATE_IDLE) {
+                s_app_state = STATE_IDLE;
+            }
             break;
 
         default:
-            currentState = STATE_ERROR;
+            s_app_state = STATE_ERROR;
             break;
     }
 }
