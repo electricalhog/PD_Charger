@@ -208,8 +208,11 @@ void PS_Init(void)
     HAL_NVIC_SetPriority(HRTIM1_FLT_IRQn,  NVIC_PRIO_HRTIM,      0u);
 
     /* 10. Enable HRTIM fault inputs FLT1 and FLT2. See NLSpec §10.1.
-     *     Fault outputs: all FETs off (INACTIVE level). */
-    HAL_HRTIM_EnableFaults(&hhrtim1, HRTIM_FAULT_1 | HRTIM_FAULT_2);
+     *     The fault polarity and output state (all FETs off = INACTIVE) must
+     *     be configured in the CubeMX project. This call arms the fault
+     *     detection and enables the fault interrupt. */
+    HAL_HRTIM_EnableFault(&hhrtim1, HRTIM_FAULT_1);
+    HAL_HRTIM_EnableFault(&hhrtim1, HRTIM_FAULT_2);
 
     /* 11. Verify no active fault before declaring IDLE. */
     uint32_t fault_status = HRTIM1->sCommonRegs.ISR;
@@ -302,16 +305,20 @@ void PS_Start(uint32_t voltage_mv, uint32_t current_ma)
     /* Enable HRTIM period (repetition) interrupt for DAC Y-intercept reload.
      * RepetitionCounter must be 0 in CubeMX config to fire every period. */
     if (s_mode == PS_MODE_BUCK) {
-        __HAL_HRTIM_ENABLE_IT(&hhrtim1, HRTIM_IT_REP_TIMER_A);
+        __HAL_HRTIM_TIMER_ENABLE_IT(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A,
+                                    HRTIM_TIM_IT_REP);
     } else {
-        __HAL_HRTIM_ENABLE_IT(&hhrtim1, HRTIM_IT_REP_TIMER_B);
+        __HAL_HRTIM_TIMER_ENABLE_IT(&hhrtim1, HRTIM_TIMERINDEX_TIMER_B,
+                                    HRTIM_TIM_IT_REP);
     }
 
     /* Enable HRTIM Compare 1 interrupt for backstop counting (NLSpec §10.4). */
     if (s_mode == PS_MODE_BUCK) {
-        __HAL_HRTIM_ENABLE_IT(&hhrtim1, HRTIM_IT_CMP1_TIMER_A);
+        __HAL_HRTIM_TIMER_ENABLE_IT(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A,
+                                    HRTIM_TIM_IT_CMP1);
     } else {
-        __HAL_HRTIM_ENABLE_IT(&hhrtim1, HRTIM_IT_CMP1_TIMER_B);
+        __HAL_HRTIM_TIMER_ENABLE_IT(&hhrtim1, HRTIM_TIMERINDEX_TIMER_B,
+                                    HRTIM_TIM_IT_CMP1);
     }
 
     /* Start PID timer (TIM7, priority 2). */
@@ -332,11 +339,11 @@ void PS_Stop(void)
     HAL_TIM_Base_Stop_IT(&htim7);
     HAL_TIM_Base_Stop_IT(&htim6);
 
-    /* Disable HRTIM interrupts. */
-    __HAL_HRTIM_DISABLE_IT(&hhrtim1, HRTIM_IT_REP_TIMER_A);
-    __HAL_HRTIM_DISABLE_IT(&hhrtim1, HRTIM_IT_REP_TIMER_B);
-    __HAL_HRTIM_DISABLE_IT(&hhrtim1, HRTIM_IT_CMP1_TIMER_A);
-    __HAL_HRTIM_DISABLE_IT(&hhrtim1, HRTIM_IT_CMP1_TIMER_B);
+    /* Disable HRTIM interrupts on both timers. */
+    __HAL_HRTIM_TIMER_DISABLE_IT(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A,
+                                  HRTIM_TIM_IT_REP | HRTIM_TIM_IT_CMP1);
+    __HAL_HRTIM_TIMER_DISABLE_IT(&hhrtim1, HRTIM_TIMERINDEX_TIMER_B,
+                                  HRTIM_TIM_IT_REP | HRTIM_TIM_IT_CMP1);
 
     /* Disable all HRTIM outputs. */
     ps_disable_all_outputs();
@@ -412,8 +419,8 @@ static void ps_configure_hrtim_buck(void)
     /* Timer A Output 2 — complementary low-side (Q2); polarity governed by
      * the dead-time insertion configured in CubeMX. No explicit Set/Reset
      * needed here — it follows the complement of TA1. */
-    ocfg.SetSource   = HRTIM_OUTPUTSET_NONE;
-    ocfg.ResetSource = HRTIM_OUTPUTRESET_NONE;
+    ocfg.SetSource   = 0U;
+    ocfg.ResetSource = 0U;
     HAL_HRTIM_WaveformOutputConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A,
                                    HRTIM_OUTPUT_TA2, &ocfg);
 }
@@ -443,8 +450,8 @@ static void ps_configure_hrtim_boost(void)
 
     /* Timer B Output 2 — complementary low-side (Q4). */
     ocfg.Polarity    = HRTIM_OUTPUTPOLARITY_LOW;
-    ocfg.SetSource   = HRTIM_OUTPUTSET_NONE;
-    ocfg.ResetSource = HRTIM_OUTPUTRESET_NONE;
+    ocfg.SetSource   = 0U;
+    ocfg.ResetSource = 0U;
     HAL_HRTIM_WaveformOutputConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_B,
                                    HRTIM_OUTPUT_TB2, &ocfg);
 }
@@ -470,8 +477,8 @@ static void ps_configure_static_leg_buck(void)
                                    HRTIM_OUTPUT_TB1, &ocfg);
 
     /* TB2 (low-side, Q4) is complementary and managed by dead-time insertion. */
-    ocfg.SetSource   = HRTIM_OUTPUTSET_NONE;
-    ocfg.ResetSource = HRTIM_OUTPUTRESET_NONE;
+    ocfg.SetSource   = 0U;
+    ocfg.ResetSource = 0U;
     HAL_HRTIM_WaveformOutputConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_B,
                                    HRTIM_OUTPUT_TB2, &ocfg);
 }
@@ -497,8 +504,8 @@ static void ps_configure_static_leg_boost(void)
                                    HRTIM_OUTPUT_TA1, &ocfg);
 
     /* TA2 (low-side, Q2) follows complement via dead-time insertion. */
-    ocfg.SetSource   = HRTIM_OUTPUTSET_NONE;
-    ocfg.ResetSource = HRTIM_OUTPUTRESET_NONE;
+    ocfg.SetSource   = 0U;
+    ocfg.ResetSource = 0U;
     HAL_HRTIM_WaveformOutputConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A,
                                    HRTIM_OUTPUT_TA2, &ocfg);
 }
@@ -550,10 +557,10 @@ static void ps_enter_fault(void)
     /* Disable timers and outputs immediately. */
     HAL_TIM_Base_Stop_IT(&htim7);
     HAL_TIM_Base_Stop_IT(&htim6);
-    __HAL_HRTIM_DISABLE_IT(&hhrtim1, HRTIM_IT_REP_TIMER_A);
-    __HAL_HRTIM_DISABLE_IT(&hhrtim1, HRTIM_IT_REP_TIMER_B);
-    __HAL_HRTIM_DISABLE_IT(&hhrtim1, HRTIM_IT_CMP1_TIMER_A);
-    __HAL_HRTIM_DISABLE_IT(&hhrtim1, HRTIM_IT_CMP1_TIMER_B);
+    __HAL_HRTIM_TIMER_DISABLE_IT(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A,
+                                  HRTIM_TIM_IT_REP | HRTIM_TIM_IT_CMP1);
+    __HAL_HRTIM_TIMER_DISABLE_IT(&hhrtim1, HRTIM_TIMERINDEX_TIMER_B,
+                                  HRTIM_TIM_IT_REP | HRTIM_TIM_IT_CMP1);
     ps_disable_all_outputs();
     ps_zero_dac();
 
@@ -600,8 +607,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     }
     else if (htim->Instance == TIM7)
     {
-        /* PID voltage loop — handled in HAL_TIM_PeriodElapsedCallback below
-         * for TIM7 instance. See the TIM7 section. */
+        /* PID voltage loop (NLSpec §8). */
 
         if (s_state != PS_STATE_RUNNING) {
             return;
@@ -701,11 +707,11 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
         /* Anti-windup: clamp integrator (back-calculation, NLSpec §8.4). */
         if (output > (float)PID_OUTPUT_MAX) {
-            i_term  -= (output - (float)PID_OUTPUT_MAX);
-            output   = (float)PID_OUTPUT_MAX;
+            i_term -= (output - (float)PID_OUTPUT_MAX);
+            output  = (float)PID_OUTPUT_MAX;
         } else if (output < (float)PID_OUTPUT_MIN) {
-            i_term  -= (output - (float)PID_OUTPUT_MIN);
-            output   = (float)PID_OUTPUT_MIN;
+            i_term -= (output - (float)PID_OUTPUT_MIN);
+            output  = (float)PID_OUTPUT_MIN;
         }
 
         s_pid_integrator = i_term;

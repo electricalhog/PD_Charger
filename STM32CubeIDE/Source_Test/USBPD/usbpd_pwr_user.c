@@ -320,11 +320,17 @@ __weak int32_t BSP_USBPD_PWR_VBUSOn(uint32_t Instance)
     HAL_GPIO_WritePin(Input_en_GPIO_Port,      Input_en_Pin,      GPIO_PIN_SET);
 
     uint32_t vset = target_voltage_mv;
-    if (vset >= 5000u)
+    if ((vset >= VSETPOINT_MIN_MV) && (vset <= VSETPOINT_MAX_MV))
     {
       PS_Start(vset, 0u);
+      ret = BSP_ERROR_NONE;
     }
-    ret = BSP_ERROR_NONE;
+    else
+    {
+      /* No valid setpoint yet — VBUS will be sourced at vSafe5V by default;
+       * the PD stack will call VBUSSetVoltage_Fixed once a contract is made. */
+      ret = BSP_ERROR_NONE;
+    }
   }
   return ret;
   /* USER CODE END BSP_USBPD_PWR_VBUSOn */
@@ -387,12 +393,10 @@ __weak int32_t BSP_USBPD_PWR_VBUSSetVoltage_Fixed(uint32_t Instance,
   else
   {
     /* Store the negotiated setpoint.  If the regulator is already RUNNING,
-     * the PID picks it up on its next execution.  If IDLE, the setpoint
-     * is stored and PS_Start() called when VBUSOn fires (NLSpec §9.2). */
+     * the PID picks it up on its next execution.  If IDLE, start it now. */
     (void)MaxOperatingCurrent;
     regulator_set_target_voltage(VbusTargetInmv);
 
-    /* If already running, adjust setpoint in place; otherwise start. */
     if (PS_GetState() == PS_STATE_IDLE)
     {
       PS_Start(VbusTargetInmv, OperatingCurrent);

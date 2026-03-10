@@ -19,6 +19,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "regulator_config.h"
 
 #ifdef __cplusplus
 extern "C" {
