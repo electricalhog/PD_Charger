@@ -24,7 +24,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "regulator.h"
+#include "pd_interface.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -134,7 +135,11 @@ int main(void)
   MX_TIM7_Init();
   MX_TCPP_Init();
   /* USER CODE BEGIN 2 */
-
+  /* Initialise the buck-boost regulator after all peripheral MX inits.
+   * regulator_init() performs HRTIM post-configuration, PID init, ADC
+   * calibration, slope compensation setup, and transitions to IDLE state.
+   * Must run before osKernelStart() so interrupts are armed before RTOS. */
+  regulator_init();
   /* USER CODE END 2 */
 
   /* USBPD initialisation ---------------------------------*/
