@@ -34,7 +34,7 @@
 /* USER CODE END Includes */
 
 /* Define   ------------------------------------------------------------------*/
-#define PORT0_NB_SOURCEPDO         1U   /* Number of Source PDOs (applicable for port 0)   */
+#define PORT0_NB_SOURCEPDO         5U   /* Number of Source PDOs (applicable for port 0) — SPR: 5V,9V,12V,15V,20V */
 #define PORT0_NB_SINKPDO           0U   /* Number of Sink PDOs (applicable for port 0)     */
 #define PORT1_NB_SOURCEPDO         0U   /* Number of Source PDOs (applicable for port 1)   */
 #define PORT1_NB_SINKPDO           0U   /* Number of Sink PDOs (applicable for port 1)     */
@@ -77,7 +77,7 @@ typedef struct
 
 /* USER CODE BEGIN Exported_Define */
 
-#define USBPD_CORE_PDO_SRC_FIXED_MAX_CURRENT 3
+#define USBPD_CORE_PDO_SRC_FIXED_MAX_CURRENT 3000  /* 3 A for SPR PDOs 1–4 */
 #define USBPD_CORE_PDO_SNK_FIXED_MAX_CURRENT 1500
 
 /* USER CODE END Exported_Define */
@@ -121,34 +121,64 @@ uint8_t USBPD_NbPDO[4] = {(PORT0_NB_SINKPDO),
 /* Definition of Source PDO for Port 0 */
 uint32_t PORT0_PDO_ListSRC[USBPD_MAX_NB_PDO] =
 {
-  /* PDO 1 */
+  /*
+   * Source PDO table — USB PD Standard Power Range (SPR) voltages.
+   * NLSpec §9.4, firmware_plan §4a.
+   * All PDOs use fixed-voltage format (USBPD_PDO_TYPE_FIXED).
+   * PDO 1 (mandatory 5 V) carries the capability flags for the port.
+   */
+
+  /* PDO 1 — 5 V @ 3 A (mandatory; carries port capability flags) */
   (
-    USBPD_PDO_TYPE_FIXED                 | /* Fixed supply PDO            */
-
-    USBPD_PDO_SRC_FIXED_SET_VOLTAGE(5000U)         | /* Voltage in mV               */
-    USBPD_PDO_SRC_FIXED_SET_MAX_CURRENT(100U)     | /* Max current in mA           */
-    USBPD_PDO_SRC_FIXED_PEAKCURRENT_EQUAL          | /* Peak Current info           */
-
-    /* Common definitions applicable to all PDOs, defined only in PDO 1 */
-    USBPD_PDO_SRC_FIXED_UNCHUNK_NOT_SUPPORTED      | /* Unchunked Extended Messages */
-    USBPD_PDO_SRC_FIXED_DRD_SUPPORTED          | /* Dual-Role Data              */
-    USBPD_PDO_SRC_FIXED_USBCOMM_NOT_SUPPORTED      | /* USB Communications          */
-    USBPD_PDO_SRC_FIXED_EXT_POWER_NOT_AVAILABLE    | /* External Power              */
-    USBPD_PDO_SRC_FIXED_USBSUSPEND_NOT_SUPPORTED   | /* USB Suspend Supported		 */
-    USBPD_PDO_SRC_FIXED_DRP_NOT_SUPPORTED            /* Dual-Role Power             */
+    USBPD_PDO_TYPE_FIXED                              |
+    USBPD_PDO_SRC_FIXED_SET_VOLTAGE(5000U)            |  /* 5000 mV */
+    USBPD_PDO_SRC_FIXED_SET_MAX_CURRENT(3000U)        |  /* 3000 mA */
+    USBPD_PDO_SRC_FIXED_PEAKCURRENT_EQUAL             |
+    USBPD_PDO_SRC_FIXED_UNCHUNK_NOT_SUPPORTED         |
+    USBPD_PDO_SRC_FIXED_DRD_SUPPORTED                 |
+    USBPD_PDO_SRC_FIXED_USBCOMM_NOT_SUPPORTED         |
+    USBPD_PDO_SRC_FIXED_EXT_POWER_NOT_AVAILABLE       |
+    USBPD_PDO_SRC_FIXED_USBSUSPEND_NOT_SUPPORTED      |
+    USBPD_PDO_SRC_FIXED_DRP_NOT_SUPPORTED
   ),
 
-  /* PDO 2 */ (0x00000000U),
+  /* PDO 2 — 9 V @ 3 A */
+  (
+    USBPD_PDO_TYPE_FIXED                              |
+    USBPD_PDO_SRC_FIXED_SET_VOLTAGE(9000U)            |
+    USBPD_PDO_SRC_FIXED_SET_MAX_CURRENT(3000U)        |
+    USBPD_PDO_SRC_FIXED_PEAKCURRENT_EQUAL
+  ),
 
-  /* PDO 3 */ (0x00000000U),
+  /* PDO 3 — 12 V @ 3 A */
+  (
+    USBPD_PDO_TYPE_FIXED                              |
+    USBPD_PDO_SRC_FIXED_SET_VOLTAGE(12000U)           |
+    USBPD_PDO_SRC_FIXED_SET_MAX_CURRENT(3000U)        |
+    USBPD_PDO_SRC_FIXED_PEAKCURRENT_EQUAL
+  ),
 
-  /* PDO 4 */ (0x00000000U),
+  /* PDO 4 — 15 V @ 3 A */
+  (
+    USBPD_PDO_TYPE_FIXED                              |
+    USBPD_PDO_SRC_FIXED_SET_VOLTAGE(15000U)           |
+    USBPD_PDO_SRC_FIXED_SET_MAX_CURRENT(3000U)        |
+    USBPD_PDO_SRC_FIXED_PEAKCURRENT_EQUAL
+  ),
 
-  /* PDO 5 */ (0x00000000U),
+  /* PDO 5 — 20 V @ 5 A (maximum SPR power = 100 W) */
+  (
+    USBPD_PDO_TYPE_FIXED                              |
+    USBPD_PDO_SRC_FIXED_SET_VOLTAGE(20000U)           |
+    USBPD_PDO_SRC_FIXED_SET_MAX_CURRENT(5000U)        |
+    USBPD_PDO_SRC_FIXED_PEAKCURRENT_EQUAL
+  ),
 
-  /* PDO 6 */ (0x00000000U),
+  /* PDO 6 — reserved (EPR AVS 28 V when EPR library available) */
+  (0x00000000U),
 
-  /* PDO 7 */ (0x00000000U),
+  /* PDO 7 — reserved (EPR AVS 36 V / 48 V when EPR library available) */
+  (0x00000000U),
 
 };
 

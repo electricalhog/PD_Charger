@@ -27,7 +27,7 @@
 #endif /* _TRACE */
 
 /* USER CODE BEGIN include */
-
+#include "power_stage.h"
 /* USER CODE END include */
 
 /** @addtogroup BSP
@@ -304,7 +304,7 @@ __weak int32_t BSP_USBPD_PWR_VBUSDeInit(uint32_t Instance)
 __weak int32_t BSP_USBPD_PWR_VBUSOn(uint32_t Instance)
 {
   /* USER CODE BEGIN BSP_USBPD_PWR_VBUSOn */
-  /* Check if instance is valid       */
+  /* Check if instance is valid */
   int32_t ret;
 
   if (Instance >= USBPD_PWR_INSTANCES_NBR)
@@ -313,8 +313,24 @@ __weak int32_t BSP_USBPD_PWR_VBUSOn(uint32_t Instance)
   }
   else
   {
-    ret = BSP_ERROR_FEATURE_NOT_SUPPORTED;
-    PWR_DEBUG_TRACE(Instance, "ADVICE: Update BSP_USBPD_PWR_VBUSOn");
+    /* Enable output MOSFET and assert input-enable GPIO, then start the
+     * power stage with the last negotiated voltage setpoint (NLSpec §4b). */
+    HAL_GPIO_WritePin(Output_dischg_GPIO_Port, Output_dischg_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(Output_en_GPIO_Port,     Output_en_Pin,     GPIO_PIN_SET);
+    HAL_GPIO_WritePin(Input_en_GPIO_Port,      Input_en_Pin,      GPIO_PIN_SET);
+
+    uint32_t vset = target_voltage_mv;
+    if ((vset >= VSETPOINT_MIN_MV) && (vset <= VSETPOINT_MAX_MV))
+    {
+      PS_Start(vset, 0u);
+      ret = BSP_ERROR_NONE;
+    }
+    else
+    {
+      /* No valid setpoint yet — VBUS will be sourced at vSafe5V by default;
+       * the PD stack will call VBUSSetVoltage_Fixed once a contract is made. */
+      ret = BSP_ERROR_NONE;
+    }
   }
   return ret;
   /* USER CODE END BSP_USBPD_PWR_VBUSOn */
@@ -330,7 +346,7 @@ __weak int32_t BSP_USBPD_PWR_VBUSOn(uint32_t Instance)
 __weak int32_t BSP_USBPD_PWR_VBUSOff(uint32_t Instance)
 {
   /* USER CODE BEGIN BSP_USBPD_PWR_VBUSOff */
-  /* Check if instance is valid       */
+  /* Check if instance is valid */
   int32_t ret;
 
   if (Instance >= USBPD_PWR_INSTANCES_NBR)
@@ -339,8 +355,13 @@ __weak int32_t BSP_USBPD_PWR_VBUSOff(uint32_t Instance)
   }
   else
   {
-    ret = BSP_ERROR_FEATURE_NOT_SUPPORTED;
-    PWR_DEBUG_TRACE(Instance, "ADVICE: Update BSP_USBPD_PWR_VBUSOff");
+    /* Stop the power stage, enable output discharge resistor, and
+     * disable input path (NLSpec §4c / firmware_plan §4c). */
+    PS_Stop();
+    HAL_GPIO_WritePin(Output_dischg_GPIO_Port, Output_dischg_Pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(Output_en_GPIO_Port,     Output_en_Pin,     GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(Input_en_GPIO_Port,      Input_en_Pin,      GPIO_PIN_RESET);
+    ret = BSP_ERROR_NONE;
   }
   return ret;
   /* USER CODE END BSP_USBPD_PWR_VBUSOff */
@@ -362,12 +383,24 @@ __weak int32_t BSP_USBPD_PWR_VBUSSetVoltage_Fixed(uint32_t Instance,
                                            uint32_t MaxOperatingCurrent)
 {
   /* USER CODE BEGIN BSP_USBPD_PWR_VBUSSetVoltage_Fixed */
-  /* Check if instance is valid       */
+  /* Check if instance is valid */
   int32_t ret = BSP_ERROR_NONE;
 
   if (Instance >= USBPD_PWR_INSTANCES_NBR)
   {
     ret = BSP_ERROR_WRONG_PARAM;
+  }
+  else
+  {
+    /* Store the negotiated setpoint.  If the regulator is already RUNNING,
+     * the PID picks it up on its next execution.  If IDLE, start it now. */
+    (void)MaxOperatingCurrent;
+    regulator_set_target_voltage(VbusTargetInmv);
+
+    if (PS_GetState() == PS_STATE_IDLE)
+    {
+      PS_Start(VbusTargetInmv, OperatingCurrent);
+    }
   }
   return ret;
   /* USER CODE END BSP_USBPD_PWR_VBUSSetVoltage_Fixed */
@@ -469,7 +502,7 @@ __weak int32_t BSP_USBPD_PWR_VBUSSetVoltage_APDO(uint32_t Instance,
 __weak int32_t BSP_USBPD_PWR_VBUSGetVoltage(uint32_t Instance, uint32_t *pVoltage)
 {
   /* USER CODE BEGIN BSP_USBPD_PWR_VBUSGetVoltage */
-  /* Check if instance is valid       */
+  /* Check if instance is valid */
   int32_t ret;
   uint32_t val = 0U;
 
@@ -479,8 +512,8 @@ __weak int32_t BSP_USBPD_PWR_VBUSGetVoltage(uint32_t Instance, uint32_t *pVoltag
   }
   else
   {
-    ret = BSP_ERROR_FEATURE_NOT_SUPPORTED;
-    PWR_DEBUG_TRACE(Instance, "ADVICE: Update BSP_USBPD_PWR_VBUSGetVoltage");
+    val = PS_GetVout_mV();
+    ret = BSP_ERROR_NONE;
   }
   *pVoltage = val;
   return ret;
@@ -710,7 +743,7 @@ __weak int32_t BSP_USBPD_PWR_RegisterVBUSDetectCallback(uint32_t  Instance,
 __weak int32_t BSP_USBPD_PWR_VBUSIsOn(uint32_t Instance, uint8_t *pState)
 {
   /* USER CODE BEGIN BSP_USBPD_PWR_VBUSIsOn */
-  /* Check if instance is valid       */
+  /* Check if instance is valid */
   int32_t ret;
   uint8_t state = 0U;
 
@@ -720,8 +753,8 @@ __weak int32_t BSP_USBPD_PWR_VBUSIsOn(uint32_t Instance, uint8_t *pState)
   }
   else
   {
-    ret = BSP_ERROR_FEATURE_NOT_SUPPORTED;
-    PWR_DEBUG_TRACE(Instance, "ADVICE: Update BSP_USBPD_PWR_VBUSIsOn");
+    state = (PS_GetState() == PS_STATE_RUNNING) ? 1U : 0U;
+    ret   = BSP_ERROR_NONE;
   }
   *pState = state;
   return ret;

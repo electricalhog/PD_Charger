@@ -39,7 +39,7 @@
 #if !defined(_TRACE)
 #include "string.h"
 #endif /* !_TRACE */
-
+#include "power_stage.h"
 /* USER CODE END Includes */
 
 /** @addtogroup STM32_USBPD_APPLICATION
@@ -325,41 +325,18 @@ void USBPD_DPM_Notification(uint8_t PortNum, USBPD_NotifyEventValue_TypeDef Even
     DPM_GUI_PostNotificationMessage(PortNum, EventVal);
   }
 /* USER CODE BEGIN USBPD_DPM_Notification */
-  /* Manage event notified by the stack? */
+  /* Manage event notified by the stack. */
   switch(EventVal)
   {
-//    case USBPD_NOTIFY_POWER_EXPLICIT_CONTRACT :
-//      break;
-//    case USBPD_NOTIFY_REQUEST_ACCEPTED:
-//      break;
-//    case USBPD_NOTIFY_REQUEST_REJECTED:
-//    case USBPD_NOTIFY_REQUEST_WAIT:
-//      break;
-//    case USBPD_NOTIFY_POWER_SWAP_TO_SNK_DONE:
-//      break;
-//    case USBPD_NOTIFY_STATE_SNK_READY:
-//      break;
-//    case USBPD_NOTIFY_HARDRESET_RX:
-//    case USBPD_NOTIFY_HARDRESET_TX:
-//      break;
-//    case USBPD_NOTIFY_STATE_SRC_DISABLED:
-//      break;
-//    case USBPD_NOTIFY_ALERT_RECEIVED :
-//      break;
-//    case USBPD_NOTIFY_CABLERESET_REQUESTED :
-//      break;
-//    case USBPD_NOTIFY_MSG_NOT_SUPPORTED :
-//      break;
-//    case USBPD_NOTIFY_PE_DISABLED :
-//      break;
-//    case USBPD_NOTIFY_USBSTACK_START:
-//      break;
-//    case USBPD_NOTIFY_USBSTACK_STOP:
-//      break;
-//    case USBPD_NOTIFY_DATAROLESWAP_DFP :
-//      break;
-//    case USBPD_NOTIFY_DATAROLESWAP_UFP :
-//      break;
+    case USBPD_NOTIFY_POWER_EXPLICIT_CONTRACT:
+      /* A PD contract has been established.  The negotiated voltage has
+       * already been set via BSP_USBPD_PWR_VBUSSetVoltage_Fixed() → PS_Start().
+       * Nothing more to do here; regulator_ready will reflect output status. */
+      break;
+    case USBPD_NOTIFY_HARDRESET_RX:
+    case USBPD_NOTIFY_HARDRESET_TX:
+      /* Hard reset — power stage is stopped by USBPD_DPM_HardReset callback. */
+      break;
     default:
       DPM_USER_DEBUG_TRACE(PortNum, "ADVICE: USBPD_DPM_Notification:%d", EventVal);
       break;
