@@ -128,11 +128,12 @@ void slope_comp_update_step(uint32_t v_out_mv, uint32_t v_in_mv, SlopeCompMode m
      *
      * step_counts = S_A_per_s × DAC_COUNTS_PER_AMP / TIM6_RATE_HZ
      *
-     * L = 4.7 µH = 4.7e-6 H
-     * DAC_COUNTS_PER_AMP = 310 counts/A
-     * TIM6_RATE_HZ       = 2 000 000 Hz
+     * L = INDUCTOR_VALUE_NH nH = INDUCTOR_VALUE_NH × 1e-9 H
+     * The integer parts INDUCTOR_VALUE_UH and INDUCTOR_VALUE_UH_TENTHS define
+     * L as (INDUCTOR_VALUE_UH + INDUCTOR_VALUE_UH_TENTHS/10) µH. (§16)
      */
-    const float l_henries       = 4.7e-6f;
+    const float l_henries = ((float)INDUCTOR_VALUE_UH +
+                              (float)INDUCTOR_VALUE_UH_TENTHS * 0.1f) * 1e-6f;
     const float dac_counts_per_amp = (float)DAC_COUNTS_PER_AMP;
     const float tim6_rate       = (float)TIM6_RATE_HZ;
 

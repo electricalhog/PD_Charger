@@ -314,7 +314,8 @@ void regulator_start(void)
     }
 
     /* --- Initialise slope compensation and start TIM6 --- */
-    slope_comp_update_step(v_in_mv, v_in_mv,
+    uint32_t v_out_mv = (uint32_t)adc_measurements.v_out_mv;
+    slope_comp_update_step(v_out_mv, v_in_mv,
                             (SlopeCompMode)regulator_mode);
     slope_comp_start(0u);   /* peak starts at 0; ramps up with soft-start */
 
@@ -536,9 +537,46 @@ void regulator_pid_tim7_isr(void)
         pid_reset_integrator(&pid_state);
         regulator_integrator_reset_requested = false;
 
-        /* Also re-evaluate operating mode when setpoint changes significantly */
+        /* Re-evaluate operating mode when setpoint changes significantly (§5.1).
+         * If the mode changes (buck ↔ boost), reconfigure the HRTIM static
+         * and switching legs immediately to prevent shoot-through.            */
         uint32_t voltage_mv = target_voltage_mv;
-        regulator_mode = determine_mode_from_voltages(v_in_mv, voltage_mv);
+        RegulatorMode new_mode = determine_mode_from_voltages(v_in_mv, voltage_mv);
+
+        if (new_mode != regulator_mode)
+        {
+            /* Mode change during RUNNING: reconfigure HRTIM for the new mode.
+             * Disable all outputs during the transition to prevent a partial
+             * switching state (§5.3, §11.4).                                  */
+            hrtim_disable_all_outputs();
+
+            regulator_mode = new_mode;
+
+            /* Reconfigure the static and switching legs for the new mode */
+            if (regulator_mode == REGULATOR_MODE_BUCK)
+            {
+                hrtim_apply_buck_mode_static_leg();
+                HAL_HRTIM_WaveformOutputStart(&hhrtim1,
+                                               HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2 |
+                                               HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2);
+            }
+            else /* BOOST */
+            {
+                hrtim_apply_boost_mode_static_leg();
+                HAL_HRTIM_WaveformOutputStart(&hhrtim1,
+                                               HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2 |
+                                               HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2);
+            }
+
+            /* Reset soft-start for the mode transition (§11.4) */
+            uint32_t ramp_steps = (uint32_t)SOFT_START_RAMP_MS *
+                                  (uint32_t)PID_EXECUTION_RATE_HZ / 1000u;
+            if (ramp_steps == 0u) { ramp_steps = 1u; }
+            softstart_increment_mv = voltage_mv / ramp_steps;
+            if (softstart_increment_mv == 0u) { softstart_increment_mv = 1u; }
+            softstart_setpoint_mv = 0u;
+            softstart_active      = true;
+        }
     }
 
     /* --- 4. Soft-start setpoint ramp (§11.2) --- */
