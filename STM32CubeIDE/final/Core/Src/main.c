@@ -145,11 +145,23 @@ int main(void)
   MX_TIM7_Init();
   MX_TCPP_Init();
   /* USER CODE BEGIN 2 */
+  /* Sign-of-life A: peripherals initialised, about to call regulator_init(). */
+  {
+    static const char msg_a[] = "main: pre-regulator_init\r\n";
+    HAL_UART_Transmit(&hlpuart1, (uint8_t *)msg_a, sizeof(msg_a) - 1u, 200u);
+  }
+
   /* Initialise the buck-boost regulator after all peripheral MX inits.
    * regulator_init() performs HRTIM post-configuration, PID init, ADC
    * calibration, slope compensation setup, and transitions to IDLE state.
    * Must run before osKernelStart() so interrupts are armed before RTOS. */
   regulator_init();
+
+  /* Sign-of-life B: regulator_init() returned, about to start RTOS. */
+  {
+    static const char msg_b[] = "main: post-regulator_init, starting RTOS\r\n";
+    HAL_UART_Transmit(&hlpuart1, (uint8_t *)msg_b, sizeof(msg_b) - 1u, 200u);
+  }
   /* USER CODE END 2 */
 
   /* USBPD initialisation ---------------------------------*/
@@ -1027,6 +1039,13 @@ void StartDefaultTask(void const * argument)
 
   /* Allow peripheral initialisation (regulator_init, PD stack) to settle. */
   osDelay(200);
+
+  /* Sign-of-life: confirm the task is alive before regulation setup begins. */
+  {
+    static const char sign_of_life[] = "StartDefaultTask: alive, entering regulator setup\r\n";
+    HAL_UART_Transmit(&hlpuart1, (uint8_t *)sign_of_life,
+                      sizeof(sign_of_life) - 1u, 100u);
+  }
 
   /* Set a fixed test voltage and start the regulator without PD negotiation. */
   regulator_set_target_voltage(DEFAULT_TASK_TEST_VOLTAGE_MV);
