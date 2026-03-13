@@ -195,8 +195,8 @@ void regulator_init(void)
     TIM7->ARR = TIM7_PERIOD_COUNTS;
     TIM7->EGR = TIM_EGR_UG;   /* force update event to load PSC/ARR */
 
-    HAL_NVIC_SetPriority(TIM7_IRQn, NVIC_PRIORITY_PID_TIM7, 0u);
-    HAL_NVIC_EnableIRQ(TIM7_IRQn);
+    HAL_NVIC_SetPriority(TIM7_DAC_IRQn, NVIC_PRIORITY_PID_TIM7, 0u);
+    HAL_NVIC_EnableIRQ(TIM7_DAC_IRQn);
 
     /* --- Step 8: Initialise PID state and default coefficients (§8.7) --- */
     pid_config.kp          = pid_kp;
@@ -873,10 +873,6 @@ static void hrtim_disable_all_outputs(void)
 
 /**
  * power_path_enable — Assert INPUT_EN and OUTPUT_EN GPIOs.
- *
- * TODO(hardware): Verify active polarity of INPUT_EN, OUTPUT_EN, and
- * OUTPUT_DIS from the schematic before first hardware test.  The GPIO
- * direction assumed here (high = enable) may be wrong.
  */
 static void power_path_enable(void)
 {
@@ -892,7 +888,7 @@ static void power_path_disable(void)
 {
     HAL_GPIO_WritePin(PIN_INPUT_EN_PORT,  PIN_INPUT_EN_PIN,  GPIO_PIN_RESET);
     HAL_GPIO_WritePin(PIN_OUTPUT_EN_PORT, PIN_OUTPUT_EN_PIN, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(PIN_OUTPUT_DIS_PORT,PIN_OUTPUT_DIS_PIN,GPIO_PIN_SET);
+    HAL_GPIO_WritePin(PIN_OUTPUT_DIS_PORT,PIN_OUTPUT_DIS_PIN,GPIO_PIN_SET); // discharge VBUS
 }
 
 /**

@@ -49,9 +49,9 @@ extern "C" {
  * NOTE    : IOC labels PA0 as VS_MON — this is an IOC labeling error.
  *           The schematic (higher priority) confirms PA0 = VD_MON (§2.2).
  */
-#define PIN_VD_MON_PORT      GPIOA
-#define PIN_VD_MON_PIN       GPIO_PIN_0
-#define ADC_CHANNEL_VD_MON   ADC_CHANNEL_1
+#define PIN_VD_MON_PORT GPIOA
+#define PIN_VD_MON_PIN GPIO_PIN_0
+#define ADC_CHANNEL_VD_MON ADC_CHANNEL_1
 
 /**
  * IL_MON — Inductor current sense
@@ -60,9 +60,9 @@ extern "C" {
  * Physical: INA281A2 (U7) output; 5 mΩ shunt (R5), 50 V/V gain
  * Dir     : Analog input (also COMP1 non-inverting input)
  */
-#define PIN_IL_MON_PORT      GPIOA
-#define PIN_IL_MON_PIN       GPIO_PIN_1
-#define ADC_CHANNEL_IL_MON   ADC_CHANNEL_2
+#define PIN_IL_MON_PORT GPIOA
+#define PIN_IL_MON_PIN GPIO_PIN_1
+#define ADC_CHANNEL_IL_MON ADC_CHANNEL_2
 
 /**
  * VS_MON_A4 — Input voltage sense (V_in)
@@ -73,9 +73,9 @@ extern "C" {
  * NOTE    : V_in is on ADC2 because PA4 is not available on ADC1 for
  *           this package (§8.5).
  */
-#define PIN_VS_MON_PORT      GPIOA
-#define PIN_VS_MON_PIN       GPIO_PIN_4
-#define ADC_CHANNEL_VS_MON   ADC_CHANNEL_17
+#define PIN_VS_MON_PORT GPIOA
+#define PIN_VS_MON_PIN GPIO_PIN_4
+#define ADC_CHANNEL_VS_MON ADC_CHANNEL_17
 
 /**
  * ID_MON — Output current sense (I_out, delivery current)
@@ -85,9 +85,9 @@ extern "C" {
  * Dir     : Analog input
  * Resolved: Round 3 Q2, confirmed from final.ioc pin labels (§3.3).
  */
-#define PIN_ID_MON_PORT      GPIOC
-#define PIN_ID_MON_PIN       GPIO_PIN_1
-#define ADC_CHANNEL_ID_MON   ADC_CHANNEL_7
+#define PIN_ID_MON_PORT GPIOC
+#define PIN_ID_MON_PIN GPIO_PIN_1
+#define ADC_CHANNEL_ID_MON ADC_CHANNEL_7
 
 /**
  * IS_MON — Input current sense (I_in, source current)
@@ -98,9 +98,9 @@ extern "C" {
  * Dir     : Analog input
  * Resolved: Round 3 Q2 + Q3 — R25 = 5 mΩ (schematic shows 2 mΩ, stale).
  */
-#define PIN_IS_MON_PORT      GPIOB
-#define PIN_IS_MON_PIN       GPIO_PIN_0
-#define ADC_CHANNEL_IS_MON   ADC_CHANNEL_15
+#define PIN_IS_MON_PORT GPIOB
+#define PIN_IS_MON_PIN GPIO_PIN_0
+#define ADC_CHANNEL_IS_MON ADC_CHANNEL_15
 
 /* =========================================================================
  * SECTION 2: COMPARATOR OUTPUT PIN
@@ -113,8 +113,8 @@ extern "C" {
  * Physical: COMP1 output pin; connects HRTIM external event 4 (EEV4)
  * Dir     : Digital output (from COMP1 peripheral)
  */
-#define PIN_COMP1_OUT_PORT   GPIOA
-#define PIN_COMP1_OUT_PIN    GPIO_PIN_6
+#define PIN_COMP1_OUT_PORT GPIOA
+#define PIN_COMP1_OUT_PIN GPIO_PIN_6
 
 /* =========================================================================
  * SECTION 3: HRTIM OUTPUT PIN MAPPINGS (Gate Drive Signals)
@@ -129,8 +129,8 @@ extern "C" {
  * Buck    : Switches (Set=Period, Reset=EEV4)
  * Boost   : Static HIGH (forced)
  */
-#define PIN_CHA1_PORT        GPIOA
-#define PIN_CHA1_PIN         GPIO_PIN_8
+#define PIN_CHA1_PORT GPIOA
+#define PIN_CHA1_PIN GPIO_PIN_8
 
 /**
  * PHASE_1_N (CHA2) — Timer A Output 2, input-side low-side FET drive
@@ -139,8 +139,8 @@ extern "C" {
  * Physical: uP1966E (U1) low-side input; drives Q2 (EPC2306/EPC2302)
  * Dir     : Digital output (HRTIM-controlled, complementary to CHA1)
  */
-#define PIN_CHA2_PORT        GPIOA
-#define PIN_CHA2_PIN         GPIO_PIN_9
+#define PIN_CHA2_PORT GPIOA
+#define PIN_CHA2_PIN GPIO_PIN_9
 
 /**
  * PHASE_2_P (CHB1) — Timer B Output 1, output-side high-side FET drive
@@ -151,8 +151,8 @@ extern "C" {
  * Buck    : Static HIGH (forced)
  * Boost   : Switches (Set=EEV4, Reset=Period)
  */
-#define PIN_CHB1_PORT        GPIOA
-#define PIN_CHB1_PIN         GPIO_PIN_10
+#define PIN_CHB1_PORT GPIOA
+#define PIN_CHB1_PIN GPIO_PIN_10
 
 /**
  * PHASE_2_N (CHB2) — Timer B Output 2, output-side low-side FET drive
@@ -161,8 +161,8 @@ extern "C" {
  * Physical: uP1966E (U3) low-side input; drives Q4 (EPC2306/EPC2302)
  * Dir     : Digital output (HRTIM-controlled, complementary to CHB1)
  */
-#define PIN_CHB2_PORT        GPIOA
-#define PIN_CHB2_PIN         GPIO_PIN_11
+#define PIN_CHB2_PORT GPIOA
+#define PIN_CHB2_PIN GPIO_PIN_11
 
 /* =========================================================================
  * SECTION 4: HRTIM FAULT INPUT PIN MAPPINGS
@@ -176,8 +176,8 @@ extern "C" {
  * Dir     : Digital input, active-low (fault asserts when input goes LOW)
  * Effect  : Any assertion forces ALL HRTIM outputs to safe state (all FETs off)
  */
-#define PIN_VS_GOOD_PORT     GPIOA
-#define PIN_VS_GOOD_PIN      GPIO_PIN_12
+#define PIN_VS_GOOD_PORT GPIOA
+#define PIN_VS_GOOD_PIN GPIO_PIN_12
 
 /**
  * IS_GOOD — Input current good signal (HRTIM FLT2)
@@ -187,8 +187,8 @@ extern "C" {
  * Dir     : Digital input, active-low (fault asserts when input goes LOW)
  * Resolved: Round 3 Q5 (§3.7).
  */
-#define PIN_IS_GOOD_PORT     GPIOA
-#define PIN_IS_GOOD_PIN      GPIO_PIN_15
+#define PIN_IS_GOOD_PORT GPIOA
+#define PIN_IS_GOOD_PIN GPIO_PIN_15
 
 /* =========================================================================
  * SECTION 5: POWER PATH CONTROL GPIO
@@ -198,37 +198,34 @@ extern "C" {
  * INPUT_EN — Enables input power path
  * MCU pin : PC7
  * Net     : INPUT_EN (input.kicad_sch)
- * Physical: ADM1270 gate control or equivalent hot-swap enable signal
+ * Physical: ADM1270 gate control enable signal, active high
  * Dir     : GPIO output
  * Usage   : Assert HIGH before enabling switching; deassert on fault/shutdown.
- * TODO(hardware): Confirm active polarity from schematic during bring-up.
  */
-#define PIN_INPUT_EN_PORT    GPIOC
-#define PIN_INPUT_EN_PIN     GPIO_PIN_7
+#define PIN_INPUT_EN_PORT GPIOC
+#define PIN_INPUT_EN_PIN GPIO_PIN_7
 
 /**
  * OUTPUT_EN — Enables output power path
  * MCU pin : PC8
  * Net     : OUTPUT_EN
- * Physical: Output path enable signal (load disconnect or gate control)
+ * Physical: Output path enable signal, active high
  * Dir     : GPIO output
  * Usage   : Assert HIGH before switching; deassert on fault/shutdown.
- * TODO(hardware): Confirm active polarity from schematic during bring-up.
  */
-#define PIN_OUTPUT_EN_PORT   GPIOC
-#define PIN_OUTPUT_EN_PIN    GPIO_PIN_8
+#define PIN_OUTPUT_EN_PORT GPIOC
+#define PIN_OUTPUT_EN_PIN GPIO_PIN_8
 
 /**
- * OUTPUT_DIS — Disables/disconnects output path
+ * OUTPUT_DIS — Discharges output path
  * MCU pin : PC9
  * Net     : OUTPUT_DIS
- * Physical: Output path disable/disconnect signal
+ * Physical: Output path discharge signal, active high
  * Dir     : GPIO output
- * TODO(hardware): Confirm active polarity (active-high disable?) during
- *                 bring-up.  Assert during FAULT and IDLE states.
+ * Usage   : Assert during FAULT and IDLE states.
  */
-#define PIN_OUTPUT_DIS_PORT  GPIOC
-#define PIN_OUTPUT_DIS_PIN   GPIO_PIN_9
+#define PIN_OUTPUT_DIS_PORT GPIOC
+#define PIN_OUTPUT_DIS_PIN GPIO_PIN_9
 
 /* =========================================================================
  * SECTION 6: HRTIM TIMING CONSTANTS
@@ -242,7 +239,7 @@ extern "C" {
  * Target : 500 kHz → 10 880 counts.
  * Range  : [5440, 54400]   (100 kHz to 1 MHz)
  */
-#define HRTIM_PERIOD_COUNTS             27200u
+#define HRTIM_PERIOD_COUNTS 27200u
 
 _Static_assert(HRTIM_PERIOD_COUNTS >= 5440u && HRTIM_PERIOD_COUNTS <= 54400u,
                "HRTIM_PERIOD_COUNTS out of valid range [5440, 54400]");
@@ -256,7 +253,7 @@ _Static_assert(HRTIM_PERIOD_COUNTS >= 5440u && HRTIM_PERIOD_COUNTS <= 54400u,
  * Adjust : Empirically in range 100–500 ns (544–2720 ticks) using an
  *          oscilloscope on IL_MON.
  */
-#define HRTIM_BLANKING_TICKS_BUCK       544u
+#define HRTIM_BLANKING_TICKS_BUCK 544u
 
 /**
  * HRTIM_BLANKING_TICKS_BOOST — Comparator blanking window in boost mode.
@@ -266,11 +263,13 @@ _Static_assert(HRTIM_PERIOD_COUNTS >= 5440u && HRTIM_PERIOD_COUNTS <= 54400u,
  *          switching transient ringing.  Larger than buck because the
  *          boost refresh occupies the start of the period.
  */
-#define HRTIM_BLANKING_TICKS_BOOST      2720u
+#define HRTIM_BLANKING_TICKS_BOOST 2720u
 
-_Static_assert(HRTIM_BLANKING_TICKS_BUCK  >= 544u  && HRTIM_BLANKING_TICKS_BUCK  <= 2720u,
+_Static_assert(HRTIM_BLANKING_TICKS_BUCK >= 544u &&
+                   HRTIM_BLANKING_TICKS_BUCK <= 2720u,
                "HRTIM_BLANKING_TICKS_BUCK out of valid range [544, 2720]");
-_Static_assert(HRTIM_BLANKING_TICKS_BOOST >= 1088u && HRTIM_BLANKING_TICKS_BOOST <= 5440u,
+_Static_assert(HRTIM_BLANKING_TICKS_BOOST >= 1088u &&
+                   HRTIM_BLANKING_TICKS_BOOST <= 5440u,
                "HRTIM_BLANKING_TICKS_BOOST out of valid range [1088, 5440]");
 
 /**
@@ -282,7 +281,7 @@ _Static_assert(HRTIM_BLANKING_TICKS_BOOST >= 1088u && HRTIM_BLANKING_TICKS_BOOST
  *          26112 → 23120 < 26112 ✓  (§10.3)
  * Range  : [50, 96]
  */
-#define MAX_DUTY_CYCLE_PCT              85u
+#define MAX_DUTY_CYCLE_PCT 85u
 
 _Static_assert(MAX_DUTY_CYCLE_PCT >= 50u && MAX_DUTY_CYCLE_PCT <= 96u,
                "MAX_DUTY_CYCLE_PCT out of valid range [50, 96]");
@@ -296,7 +295,7 @@ _Static_assert(MAX_DUTY_CYCLE_PCT >= 50u && MAX_DUTY_CYCLE_PCT <= 96u,
  *          has not fired by this point in the period.  Prevents unbounded
  *          inductor current ramp when COMP1 is inactive.
  */
-#define MAX_ON_TIME_COUNTS              ((HRTIM_PERIOD_COUNTS) * (MAX_DUTY_CYCLE_PCT) / 100u)
+#define MAX_ON_TIME_COUNTS ((HRTIM_PERIOD_COUNTS) * (MAX_DUTY_CYCLE_PCT) / 100u)
 
 /* =========================================================================
  * SECTION 7: SLOPE COMPENSATION TIMER (TIM6) CONSTANTS
@@ -308,7 +307,7 @@ _Static_assert(MAX_DUTY_CYCLE_PCT >= 50u && MAX_DUTY_CYCLE_PCT <= 96u,
  * Derive : APBCLK / (PSC+1) / (ARR+1) = TIM6 rate.  PSC=0 → no division.
  *          (§7.3)
  */
-#define TIM6_PRESCALER                  0u
+#define TIM6_PRESCALER 0u
 
 /**
  * TIM6_PERIOD_COUNTS — TIM6 auto-reload register value (ARR).
@@ -316,7 +315,7 @@ _Static_assert(MAX_DUTY_CYCLE_PCT >= 50u && MAX_DUTY_CYCLE_PCT <= 96u,
  * Derive : ARR = SYSCLK / TIM6_RATE_HZ − 1 = 170e6 / 2e6 − 1 = 84. (§7.3)
  *          Period = (PSC+1)(ARR+1)/170e6 = 1×85/170e6 = 500 ns = 2 MHz ✓
  */
-#define TIM6_PERIOD_COUNTS              84u
+#define TIM6_PERIOD_COUNTS 84u
 
 /**
  * TIM6_RATE_HZ — Slope compensation timer interrupt rate.
@@ -325,7 +324,7 @@ _Static_assert(MAX_DUTY_CYCLE_PCT >= 50u && MAX_DUTY_CYCLE_PCT <= 96u,
  * Purpose: Drives DAC3 CH1 staircase ramp.  Rate >> f_sw ensures smooth
  *          ramp approximation (§7.5 CPU budget: ~10–30 cycles/ISR).
  */
-#define TIM6_RATE_HZ                    2000000u
+#define TIM6_RATE_HZ 2000000u
 
 /* =========================================================================
  * SECTION 8: PID TIMER (TIM7) CONSTANTS
@@ -335,7 +334,7 @@ _Static_assert(MAX_DUTY_CYCLE_PCT >= 50u && MAX_DUTY_CYCLE_PCT <= 96u,
  * TIM7_PRESCALER — TIM7 prescaler register value (PSC).
  * Units  : register value (0 = ÷1)
  */
-#define TIM7_PRESCALER                  0u
+#define TIM7_PRESCALER 0u
 
 /**
  * TIM7_PERIOD_COUNTS — TIM7 auto-reload register value (ARR).
@@ -344,7 +343,7 @@ _Static_assert(MAX_DUTY_CYCLE_PCT >= 50u && MAX_DUTY_CYCLE_PCT <= 96u,
  *          = 170e6 / 20e3 − 1 = 8499. (§8.2)
  *          Period = (0+1)(8499+1)/170e6 = 8500/170e6 = 50 µs = 20 kHz ✓
  */
-#define TIM7_PERIOD_COUNTS              8499u
+#define TIM7_PERIOD_COUNTS 8499u
 
 /**
  * PID_EXECUTION_RATE_HZ — Default PID outer-loop execution rate.
@@ -352,9 +351,10 @@ _Static_assert(MAX_DUTY_CYCLE_PCT >= 50u && MAX_DUTY_CYCLE_PCT <= 96u,
  * Range  : [1000, 500000]
  * Value  : 20 kHz (every 10th switching period at 200 kHz). (§8.2)
  */
-#define PID_EXECUTION_RATE_HZ           20000u
+#define PID_EXECUTION_RATE_HZ 20000u
 
-_Static_assert(PID_EXECUTION_RATE_HZ >= 1000u && PID_EXECUTION_RATE_HZ <= 500000u,
+_Static_assert(PID_EXECUTION_RATE_HZ >= 1000u &&
+                   PID_EXECUTION_RATE_HZ <= 500000u,
                "PID_EXECUTION_RATE_HZ out of valid range [1000, 500000]");
 
 /* =========================================================================
@@ -369,16 +369,16 @@ _Static_assert(PID_EXECUTION_RATE_HZ >= 1000u && PID_EXECUTION_RATE_HZ <= 500000
  */
 
 /** TIM6 (slope compensation) — most latency-sensitive; fires every 500 ns. */
-#define NVIC_PRIORITY_SLOPE_COMP_TIM6   0u
+#define NVIC_PRIORITY_SLOPE_COMP_TIM6 0u
 
 /** HRTIM period + fault — must reload DAC before blanking window expires. */
-#define NVIC_PRIORITY_HRTIM             1u
+#define NVIC_PRIORITY_HRTIM 1u
 
 /** TIM7 (PID) and ADC completion — paired; must be below HRTIM. */
-#define NVIC_PRIORITY_PID_TIM7          2u
+#define NVIC_PRIORITY_PID_TIM7 2u
 
 /** UCPD1 / PD stack — FreeRTOS-managed (confirmed IOC: priority 5). */
-#define NVIC_PRIORITY_UCPD1             5u
+#define NVIC_PRIORITY_UCPD1 5u
 
 /* =========================================================================
  * SECTION 10: PID CONTROLLER PARAMETERS
@@ -389,7 +389,7 @@ _Static_assert(PID_EXECUTION_RATE_HZ >= 1000u && PID_EXECUTION_RATE_HZ <= 500000
  * Units  : DAC counts (0–4095)
  * Value  : 0  (zero current threshold → regulator effectively idle)
  */
-#define PID_OUTPUT_MIN                  0
+#define PID_OUTPUT_MIN 0
 
 /**
  * PID_OUTPUT_MAX — Maximum PID output (DAC counts).
@@ -408,7 +408,7 @@ _Static_assert(PID_EXECUTION_RATE_HZ >= 1000u && PID_EXECUTION_RATE_HZ <= 500000
  *          I_L ≈ 20 A.  A 5 A inductor limit would prevent boost-mode
  *          operation entirely.
  */
-#define PID_OUTPUT_MAX                  4000
+#define PID_OUTPUT_MAX 4000
 
 _Static_assert(PID_OUTPUT_MAX > PID_OUTPUT_MIN && PID_OUTPUT_MAX <= 4095,
                "PID_OUTPUT_MAX must be in (PID_OUTPUT_MIN, 4095]");
@@ -422,14 +422,14 @@ _Static_assert(PID_OUTPUT_MAX > PID_OUTPUT_MIN && PID_OUTPUT_MAX <= 4095,
  * Units  : millivolts
  * Value  : 5000 mV (USB PD SPR minimum, 5 V). (§9.2)
  */
-#define SETPOINT_MIN_MV                 5000u
+#define SETPOINT_MIN_MV 5000u
 
 /**
  * SETPOINT_MAX_MV — Maximum valid voltage setpoint.
  * Units  : millivolts
  * Value  : 48000 mV (USB PD EPR maximum, 48 V). (§9.2)
  */
-#define SETPOINT_MAX_MV                 48000u
+#define SETPOINT_MAX_MV 48000u
 
 /* =========================================================================
  * SECTION 12: SOFTWARE SAFETY THRESHOLDS
@@ -443,7 +443,7 @@ _Static_assert(PID_OUTPUT_MAX > PID_OUTPUT_MIN && PID_OUTPUT_MAX <= 4095,
  * NOTE   : This is a compile-time constant — NOT runtime-tunable.
  *          It represents a hard safety limit below the hardware OVP.
  */
-#define OVP_ABSOLUTE_MV                 52800u
+#define OVP_ABSOLUTE_MV 52800u
 
 /**
  * OVP_RELATIVE_PCT — Relative output overvoltage threshold (% of setpoint).
@@ -451,7 +451,7 @@ _Static_assert(PID_OUTPUT_MAX > PID_OUTPUT_MIN && PID_OUTPUT_MAX <= 4095,
  * Value  : 110  (10 % overshoot above setpoint triggers fault). (§10.2)
  * Range  : [105, 150]
  */
-#define OVP_RELATIVE_PCT                110u
+#define OVP_RELATIVE_PCT 110u
 
 /**
  * UVP_RELATIVE_PCT — Relative output undervoltage threshold (% of setpoint).
@@ -459,7 +459,7 @@ _Static_assert(PID_OUTPUT_MAX > PID_OUTPUT_MIN && PID_OUTPUT_MAX <= 4095,
  * Value  : 50  (50 % below setpoint indicates loss of regulation). (§10.2)
  * Range  : [20, 90]
  */
-#define UVP_RELATIVE_PCT                50u
+#define UVP_RELATIVE_PCT 50u
 
 /**
  * MODE_HYSTERESIS_MV — Hysteresis band around V_in ≈ V_out for mode selection.
@@ -468,36 +468,33 @@ _Static_assert(PID_OUTPUT_MAX > PID_OUTPUT_MIN && PID_OUTPUT_MAX <= 4095,
  * Purpose: Prevents mode chattering when V_in ≈ V_setpoint.
  * Adjust : Empirically if chattering occurs near the buck/boost boundary.
  */
-#define MODE_HYSTERESIS_MV              1000u
+#define MODE_HYSTERESIS_MV 1000u
 
 /**
- * BUCK_VIN_MARGIN_MV — Additional V_in margin required above V_out in buck mode.
- * Units  : millivolts
- * Value  : 500 mV (0.5 V guard band).
- * Purpose: Ensures the converter can maintain regulation in buck mode (§10.2).
+ * BUCK_VIN_MARGIN_MV — Additional V_in margin required above V_out in buck
+ * mode. Units  : millivolts Value  : 500 mV (0.5 V guard band). Purpose:
+ * Ensures the converter can maintain regulation in buck mode (§10.2).
  *          V_in_min(buck) = V_out_target + MODE_HYSTERESIS_MV (used for mode
  *          selection); BUCK_VIN_MARGIN_MV is the fault-trigger margin.
  * TODO(hardware): Verify this margin is sufficient at the actual operating
  *                 point during bring-up.
  */
-#define BUCK_VIN_MARGIN_MV              500u
+#define BUCK_VIN_MARGIN_MV 500u
 
 /**
- * BOOST_VIN_MARGIN_MV — Additional V_out margin required above V_in in boost mode.
- * Units  : millivolts
- * Value  : 500 mV (0.5 V guard band).
- * Purpose: Ensures the converter can maintain regulation in boost mode (§10.2).
+ * BOOST_VIN_MARGIN_MV — Additional V_out margin required above V_in in boost
+ * mode. Units  : millivolts Value  : 500 mV (0.5 V guard band). Purpose:
+ * Ensures the converter can maintain regulation in boost mode (§10.2).
  * TODO(hardware): Verify during bring-up.
  */
-#define BOOST_VIN_MARGIN_MV             500u
+#define BOOST_VIN_MARGIN_MV 500u
 
 /**
- * MAX_CONSECUTIVE_BACKSTOPS_DEFAULT — Default consecutive-backstop fault threshold.
- * Units  : count
- * Value  : 3 (runtime-mutable, see §10.4)
- * Range  : [1, 10]
+ * MAX_CONSECUTIVE_BACKSTOPS_DEFAULT — Default consecutive-backstop fault
+ * threshold. Units  : count Value  : 3 (runtime-mutable, see §10.4) Range  :
+ * [1, 10]
  */
-#define MAX_CONSECUTIVE_BACKSTOPS_DEFAULT  3u
+#define MAX_CONSECUTIVE_BACKSTOPS_DEFAULT 3u
 
 /* =========================================================================
  * SECTION 13: SOFT-START PARAMETER
@@ -510,7 +507,7 @@ _Static_assert(PID_OUTPUT_MAX > PID_OUTPUT_MIN && PID_OUTPUT_MAX <= 4095,
  * Derive : Sets setpoint ramp from 0 to V_target over this interval.
  *          At 20 kHz PID rate = 100 ramp steps.
  */
-#define SOFT_START_RAMP_MS              5u
+#define SOFT_START_RAMP_MS 5u
 
 /* =========================================================================
  * SECTION 14: ADC SCALING CONSTANTS
@@ -521,14 +518,14 @@ _Static_assert(PID_OUTPUT_MAX > PID_OUTPUT_MIN && PID_OUTPUT_MAX <= 4095,
  * Units  : ADC counts
  * Value  : 4096 (2^12)
  */
-#define ADC_FULL_SCALE_COUNTS           4096u
+#define ADC_FULL_SCALE_COUNTS 4096u
 
 /**
  * VREF_MV — ADC voltage reference.
  * Units  : millivolts
  * Value  : 3300 mV (V_DDA = 3.3 V)
  */
-#define VREF_MV                         3300u
+#define VREF_MV 3300u
 
 /**
  * ADC_VOLTAGE_FULL_SCALE_MV — Full-scale physical voltage for VD_MON / VS_MON.
@@ -539,7 +536,7 @@ _Static_assert(PID_OUTPUT_MAX > PID_OUTPUT_MIN && PID_OUTPUT_MAX <= 4095,
  *          3.3 V / 0.05500 = 60.0 V.  (§3.4, Appendix D)
  *          Scaling: V_mV = ADC_raw × 60000 / 4096 ≈ 14.65 mV/count.
  */
-#define ADC_VOLTAGE_FULL_SCALE_MV       60000u
+#define ADC_VOLTAGE_FULL_SCALE_MV 60000u
 
 /**
  * ADC_IL_FULL_SCALE_MA — Full-scale physical current for IL_MON / IS_MON.
@@ -549,7 +546,7 @@ _Static_assert(PID_OUTPUT_MAX > PID_OUTPUT_MIN && PID_OUTPUT_MAX <= 4095,
  *          Scaling: I_mA = ADC_raw × 13200 / 4096 ≈ 3.22 mA/count.
  *          (§3.3, §6.2, Appendix D)
  */
-#define ADC_IL_FULL_SCALE_MA            13200u
+#define ADC_IL_FULL_SCALE_MA 13200u
 
 /**
  * ADC_ID_FULL_SCALE_MA — Full-scale physical current for ID_MON.
@@ -559,7 +556,7 @@ _Static_assert(PID_OUTPUT_MAX > PID_OUTPUT_MIN && PID_OUTPUT_MAX <= 4095,
  *          Scaling: I_mA = ADC_raw × 5500 / 4096 ≈ 1.34 mA/count.
  *          (§3.3, Appendix D)
  */
-#define ADC_ID_FULL_SCALE_MA            5500u
+#define ADC_ID_FULL_SCALE_MA 5500u
 
 /* =========================================================================
  * SECTION 15: DAC3 SCALING CONSTANTS (Slope Compensation / Current Setpoint)
@@ -570,7 +567,7 @@ _Static_assert(PID_OUTPUT_MAX > PID_OUTPUT_MIN && PID_OUTPUT_MAX <= 4095,
  * Units  : DAC counts
  * Value  : 4096 (2^12); maximum usable count = 4095.
  */
-#define DAC_FULL_SCALE_COUNTS           4096u
+#define DAC_FULL_SCALE_COUNTS 4096u
 
 /**
  * DAC_COUNTS_PER_AMP — DAC counts per ampere of peak inductor current.
@@ -582,7 +579,7 @@ _Static_assert(PID_OUTPUT_MAX > PID_OUTPUT_MIN && PID_OUTPUT_MAX <= 4095,
  * NOTE   : Direction is: more DAC counts → higher comparator threshold →
  *          higher peak current before COMP1 trips.
  */
-#define DAC_COUNTS_PER_AMP              310u
+#define DAC_COUNTS_PER_AMP 310u
 
 /**
  * SLOPE_STEP_NUMERATOR — Numerator for slope-step integer computation.
@@ -617,8 +614,9 @@ _Static_assert(PID_OUTPUT_MAX > PID_OUTPUT_MIN && PID_OUTPUT_MAX <= 4095,
  *
  * (§7.2, §7.3, Appendix E)
  */
-#define INDUCTOR_VALUE_UH               4u      /* 4.7 µH, integer part; use float in slope_comp.c */
-#define INDUCTOR_VALUE_UH_TENTHS        7u      /* fractional tenth (4.7 µH) */
+#define INDUCTOR_VALUE_UH                                                      \
+  4u /* 4.7 µH, integer part; use float in slope_comp.c */
+#define INDUCTOR_VALUE_UH_TENTHS 7u /* fractional tenth (4.7 µH) */
 
 /* =========================================================================
  * SECTION 16: POWER STAGE HARDWARE PARAMETERS
@@ -631,22 +629,22 @@ _Static_assert(PID_OUTPUT_MAX > PID_OUTPUT_MIN && PID_OUTPUT_MAX <= 4095,
  */
 
 /** Inductor value (IHLP6767GZER4R7M11) in nanohenries. */
-#define INDUCTOR_VALUE_NH               4700u
+#define INDUCTOR_VALUE_NH 4700u
 
 /** Inductor saturation current in milliamps (Vishay datasheet; Round 3 Q7). */
-#define INDUCTOR_ISAT_MA                21000u
+#define INDUCTOR_ISAT_MA 21000u
 
 /** Input shunt R25 in milliohms (physical inspection, [Jonah]; §3.3). */
-#define INPUT_SHUNT_R25_MOHM            5u
+#define INPUT_SHUNT_R25_MOHM 5u
 
 /** Inductor shunt R5 in milliohms (schematic; §3.3). */
-#define INDUCTOR_SHUNT_R5_MOHM          5u
+#define INDUCTOR_SHUNT_R5_MOHM 5u
 
 /** Output shunt R6 in milliohms (schematic; §3.3). */
-#define OUTPUT_SHUNT_R6_MOHM            12u
+#define OUTPUT_SHUNT_R6_MOHM 12u
 
 /** Current-sense amplifier gain for all three shunts (INA281A2, INA293A2). */
-#define CURRENT_SENSE_AMP_GAIN_VV       50u
+#define CURRENT_SENSE_AMP_GAIN_VV 50u
 
 #ifdef __cplusplus
 }

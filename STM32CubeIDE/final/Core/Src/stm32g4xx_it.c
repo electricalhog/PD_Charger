@@ -22,6 +22,7 @@
 #include "stm32g4xx_it.h"
 #include "usbpd.h"
 #include "tracer_emb.h"
+/* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "regulator.h"
 #include "slope_comp.h"

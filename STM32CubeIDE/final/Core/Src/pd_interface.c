@@ -70,7 +70,7 @@ void pd_interface_notify_voltage_contract(uint32_t voltage_mv)
 
         /* Compute threshold: default 20 % of previous setpoint (§8.8) */
         uint32_t threshold = (pd_previous_voltage_mv *
-                              (uint32_t)regulator_integrator_reset_threshold_pct) / 100u;
+                              (uint32_t)pid_integrator_reset_threshold_pct) / 100u;
 
         if (delta > threshold)
         {
