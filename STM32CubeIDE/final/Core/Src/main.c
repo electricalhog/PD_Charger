@@ -26,6 +26,8 @@
 /* USER CODE BEGIN Includes */
 #include "regulator.h"
 #include "pd_interface.h"
+#include "adc_monitor.h"
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -35,6 +37,14 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+/** Default task test voltage (millivolts).
+ *  The default task bypasses PD negotiation and regulates to this voltage
+ *  directly, enabling standalone regulation testing. */
+#define DEFAULT_TASK_TEST_VOLTAGE_MV  12000u
+
+/** Telemetry print interval in milliseconds. */
+#define DEFAULT_TASK_TELEMETRY_MS     500u
 
 /* USER CODE END PD */
 
@@ -996,7 +1006,15 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN Header_StartDefaultTask */
 /**
-  * @brief  Function implementing the defaultTask thread.
+  * @brief  Default task: test regulation without PD negotiation.
+  *
+  * Sets a fixed 12 V setpoint, starts the regulator, and prints periodic
+  * telemetry over LPUART1 so internal state (ADC reads, DAC writes, PID
+  * error, operating mode, FSM state) can be monitored during bring-up.
+  *
+  * Connect a serial terminal at the configured LPUART1 baud rate to view
+  * the telemetry output.
+  *
   * @param  argument: Not used
   * @retval None
   */
@@ -1004,10 +1022,44 @@ static void MX_GPIO_Init(void)
 void StartDefaultTask(void const * argument)
 {
   /* USER CODE BEGIN 5 */
-  /* Infinite loop */
+  char buf[96];
+  int  len;
+
+  /* Allow peripheral initialisation (regulator_init, PD stack) to settle. */
+  osDelay(200);
+
+  /* Set a fixed test voltage and start the regulator without PD negotiation. */
+  regulator_set_target_voltage(DEFAULT_TASK_TEST_VOLTAGE_MV);
+  regulator_start();
+
+  /* Infinite loop: print telemetry every DEFAULT_TASK_TELEMETRY_MS. */
   for(;;)
   {
-    osDelay(1);
+    osDelay(DEFAULT_TASK_TELEMETRY_MS);
+
+    RegulatorState st   = regulator_get_state();
+    RegulatorMode  mode = regulator_get_mode();
+
+    /* Snapshot volatile telemetry fields. */
+    uint32_t v_out  = adc_measurements.v_out_mv;
+    uint32_t v_in   = adc_measurements.v_in_mv;
+    uint32_t i_l    = adc_measurements.i_inductor_ma;
+    uint32_t i_out  = adc_measurements.i_out_ma;
+    uint16_t dac    = regulator_pid_output_dac_counts;
+    int32_t  err    = regulator_pid_error_mv;
+
+    len = snprintf(buf, sizeof(buf),
+                   "st=%u md=%u vout=%lumV vin=%lumV il=%lumA "
+                   "iout=%lumA dac=%u err=%ldmV\r\n",
+                   (unsigned)st, (unsigned)mode,
+                   (unsigned long)v_out, (unsigned long)v_in,
+                   (unsigned long)i_l, (unsigned long)i_out,
+                   (unsigned)dac, (long)err);
+
+    if (len > 0)
+    {
+      HAL_UART_Transmit(&hlpuart1, (uint8_t *)buf, (uint16_t)len, 10u);
+    }
   }
   /* USER CODE END 5 */
 }

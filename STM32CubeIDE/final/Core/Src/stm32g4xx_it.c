@@ -301,11 +301,13 @@ void TIM6_DAC_IRQHandler(void)
 }
 
 /**
- * @brief TIM7 global interrupt handler.
+ * @brief TIM7/DAC2/DAC4 shared interrupt handler.
+ *        On STM32G474, TIM7 shares IRQ 55 (TIM7_DAC_IRQn) with DAC2/DAC4
+ *        underrun events.  The vector must be named TIM7_DAC_IRQHandler.
  *        TIM7 is used for the PID outer control loop (20 kHz, priority 2).
  *        ISR body is in regulator.c (§8, §13.2).
  */
-void TIM7_IRQHandler(void)
+void TIM7_DAC_IRQHandler(void)
 {
   /* Clear the TIM7 update interrupt flag */
   if (__HAL_TIM_GET_FLAG(&htim7, TIM_FLAG_UPDATE) &&

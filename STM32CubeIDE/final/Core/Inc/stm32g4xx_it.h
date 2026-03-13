@@ -63,7 +63,7 @@ void LPUART1_IRQHandler(void);
 /* USER CODE BEGIN EFP */
 /* Regulator control ISR declarations (priority 0–2, not RTOS-managed) */
 void TIM6_DAC_IRQHandler(void);
-void TIM7_IRQHandler(void);
+void TIM7_DAC_IRQHandler(void);
 void HRTIM1_TIMA_IRQHandler(void);
 void HRTIM1_FLT_IRQHandler(void);
 /* USER CODE END EFP */

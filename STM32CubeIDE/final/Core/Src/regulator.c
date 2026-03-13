@@ -36,6 +36,7 @@
  *   HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx1R  = Timer B SET1R
  *   HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].RSTx1R  = Timer B RST1R
  *   HRTIM1->sTimerxRegs[x].CMP1xR                         = Compare 1 register
+ *   HRTIM1->sTimerxRegs[x].CMP2xR                         = Compare 2 register (bootstrap)
  *   HRTIM1->sCommonRegs.OENR                               = Output enable register
  *   HRTIM1->sCommonRegs.ODISR                              = Output disable register
  *
@@ -72,17 +73,19 @@ extern UART_HandleTypeDef   hlpuart1;
 #define HRTIM_TIMCR_FLT1EN_BIT  (1UL << 20)
 #define HRTIM_TIMCR_FLT2EN_BIT  (1UL << 21)
 
-/** HRTIM RST1R/SET1R: Compare 1 bit (HRTIM_RST1R_CMP1 / HRTIM_SET1R_CMP1)
- *  From RM0440 Table 313 / CMSIS stm32g474xx.h */
+/** HRTIM RST1R/SET1R: Compare 1 bit (bit 3 per RM0440 Table 313 / CMSIS)
+ *  #ifndef guards ensure the CMSIS definitions (stm32g474xx.h) take
+ *  precedence; these fallback values are only compiled if CMSIS is absent. */
 #ifndef HRTIM_RST1R_CMP1
-#define HRTIM_RST1R_CMP1   (1UL << 4)   /* Bit 4 in RST1R: CMP1 reset event */
+#define HRTIM_RST1R_CMP1   (1UL << 3)   /* Bit 3 in RST1R: CMP1 reset event */
 #endif
 #ifndef HRTIM_SET1R_CMP1
-#define HRTIM_SET1R_CMP1   (1UL << 4)   /* Bit 4 in SET1R: CMP1 set event   */
+#define HRTIM_SET1R_CMP1   (1UL << 3)   /* Bit 3 in SET1R: CMP1 set event   */
 #endif
 
-/** HRTIM SET1R software-set bit (bit 31, SST — self-clearing) */
-#define HRTIM_SET1R_SST    (1UL << 31)
+/* HRTIM_SET1R_SST (software-set trigger, bit 0) is defined in stm32g474xx.h.
+ * A previous version redefined it here as (1UL << 31) which was incorrect.
+ * The SST mechanism is no longer used; bootstrap refresh is via CMP2. */
 
 /* =========================================================================
  * State machine variables
@@ -771,87 +774,75 @@ static void hrtim_start_timers(void)
 }
 
 /**
- * hrtim_apply_buck_mode_static_leg — Force Timer B outputs for static leg.
+ * hrtim_apply_buck_mode_static_leg — Configure Timer B for bootstrap-refreshed
+ * static HIGH operation (buck mode output-side leg).
  *
- * In buck mode, Timer B (output side) must hold CHB1 HIGH continuously.
- * Mechanism (§5.5):
- *   - Clear RST1R (no reset events) so nothing drives CHB1 LOW.
- *   - Write SST (software-set, self-clearing) to SET1R to force CHB1 HIGH.
- *   - Since nothing can reset it after SST fires, CHB1 stays HIGH.
+ * In buck mode Timer B (output side) must hold CHB1 HIGH, with a brief LOW
+ * pulse each period to recharge the bootstrap capacitor on the Q3 gate driver
+ * (§5.4 bootstrap refresh design).
  *
- * NOTE: This clears the EEV4+CMP1 set sources we configured in
- * hrtim_configure_fault_levels_and_enable.  We must restore them when
- * transitioning to boost mode.  TODO: Document register restore in mode
- * transition code.
+ * Bootstrap refresh mechanism (CMP2-based, replaces SST):
+ *   - At each Timer B period reset: CHB1 → LOW (RST source = TIMPER)
+ *   - At count = BOOTSTRAP_REFRESH_TICKS (~200 ns): CHB1 → HIGH (SET source = CMP2)
+ *   - CHB1 stays HIGH for the rest of the period (~4.8 µs at 200 kHz)
+ *
+ * During the 200 ns refresh pulse:
+ *   Q1 (CHA1) is ON (Timer A just started its charge phase at the same period
+ *   reset), Q3 (CHB1) is OFF, and Q4 (CHB2, complementary) is ON.  Current
+ *   path: V_in → Q1 → L → Q4 → GND; output capacitor supplies the load.
+ *   Effective duty-cycle reduction ≈ BOOTSTRAP_REFRESH_TICKS/HRTIM_PERIOD_COUNTS
+ *   ≈ 4 %.  Monitor output ripple during bring-up and adjust if needed.
  */
 static void hrtim_apply_buck_mode_static_leg(void)
 {
     /* Restore Timer A (input side) switching configuration.
      * When transitioning from boost mode, Timer A's RSTx1R was cleared
-     * (it was used as the static leg in boost mode).  Restore it here
-     * so Timer A can switch in buck mode.
-     * If this is the initial call (from regulator_init), these registers
-     * already hold the values from hrtim_configure_fault_levels_and_enable
-     * + hrtim_configure_backstop_compare1, so OR'ing them in is idempotent.  */
+     * (it was the static leg in boost mode).  Restore it here so Timer A
+     * can switch in buck mode.  Safe to overwrite on initial call too.    */
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].SETx1R =
         HRTIM_OUTPUTSET_TIMPER;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].RSTx1R =
         HRTIM_OUTPUTRESET_EEV_4 | HRTIM_RST1R_CMP1;
 
-    /* Configure Timer B (output side) as static HIGH leg.
-     *
-     * TODO(hardware): The mechanism below uses SST (software-set, self-
-     * clearing) which forces CHB1 HIGH immediately.  Since RST1R is cleared,
-     * CHB1 will remain HIGH.  However, clearing RST1R removes the Period
-     * reset event needed for boost mode.  The mode transition sequence must
-     * restore RST1R = HRTIM_OUTPUTRESET_TIMPER | CMP1 when switching to boost.
-     *
-     * An alternative is to keep the EEV4 set source active but effectively
-     * idle (DAC at max so COMP1 never fires in buck static leg mode).
-     * For v0.1.2 bring-up, the SST mechanism is the simplest approach.      */
-
-    /* Clear all reset sources for TB1 (nothing will drive CHB1 LOW) */
-    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].RSTx1R = 0u;
-
-    /* Fire SST to force CHB1 HIGH immediately.
-     * SST is self-clearing; the output holds HIGH because RST1R = 0.        */
-    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx1R = HRTIM_SET1R_SST;
+    /* Configure Timer B (output side) for CMP2-based bootstrap refresh.
+     * Order: write CMP2xR before modifying SET/RST so the compare value is
+     * valid before the sources are activated.                               */
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP2xR = BOOTSTRAP_REFRESH_TICKS;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].RSTx1R = HRTIM_OUTPUTRESET_TIMPER;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx1R = HRTIM_OUTPUTSET_TIMCMP2;
 }
 
 /**
- * hrtim_apply_boost_mode_static_leg — Force Timer A outputs for static leg.
+ * hrtim_apply_boost_mode_static_leg — Configure Timer A for bootstrap-refreshed
+ * static HIGH operation (boost mode input-side leg).
  *
- * In boost mode, Timer A (input side) must hold CHA1 HIGH continuously,
- * except during the bootstrap refresh pulse at the start of each period.
+ * In boost mode Timer A (input side) must hold CHA1 HIGH, with a brief LOW
+ * pulse each period to recharge the bootstrap capacitor on the Q1 gate driver
+ * (§5.4 bootstrap refresh design).
  *
- * Static forcing mechanism is the same as for buck mode:
- *   - Clear RST1R (no reset events for TA1).
- *   - Fire SST on SET1R to force CHA1 HIGH immediately.
+ * Bootstrap refresh mechanism (CMP2-based, symmetric with buck mode):
+ *   - At each Timer A period reset: CHA1 → LOW (RST source = TIMPER)
+ *   - At count = BOOTSTRAP_REFRESH_TICKS (~200 ns): CHA1 → HIGH (SET source = CMP2)
+ *   - CHA1 stays HIGH for the rest of the period (~4.8 µs at 200 kHz)
  *
- * Bootstrap refresh (§5.4 boost mode):
- *   At the period reset, CHA1 must briefly go LOW for ≥200 ns.
- *   TODO(hardware): Implement bootstrap refresh for Timer A in boost mode.
- *   Options:
- *     a) HRTIM output compare at t=0 to t=REFRESH_TICKS to drive CHA1 LOW,
- *        then re-assert SST after REFRESH_TICKS.
- *     b) Use HRTIM period ISR to momentarily drive CHA1 LOW via direct
- *        register write (HRTIM forced-inactive via RST1R SST equivalent).
- *     c) Use an additional compare unit to generate a short LOW pulse.
- *   For v0.1.2 initial bring-up, the bootstrap refresh is left as a TODO.
- *   The bootstrap cap hold time is ~10 µs; at 200 kHz (5 µs period), the
- *   bootstrap may drain before the first refresh.  Monitor this during
- *   bring-up and implement if UV lockout is observed.
+ * During the 200 ns refresh pulse Timer B is simultaneously starting its
+ * switching cycle (CHB1 also LOW at period reset).  Both low-side FETs Q2
+ * (CHA2, after dead-time) and Q4 (CHB2, after dead-time) may be ON, clamping
+ * inductor voltage to ~0 V.  Current change ΔI ≈ 0 over ~200 ns at 4.7 µH.
+ * The boost blanking window (HRTIM_BLANKING_TICKS_BOOST = 2720 ticks = 500 ns)
+ * covers the refresh pulse, preventing COMP1 false-trip on the switching
+ * transient.  Verify safe operation during hardware bring-up.
  */
 static void hrtim_apply_boost_mode_static_leg(void)
 {
-    /* Clear all reset sources for TA1 */
-    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].RSTx1R = 0u;
+    /* Configure Timer A (input side) for CMP2-based bootstrap refresh.     */
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP2xR = BOOTSTRAP_REFRESH_TICKS;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].RSTx1R = HRTIM_OUTPUTRESET_TIMPER;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].SETx1R = HRTIM_OUTPUTSET_TIMCMP2;
 
-    /* Fire SST to force CHA1 HIGH */
-    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].SETx1R = HRTIM_SET1R_SST;
-
-    /* Restore boost switching sources for Timer B
-     * (cleared in hrtim_apply_buck_mode_static_leg if previously in buck mode) */
+    /* Restore boost switching sources for Timer B (output side).
+     * (These were overwritten by hrtim_apply_buck_mode_static_leg when
+     * transitioning from buck mode, or are set here for initial boost start.) */
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].RSTx1R =
         HRTIM_OUTPUTRESET_TIMPER | HRTIM_RST1R_CMP1;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx1R =

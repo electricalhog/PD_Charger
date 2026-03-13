@@ -198,7 +198,7 @@ extern "C" {
  * INPUT_EN — Enables input power path
  * MCU pin : PC7
  * Net     : INPUT_EN (input.kicad_sch)
- * Physical: ADM1270 gate control enable signal, active high
+ * Physical: ADM1270 gate control enable signal, active HIGH (confirmed)
  * Dir     : GPIO output
  * Usage   : Assert HIGH before enabling switching; deassert on fault/shutdown.
  */
@@ -209,7 +209,7 @@ extern "C" {
  * OUTPUT_EN — Enables output power path
  * MCU pin : PC8
  * Net     : OUTPUT_EN
- * Physical: Output path enable signal, active high
+ * Physical: Output path enable signal, active HIGH (confirmed)
  * Dir     : GPIO output
  * Usage   : Assert HIGH before switching; deassert on fault/shutdown.
  */
@@ -220,9 +220,9 @@ extern "C" {
  * OUTPUT_DIS — Discharges output path
  * MCU pin : PC9
  * Net     : OUTPUT_DIS
- * Physical: Output path discharge signal, active high
+ * Physical: Output path discharge signal, active HIGH (confirmed)
  * Dir     : GPIO output
- * Usage   : Assert during FAULT and IDLE states.
+ * Usage   : Assert (HIGH) during FAULT and IDLE states to bleed VBUS.
  */
 #define PIN_OUTPUT_DIS_PORT GPIOC
 #define PIN_OUTPUT_DIS_PIN GPIO_PIN_9
@@ -273,6 +273,28 @@ _Static_assert(HRTIM_BLANKING_TICKS_BOOST >= 1088u &&
                "HRTIM_BLANKING_TICKS_BOOST out of valid range [1088, 5440]");
 
 /**
+ * BOOTSTRAP_REFRESH_TICKS — Duration of the bootstrap refresh LOW pulse.
+ * Units  : HRTIM ticks (183.82 ps/tick at MUL32 prescaler)
+ * Derive : 200 ns / 183.82e-12 ≈ 1088 ticks. (§5.4)
+ * Purpose: CMP2 is programmed to this value on the static leg timer.  At each
+ *          period reset the static leg output goes LOW (bootstrap cap charges
+ *          through the gate driver bootstrap diode).  CMP2 fires after this
+ *          interval and drives the output back HIGH.
+ * Constraint: Must be ≤ HRTIM_BLANKING_TICKS_BOOST so the refresh pulse on
+ *             the boost static leg (CHA1) completes before COMP1 is unmasked.
+ *             Also must be ≤ HRTIM_PERIOD_COUNTS − MAX_ON_TIME_COUNTS to avoid
+ *             overlap with the active switching phase.
+ * NOTE: During the boost-mode refresh, both input (Q2) and output (Q4)
+ *       low-side FETs are simultaneously ON for ~200 ns.  Inductor voltage is
+ *       clamped to ~0 V; current change is negligible (ΔI ≈ 0 over 200 ns at
+ *       4.7 µH).  Verify safe operation during hardware bring-up.
+ */
+#define BOOTSTRAP_REFRESH_TICKS 1088u
+
+_Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
+               "BOOTSTRAP_REFRESH_TICKS must fit within boost blanking window");
+
+/**
  * MAX_DUTY_CYCLE_PCT — Maximum allowed charge-phase duty cycle.
  * Units  : percent of switching period
  * Derive : 85 % leaves ~750 ns at 200 kHz for the discharge phase and
@@ -296,6 +318,10 @@ _Static_assert(MAX_DUTY_CYCLE_PCT >= 50u && MAX_DUTY_CYCLE_PCT <= 96u,
  *          inductor current ramp when COMP1 is inactive.
  */
 #define MAX_ON_TIME_COUNTS ((HRTIM_PERIOD_COUNTS) * (MAX_DUTY_CYCLE_PCT) / 100u)
+
+_Static_assert(BOOTSTRAP_REFRESH_TICKS <
+               (HRTIM_PERIOD_COUNTS - MAX_ON_TIME_COUNTS),
+               "BOOTSTRAP_REFRESH_TICKS must not overlap active switching phase");
 
 /* =========================================================================
  * SECTION 7: SLOPE COMPENSATION TIMER (TIM6) CONSTANTS

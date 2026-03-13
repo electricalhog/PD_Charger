@@ -26,7 +26,7 @@
  *   TIM6_DAC_IRQHandler            — slope compensation (priority 0)
  *   HRTIM1_TIMA_IRQHandler         — DAC Y-intercept reload + backstop count (priority 1)
  *   HRTIM1_FLT_IRQHandler          — fault handling (priority 1)
- *   TIM7_IRQHandler                — PID computation (priority 2)
+ *   TIM7_DAC_IRQHandler            — PID computation (priority 2)
  *
  * NLSpec conformance: v0.1.2j §4–§12
  */
@@ -274,7 +274,7 @@ void regulator_hrtim_fault_isr(void);
 /**
  * regulator_pid_tim7_isr — PID computation ISR body.
  *
- * Called from TIM7_IRQHandler.  Reads ADC results, runs PID, updates DAC
+ * Called from TIM7_DAC_IRQHandler.  Reads ADC results, runs PID, updates DAC
  * peak, updates slope step, performs software safety checks (§8, §10.2).
  */
 void regulator_pid_tim7_isr(void);
