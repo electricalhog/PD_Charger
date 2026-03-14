@@ -80,8 +80,12 @@
 #define UCPDFRS_INSTANCE0_FRSCC1
 #define UCPDFRS_INSTANCE0_FRSCC2
 
+/* Priority must be >= configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY (5) because
+ * USBPD_CAD_WakeUp() calls osMessagePut() -> xQueueSendFromISR() from this ISR.
+ * Priority 4 (the previous value) is above the FreeRTOS syscall ceiling and
+ * causes the configASSERT in vPortValidateInterruptPriority() to fire. */
 #define UCPD_INSTANCE0_ENABLEIRQ   do{                                                                 \
-                                        NVIC_SetPriority(UCPD1_IRQn,4);                              \
+                                        NVIC_SetPriority(UCPD1_IRQn,5);                              \
                                         NVIC_EnableIRQ(UCPD1_IRQn);                                  \
                                     } while(0)
 

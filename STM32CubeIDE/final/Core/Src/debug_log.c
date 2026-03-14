@@ -53,8 +53,15 @@ void debug_log_record(const DebugSample *sample)
 /**
  * Zero the buffer and reset all indices.
  *
- * Disables TIM7_DAC_IRQn briefly to prevent a partial write during the
- * memset (called from the FreeRTOS task, below the ISR priority mask).
+ * Uses HAL_NVIC_DisableIRQ / EnableIRQ rather than a FreeRTOS critical
+ * section because the TIM7 ISR runs at priority 2, which is above
+ * configMAX_SYSCALL_INTERRUPT_PRIORITY (5).  FreeRTOS critical sections
+ * (taskENTER_CRITICAL) use BASEPRI to mask ISRs up to that priority, so
+ * they cannot mask TIM7.  Direct NVIC enable/disable correctly gates a
+ * single IRQ regardless of priority.
+ *
+ * May be called from any FreeRTOS task context.  Must NOT be called from
+ * an ISR.
  */
 void debug_log_clear(void)
 {
