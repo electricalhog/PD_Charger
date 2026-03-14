@@ -56,6 +56,12 @@ set(MX_Application_Src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/stm32g4xx_hal_timebase_tim.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/sysmem.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/syscalls.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/regulator.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/pid_controller.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/slope_comp.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/adc_monitor.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/pd_interface.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/debug_log.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../startup_stm32g474xx.s
 )
 

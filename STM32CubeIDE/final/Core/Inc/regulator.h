@@ -68,8 +68,9 @@ typedef enum
  */
 typedef enum
 {
-    REGULATOR_MODE_BUCK  = 0, /**< V_in > V_out: Timer A switches, Timer B static */
-    REGULATOR_MODE_BOOST = 1  /**< V_in < V_out: Timer B switches, Timer A static */
+    REGULATOR_MODE_BUCK      = 0, /**< V_in > V_out: Timer A switches, Timer B static */
+    REGULATOR_MODE_BOOST     = 1, /**< V_in < V_out: Timer B switches, Timer A static */
+    REGULATOR_MODE_BUCK_BOOST = 2 /**< V_in ≈ V_out: four-switch interleaved (future) */
 } RegulatorMode;
 
 /**
@@ -156,7 +157,10 @@ extern volatile int32_t regulator_pid_error_mv;
  *   1. Reconfigure HRTIM output fault levels to INACTIVE (all FETs off on
  *      fault).  CubeMX sets FaultLevel = NONE; this corrects it (§5.5).
  *   2. Enable FLT1 and FLT2 fault response on Timer A and Timer B.
- *   3. Configure backstop Compare 1 registers on Timer A and Timer B (§10.3).
+ *   3. Configure HRTIM compare registers on Timer A and Timer B (§10.3):
+ *        CMP1 = blanking window end (HRTIM_TIMEEVFLT_BLANKINGCMP1)
+ *        CMP2 = hardware backstop max on-time (ends charge phase if EEV4 late)
+ *        CMP3 = bootstrap refresh pulse end (static leg resumes HIGH after LOW)
  *   4. Set DAC3 CH1 to 0 (zero current setpoint).
  *   5. Start COMP1 (§6.1).
  *   6. Configure slope compensation timer TIM6 (slope_comp_init()).
@@ -259,7 +263,7 @@ RegulatorMode regulator_get_mode(void);
  * regulator_hrtim_tima_period_isr — HRTIM Timer A period ISR body.
  *
  * Called from HRTIM1_TIMA_IRQHandler.  Reloads DAC3 CH1 with the current
- * PID peak value (§7.6) and counts CMP1 backstop events (§10.4).
+ * PID peak value (§7.6) and counts CMP2 backstop events (§10.4).
  */
 void regulator_hrtim_tima_period_isr(void);
 

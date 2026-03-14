@@ -27,7 +27,7 @@
 #include "regulator.h"
 #include "pd_interface.h"
 #include "adc_monitor.h"
-#include <stdio.h>
+#include "debug_log.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -42,9 +42,6 @@
  *  The default task bypasses PD negotiation and regulates to this voltage
  *  directly, enabling standalone regulation testing. */
 #define DEFAULT_TASK_TEST_VOLTAGE_MV  12000u
-
-/** Telemetry print interval in milliseconds. */
-#define DEFAULT_TASK_TELEMETRY_MS     500u
 
 /* USER CODE END PD */
 
@@ -145,23 +142,15 @@ int main(void)
   MX_TIM7_Init();
   MX_TCPP_Init();
   /* USER CODE BEGIN 2 */
-  /* Sign-of-life A: peripherals initialised, about to call regulator_init(). */
-  {
-    static const char msg_a[] = "main: pre-regulator_init\r\n";
-    HAL_UART_Transmit(&hlpuart1, (uint8_t *)msg_a, sizeof(msg_a) - 1u, 200u);
-  }
-
   /* Initialise the buck-boost regulator after all peripheral MX inits.
    * regulator_init() performs HRTIM post-configuration, PID init, ADC
    * calibration, slope compensation setup, and transitions to IDLE state.
    * Must run before osKernelStart() so interrupts are armed before RTOS. */
   regulator_init();
 
-  /* Sign-of-life B: regulator_init() returned, about to start RTOS. */
-  {
-    static const char msg_b[] = "main: post-regulator_init, starting RTOS\r\n";
-    HAL_UART_Transmit(&hlpuart1, (uint8_t *)msg_b, sizeof(msg_b) - 1u, 200u);
-  }
+  /* Clear the debug capture buffer so the first samples collected after
+   * osKernelStart() are clean (no zero-filled ghost entries). */
+  debug_log_clear();
   /* USER CODE END 2 */
 
   /* USBPD initialisation ---------------------------------*/
@@ -1066,12 +1055,16 @@ static void MX_GPIO_Init(void)
 /**
   * @brief  Default task: test regulation without PD negotiation.
   *
-  * Sets a fixed 12 V setpoint, starts the regulator, and prints periodic
-  * telemetry over LPUART1 so internal state (ADC reads, DAC writes, PID
-  * error, operating mode, FSM state) can be monitored during bring-up.
+  * Sets a fixed 12 V setpoint, starts the regulator, and monitors the
+  * debug_log circular buffer which is filled by the PID ISR at 20 kHz.
   *
-  * Connect a serial terminal at the configured LPUART1 baud rate to view
-  * the telemetry output.
+  * LPUART1 is claimed by the UCPD peripheral and must not be used for
+  * serial printing during closed-loop operation.  Instead, use a JTAG/SWD
+  * debugger to inspect the "debug_log" global variable in real time:
+  *   - STM32CubeIDE: Expressions window → add "debug_log"
+  *   - STM32CubeIDE: Memory window → address of debug_log
+  *   - Any GDB client: "print debug_log" or "x/NNxw &debug_log"
+  * At 20 kHz, 512 samples = 25.6 ms of continuous capture per wrap.
   *
   * @param  argument: Not used
   * @retval None
@@ -1080,51 +1073,22 @@ static void MX_GPIO_Init(void)
 void StartDefaultTask(void const * argument)
 {
   /* USER CODE BEGIN 5 */
-  char buf[96];
-  int  len;
 
   /* Allow peripheral initialisation (regulator_init, PD stack) to settle. */
   osDelay(200);
 
-  /* Sign-of-life: confirm the task is alive before regulation setup begins. */
-  {
-    static const char sign_of_life[] = "StartDefaultTask: alive, entering regulator setup\r\n";
-    HAL_UART_Transmit(&hlpuart1, (uint8_t *)sign_of_life,
-                      sizeof(sign_of_life) - 1u, 100u);
-  }
+  /* Start a fresh capture window before enabling the regulator. */
+  debug_log_clear();
 
   /* Set a fixed test voltage and start the regulator without PD negotiation. */
   regulator_set_target_voltage(DEFAULT_TASK_TEST_VOLTAGE_MV);
   regulator_start();
 
-  /* Infinite loop: print telemetry every DEFAULT_TASK_TELEMETRY_MS. */
+  /* Infinite loop: yield to the RTOS scheduler.  The debug buffer is filled
+   * at 20 kHz by the TIM7 PID ISR; no task-level action is needed. */
   for(;;)
   {
-    osDelay(DEFAULT_TASK_TELEMETRY_MS);
-
-    RegulatorState st   = regulator_get_state();
-    RegulatorMode  mode = regulator_get_mode();
-
-    /* Snapshot volatile telemetry fields. */
-    uint32_t v_out  = adc_measurements.v_out_mv;
-    uint32_t v_in   = adc_measurements.v_in_mv;
-    uint32_t i_l    = adc_measurements.i_inductor_ma;
-    uint32_t i_out  = adc_measurements.i_out_ma;
-    uint16_t dac    = regulator_pid_output_dac_counts;
-    int32_t  err    = regulator_pid_error_mv;
-
-    len = snprintf(buf, sizeof(buf),
-                   "st=%u md=%u vout=%lumV vin=%lumV il=%lumA "
-                   "iout=%lumA dac=%u err=%ldmV\r\n",
-                   (unsigned)st, (unsigned)mode,
-                   (unsigned long)v_out, (unsigned long)v_in,
-                   (unsigned long)i_l, (unsigned long)i_out,
-                   (unsigned)dac, (long)err);
-
-    if (len > 0)
-    {
-      HAL_UART_Transmit(&hlpuart1, (uint8_t *)buf, (uint16_t)len, 10u);
-    }
+    osDelay(1000);
   }
   /* USER CODE END 5 */
 }

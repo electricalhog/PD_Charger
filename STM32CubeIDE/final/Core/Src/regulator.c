@@ -5,7 +5,7 @@
  *
  * This file owns:
  *   - System state machine (INIT/IDLE/RUNNING/FAULT) and mode (BUCK/BOOST)
- *   - HRTIM post-init configuration (fault levels, fault enable, backstop CMP1)
+ *   - HRTIM post-init configuration (fault levels, fault enable, compare regs)
  *   - Soft-start ramp logic
  *   - Mode selection and mode transition sequence
  *   - Software safety checks (OVP, UVP, V_in range, backstop count)
@@ -19,14 +19,29 @@
  *   CHB1 (PA10) = Timer B Output 1 = output-side high-side FET (Q3)
  *   CHB2 (PA11) = Timer B Output 2 = output-side low-side  FET (Q4, complementary)
  *
- * Buck mode:  Timer A switches (CHA1 Set=Period, Reset=EEV4)
- *             Timer B static   (CHB1 forced HIGH)
+ * Buck mode:  Timer A switches (CHA1 Set=Period, Reset=EEV4|CMP2)
+ *             Timer B static   (CHB1 Set=CMP3,   Reset=Period — bootstrap refresh)
  *
- * Boost mode: Timer B switches (CHB1 Set=EEV4, Reset=Period)
- *             Timer A static   (CHA1 forced HIGH)
+ * Boost mode: Timer B switches (CHB1 Set=EEV4|CMP2, Reset=Period)
+ *             Timer A static   (CHA1 Set=CMP3,       Reset=Period — bootstrap refresh)
  *
  * Both timer Set/Reset sources are pre-configured by CubeMX (final.ioc,
  * confirmed v0.1.2i, §5.5).  No polarity swap is needed at mode transition.
+ * ============================================================
+ *
+ * ============================================================
+ * HRTIM compare register assignments (§10.3):
+ *   CMP1xR — Blanking window end: EEV4 is masked until CMP1 fires.
+ *             Timer A CMP1 = HRTIM_BLANKING_TICKS_BUCK  (buck active leg)
+ *             Timer B CMP1 = HRTIM_BLANKING_TICKS_BOOST (boost active leg)
+ *             Blanking filter: HRTIM_TIMEEVFLT_BLANKINGCMP1 (configured in IOC).
+ *   CMP2xR — Hardware backstop: ends the charge phase if EEV4 has not fired.
+ *             Both timers: MAX_ON_TIME_COUNTS.
+ *             Active leg RST source (buck): HRTIM_OUTPUTRESET_TIMCMP2.
+ *             Active leg SET source (boost): HRTIM_OUTPUTSET_TIMCMP2.
+ *   CMP3xR — Bootstrap refresh end: static leg resumes HIGH after LOW pulse.
+ *             Both timers: BOOTSTRAP_REFRESH_TICKS.
+ *             Static leg SET source: HRTIM_OUTPUTSET_TIMCMP3.
  * ============================================================
  *
  * ============================================================
@@ -35,13 +50,11 @@
  *   HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].RSTx1R  = Timer A RST1R
  *   HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx1R  = Timer B SET1R
  *   HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].RSTx1R  = Timer B RST1R
- *   HRTIM1->sTimerxRegs[x].CMP1xR                         = Compare 1 register
- *   HRTIM1->sTimerxRegs[x].CMP2xR                         = Compare 2 register (bootstrap)
- *   HRTIM1->sCommonRegs.OENR                               = Output enable register
- *   HRTIM1->sCommonRegs.ODISR                              = Output disable register
- *
- * HRTIM_RST1R_CMP1 = bit for Compare 1 in RST register (from CMSIS headers)
- * HRTIM_SET1R_CMP1 = bit for Compare 1 in SET register
+ *   HRTIM1->sTimerxRegs[x].CMP1xR = Compare 1 (blanking end)
+ *   HRTIM1->sTimerxRegs[x].CMP2xR = Compare 2 (backstop)
+ *   HRTIM1->sTimerxRegs[x].CMP3xR = Compare 3 (bootstrap refresh pulse end)
+ *   HRTIM1->sCommonRegs.OENR       = Output enable register
+ *   HRTIM1->sCommonRegs.ODISR      = Output disable register
  * ============================================================
  */
 
@@ -51,6 +64,7 @@
 #include "slope_comp.h"
 #include "adc_monitor.h"
 #include "pd_interface.h"
+#include "debug_log.h"
 #include "main.h"           /* hhrtim1, hdac3, htim6, htim7, hcomp1 handles */
 #include "stm32g4xx_hal.h"
 #include <string.h>         /* memset */
@@ -60,32 +74,42 @@ extern HRTIM_HandleTypeDef  hhrtim1;
 extern DAC_HandleTypeDef    hdac3;
 extern TIM_HandleTypeDef    htim7;
 extern COMP_HandleTypeDef   hcomp1;
-extern UART_HandleTypeDef   hlpuart1;
 
 /* =========================================================================
  * HRTIM convenience bit definitions
  *
- * These bit positions follow RM0440 §27.5.x.  We define them here rather
- * than relying on potentially absent CMSIS shorthand names.
+ * These bit positions follow RM0440 §27.5.x.  CMSIS (stm32g474xx.h) defines
+ * HRTIM_SET1R_CMPx and HRTIM_RST1R_CMPx directly; fallback defines are
+ * provided below for each used compare unit in case the header is absent.
  * =========================================================================*/
 
 /** HRTIM TIMxCR register: FLT1EN (bit 20) and FLT2EN (bit 21) */
 #define HRTIM_TIMCR_FLT1EN_BIT  (1UL << 20)
 #define HRTIM_TIMCR_FLT2EN_BIT  (1UL << 21)
 
-/** HRTIM RST1R/SET1R: Compare 1 bit (bit 3 per RM0440 Table 313 / CMSIS)
- *  #ifndef guards ensure the CMSIS definitions (stm32g474xx.h) take
- *  precedence; these fallback values are only compiled if CMSIS is absent. */
+/* Compare 1 (CMP1): blanking window end.  Bit 3 in SET1R/RST1R. */
 #ifndef HRTIM_RST1R_CMP1
-#define HRTIM_RST1R_CMP1   (1UL << 3)   /* Bit 3 in RST1R: CMP1 reset event */
+#define HRTIM_RST1R_CMP1   (1UL << 3)
 #endif
 #ifndef HRTIM_SET1R_CMP1
-#define HRTIM_SET1R_CMP1   (1UL << 3)   /* Bit 3 in SET1R: CMP1 set event   */
+#define HRTIM_SET1R_CMP1   (1UL << 3)
 #endif
 
-/* HRTIM_SET1R_SST (software-set trigger, bit 0) is defined in stm32g474xx.h.
- * A previous version redefined it here as (1UL << 31) which was incorrect.
- * The SST mechanism is no longer used; bootstrap refresh is via CMP2. */
+/* Compare 2 (CMP2): hardware backstop.  Bit 4 in SET1R/RST1R. */
+#ifndef HRTIM_RST1R_CMP2
+#define HRTIM_RST1R_CMP2   (1UL << 4)
+#endif
+#ifndef HRTIM_SET1R_CMP2
+#define HRTIM_SET1R_CMP2   (1UL << 4)
+#endif
+
+/* Compare 3 (CMP3): bootstrap refresh end.  Bit 5 in SET1R/RST1R. */
+#ifndef HRTIM_RST1R_CMP3
+#define HRTIM_RST1R_CMP3   (1UL << 5)
+#endif
+#ifndef HRTIM_SET1R_CMP3
+#define HRTIM_SET1R_CMP3   (1UL << 5)
+#endif
 
 /* =========================================================================
  * State machine variables
@@ -142,7 +166,7 @@ static uint32_t softstart_increment_mv = 0u;
  * Backstop counter
  * =========================================================================*/
 
-/** Consecutive periods in which CMP1 fired before COMP1 (§10.4). */
+/** Consecutive periods in which CMP2 fired before COMP1 (§10.4). */
 static volatile uint8_t consecutive_backstop_count = 0u;
 
 /* =========================================================================
@@ -150,7 +174,7 @@ static volatile uint8_t consecutive_backstop_count = 0u;
  * =========================================================================*/
 
 static void hrtim_configure_fault_levels_and_enable(void);
-static void hrtim_configure_backstop_compare1(void);
+static void hrtim_configure_compare_registers(void);
 static void hrtim_enable_period_and_fault_interrupts(void);
 static void hrtim_start_timers(void);
 static void hrtim_apply_buck_mode_static_leg(void);
@@ -175,8 +199,9 @@ void regulator_init(void)
      *  be corrected in post-init or faults will not affect the outputs.    */
     hrtim_configure_fault_levels_and_enable();
 
-    /* --- Step 2: Configure backstop Compare 1 registers (§10.3) --- */
-    hrtim_configure_backstop_compare1();
+    /* --- Step 2: Configure HRTIM compare registers (§10.3) ---
+     *  CMP1 = blanking window end, CMP2 = backstop, CMP3 = bootstrap end   */
+    hrtim_configure_compare_registers();
 
     /* --- Step 3: Set DAC3 CH1 to 0 (zero current threshold → safe) --- */
     HAL_DAC_SetValue(&hdac3, DAC_CHANNEL_1, DAC_ALIGN_12B_R, 0u);
@@ -306,7 +331,7 @@ void regulator_start(void)
         HAL_HRTIM_WaveformOutputStart(&hhrtim1,
                                        HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2);
     }
-    else /* BOOST */
+    else /* BOOST (future: BUCK_BOOST for four-switch mode) */
     {
         /* Enable Timer B outputs (CHB1/CHB2 = output-side switching leg) */
         HAL_HRTIM_WaveformOutputStart(&hhrtim1,
@@ -429,7 +454,7 @@ RegulatorMode regulator_get_mode(void)
  *
  * Fires at every switching period reset (200 kHz at default settings).
  * Reloads DAC3 CH1 with the PID peak value (§7.6).
- * Counts CMP1 backstop events (§10.4).
+ * Counts CMP2 backstop events (§10.4).
  *
  * Priority: NVIC_PRIORITY_HRTIM (1) — below TIM6 (0), above TIM7 (2).
  * No FreeRTOS API calls allowed.
@@ -441,13 +466,13 @@ void regulator_hrtim_tima_period_isr(void)
         return;
     }
 
-    /* Check if this period reset was caused by the Compare 1 backstop.
+    /* Check if this period reset was caused by the Compare 2 backstop.
      * We distinguish by checking the HRTIM Timer A interrupt status register:
      *   - REP flag (bit 0) = period/repetition interrupt
-     *   - CMP1 flag (bit 4) = compare 1 match interrupt
+     *   - CMP2 flag (bit 5) = compare 2 match interrupt
      *
-     * TODO(hardware): Wire CMP1 interrupt properly.  For now, backstop
-     * counting is a TODO pending hardware verification that CMP1 fires
+     * TODO(hardware): Wire CMP2 interrupt properly.  For now, backstop
+     * counting is a TODO pending hardware verification that CMP2 fires
      * correctly.  See §10.3.
      */
 
@@ -563,7 +588,7 @@ void regulator_pid_tim7_isr(void)
                                                HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2 |
                                                HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2);
             }
-            else /* BOOST */
+            else /* BOOST (future: BUCK_BOOST for four-switch mode) */
             {
                 hrtim_apply_boost_mode_static_leg();
                 HAL_HRTIM_WaveformOutputStart(&hhrtim1,
@@ -640,6 +665,24 @@ void regulator_pid_tim7_isr(void)
     {
         regulator_ready = false;
     }
+
+    /* --- 10. High-speed debug sample capture (§15.3) ---
+     * Record one sample per PID cycle (20 kHz) into the circular debug buffer.
+     * All fields are derived from values already computed in this ISR so there
+     * is no extra ADC conversion overhead.  The buffer is readable in a live
+     * debugger memory/watch window without halting the CPU.                  */
+    {
+        DebugSample s;
+        s.v_out_mv      = v_out_mv;
+        s.v_in_mv       = v_in_mv;
+        s.i_inductor_ma = (uint32_t)adc_measurements.i_inductor_ma;
+        s.i_out_ma      = (uint32_t)adc_measurements.i_out_ma;
+        s.dac_counts    = (uint16_t)dac_counts;
+        s.error_mv      = regulator_pid_error_mv;
+        s.state         = (uint8_t)regulator_state;
+        s.mode          = (uint8_t)regulator_mode;
+        debug_log_record(&s);
+    }
 }
 
 /* =========================================================================
@@ -670,9 +713,9 @@ static void hrtim_configure_fault_levels_and_enable(void)
     output_cfg.BurstModeEntryDelayed = HRTIM_OUTPUTBURSTMODEENTRY_REGULAR;
 
     /* Timer A Output 1 (CHA1): buck switching high-side
-     * Set = Period reset, Reset = EEV4  (confirmed CubeMX final.ioc)       */
+     * Set = Period reset, Reset = EEV4 | CMP2 (CMP2=backstop, matching IOC) */
     output_cfg.SetSource   = HRTIM_OUTPUTSET_TIMPER;
-    output_cfg.ResetSource = HRTIM_OUTPUTRESET_EEV_4;
+    output_cfg.ResetSource = HRTIM_OUTPUTRESET_EEV_4 | HRTIM_OUTPUTRESET_TIMCMP2;
     HAL_HRTIM_WaveformOutputConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A,
                                     HRTIM_OUTPUT_TA1, &output_cfg);
 
@@ -683,8 +726,8 @@ static void hrtim_configure_fault_levels_and_enable(void)
                                     HRTIM_OUTPUT_TA2, &output_cfg);
 
     /* Timer B Output 1 (CHB1): boost switching high-side
-     * Set = EEV4, Reset = Period  (Dan IOC update v0.1.2i, §5.5)           */
-    output_cfg.SetSource   = HRTIM_OUTPUTSET_EEV_4;
+     * Set = EEV4 | CMP2 (CMP2=backstop, matching IOC), Reset = Period      */
+    output_cfg.SetSource   = HRTIM_OUTPUTSET_EEV_4 | HRTIM_OUTPUTSET_TIMCMP2;
     output_cfg.ResetSource = HRTIM_OUTPUTRESET_TIMPER;
     HAL_HRTIM_WaveformOutputConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_B,
                                     HRTIM_OUTPUT_TB1, &output_cfg);
@@ -704,36 +747,41 @@ static void hrtim_configure_fault_levels_and_enable(void)
 }
 
 /**
- * hrtim_configure_backstop_compare1 — Set Compare 1 backstop registers (§10.3).
+ * hrtim_configure_compare_registers — Set CMP1/CMP2/CMP3 for all timers (§10.3).
  *
- * Compare 1 fires at MAX_ON_TIME_COUNTS within each period.
- * For buck mode (Timer A active): CMP1 resets CHA1 (RST1R |= CMP1).
- * For boost mode (Timer B active): CMP1 sets CHB1 (SET1R |= CMP1).
- * Both are OR'd in so the pre-configured EEV4 behaviour is preserved.
+ * CMP1: blanking window end — EEV4 (COMP1 output) is masked from the period
+ *       reset until CMP1 fires, per HRTIM_TIMEEVFLT_BLANKINGCMP1 configured
+ *       in the IOC.  Timer A (buck active) uses HRTIM_BLANKING_TICKS_BUCK;
+ *       Timer B (boost active) uses HRTIM_BLANKING_TICKS_BOOST.
  *
- * NOTE: CubeMX configures CompareUnit1 as __NULL (§10.3 CubeMX update note).
- * The compare value is written directly here.
+ * CMP2: hardware backstop — ends the charge phase if COMP1 has not fired by
+ *       MAX_ON_TIME_COUNTS.  Added as Reset source for TA1 (buck) and Set
+ *       source for TB1 (boost) in hrtim_configure_fault_levels_and_enable().
+ *
+ * CMP3: bootstrap refresh end — the static leg output returns HIGH after the
+ *       BOOTSTRAP_REFRESH_TICKS LOW pulse at each period reset.  Set as the
+ *       SET source for the static leg output in hrtim_apply_*_mode_static_leg().
  */
-static void hrtim_configure_backstop_compare1(void)
+static void hrtim_configure_compare_registers(void)
 {
-    /* Set Compare 1 value on both timers */
-    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP1xR = MAX_ON_TIME_COUNTS;
-    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP1xR = MAX_ON_TIME_COUNTS;
+    /* CMP1: blanking window end per timer's active switching role.
+     * Timer A is the active leg in BUCK; Timer B is the active leg in BOOST.
+     * Both CMP1xR values are written so the blanking is correct regardless
+     * of which timer is active at any given time.                           */
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP1xR = HRTIM_BLANKING_TICKS_BUCK;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP1xR = HRTIM_BLANKING_TICKS_BOOST;
 
-    /* Timer A (buck active leg): add CMP1 as additional Reset source for TA1.
-     * RST1R already has EEV4; OR in CMP1 so either event ends the charge phase.
-     * HRTIM_RST1R_CMP1 = bit 4 (RM0440 Table 313).                         */
-    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].RSTx1R |= HRTIM_RST1R_CMP1;
+    /* CMP2: hardware backstop — MAX_ON_TIME_COUNTS on both timers.
+     * The backstop fires as Reset (buck, TA1) or Set (boost, TB1) per the
+     * sources set in hrtim_configure_fault_levels_and_enable().             */
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP2xR = MAX_ON_TIME_COUNTS;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP2xR = MAX_ON_TIME_COUNTS;
 
-    /* Timer B (boost active leg): add CMP1 as additional Set source for TB1.
-     * SET1R already has EEV4; OR in CMP1 so either event ends the charge phase
-     * by transitioning CHB1 from LOW to HIGH.                               */
-    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx1R |= HRTIM_SET1R_CMP1;
-
-    /* TODO(hardware): Verify CMP1 fires correctly at MAX_ON_TIME_COUNTS
-     * by observing the switching waveform with an oscilloscope.  With a
-     * constant DAC threshold above I_L, the charge phase should not reach
-     * CMP1 in normal operation.                                              */
+    /* CMP3: bootstrap refresh end — BOOTSTRAP_REFRESH_TICKS on both timers.
+     * The mode functions configure SETx1R = TIMCMP3 for the static leg so
+     * the output rises after the brief bootstrap LOW pulse at period reset.  */
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP3xR = BOOTSTRAP_REFRESH_TICKS;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP3xR = BOOTSTRAP_REFRESH_TICKS;
 }
 
 /**
@@ -781,10 +829,14 @@ static void hrtim_start_timers(void)
  * pulse each period to recharge the bootstrap capacitor on the Q3 gate driver
  * (§5.4 bootstrap refresh design).
  *
- * Bootstrap refresh mechanism (CMP2-based, replaces SST):
+ * Bootstrap refresh mechanism (CMP3-based):
  *   - At each Timer B period reset: CHB1 → LOW (RST source = TIMPER)
- *   - At count = BOOTSTRAP_REFRESH_TICKS (~200 ns): CHB1 → HIGH (SET source = CMP2)
+ *   - At count = BOOTSTRAP_REFRESH_TICKS (~200 ns): CHB1 → HIGH (SET source = CMP3)
  *   - CHB1 stays HIGH for the rest of the period (~4.8 µs at 200 kHz)
+ *   CMP3xR is pre-programmed in hrtim_configure_compare_registers().
+ *
+ * Also restores Timer A (input side) to its switching configuration
+ * (Set=TIMPER, Reset=EEV4|CMP2) after a potential boost-mode overwrite.
  *
  * During the 200 ns refresh pulse:
  *   Q1 (CHA1) is ON (Timer A just started its charge phase at the same period
@@ -796,20 +848,18 @@ static void hrtim_start_timers(void)
 static void hrtim_apply_buck_mode_static_leg(void)
 {
     /* Restore Timer A (input side) switching configuration.
-     * When transitioning from boost mode, Timer A's RSTx1R was cleared
-     * (it was the static leg in boost mode).  Restore it here so Timer A
-     * can switch in buck mode.  Safe to overwrite on initial call too.    */
+     * When transitioning from boost mode, Timer A's SET/RST were overwritten
+     * for the bootstrap static leg.  Restore to buck switching sources.     */
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].SETx1R =
         HRTIM_OUTPUTSET_TIMPER;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].RSTx1R =
-        HRTIM_OUTPUTRESET_EEV_4 | HRTIM_RST1R_CMP1;
+        HRTIM_OUTPUTRESET_EEV_4 | HRTIM_RST1R_CMP2;
 
-    /* Configure Timer B (output side) for CMP2-based bootstrap refresh.
-     * Order: write CMP2xR before modifying SET/RST so the compare value is
-     * valid before the sources are activated.                               */
-    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP2xR = BOOTSTRAP_REFRESH_TICKS;
+    /* Configure Timer B (output side) for CMP3-based bootstrap refresh.
+     * CMP3xR is already set to BOOTSTRAP_REFRESH_TICKS in
+     * hrtim_configure_compare_registers(); only SET/RST sources are changed.*/
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].RSTx1R = HRTIM_OUTPUTRESET_TIMPER;
-    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx1R = HRTIM_OUTPUTSET_TIMCMP2;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx1R = HRTIM_OUTPUTSET_TIMCMP3;
 }
 
 /**
@@ -820,10 +870,14 @@ static void hrtim_apply_buck_mode_static_leg(void)
  * pulse each period to recharge the bootstrap capacitor on the Q1 gate driver
  * (§5.4 bootstrap refresh design).
  *
- * Bootstrap refresh mechanism (CMP2-based, symmetric with buck mode):
+ * Bootstrap refresh mechanism (CMP3-based, symmetric with buck mode):
  *   - At each Timer A period reset: CHA1 → LOW (RST source = TIMPER)
- *   - At count = BOOTSTRAP_REFRESH_TICKS (~200 ns): CHA1 → HIGH (SET source = CMP2)
+ *   - At count = BOOTSTRAP_REFRESH_TICKS (~200 ns): CHA1 → HIGH (SET source = CMP3)
  *   - CHA1 stays HIGH for the rest of the period (~4.8 µs at 200 kHz)
+ *   CMP3xR is pre-programmed in hrtim_configure_compare_registers().
+ *
+ * Also restores Timer B (output side) to its switching configuration
+ * (Set=EEV4|CMP2, Reset=TIMPER) after a potential buck-mode overwrite.
  *
  * During the 200 ns refresh pulse Timer B is simultaneously starting its
  * switching cycle (CHB1 also LOW at period reset).  Both low-side FETs Q2
@@ -835,18 +889,19 @@ static void hrtim_apply_buck_mode_static_leg(void)
  */
 static void hrtim_apply_boost_mode_static_leg(void)
 {
-    /* Configure Timer A (input side) for CMP2-based bootstrap refresh.     */
-    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP2xR = BOOTSTRAP_REFRESH_TICKS;
+    /* Configure Timer A (input side) for CMP3-based bootstrap refresh.
+     * CMP3xR is already set to BOOTSTRAP_REFRESH_TICKS in
+     * hrtim_configure_compare_registers(); only SET/RST sources are changed. */
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].RSTx1R = HRTIM_OUTPUTRESET_TIMPER;
-    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].SETx1R = HRTIM_OUTPUTSET_TIMCMP2;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].SETx1R = HRTIM_OUTPUTSET_TIMCMP3;
 
     /* Restore boost switching sources for Timer B (output side).
      * (These were overwritten by hrtim_apply_buck_mode_static_leg when
      * transitioning from buck mode, or are set here for initial boost start.) */
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].RSTx1R =
-        HRTIM_OUTPUTRESET_TIMPER | HRTIM_RST1R_CMP1;
+        HRTIM_OUTPUTRESET_TIMPER;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx1R =
-        HRTIM_OUTPUTSET_EEV_4 | HRTIM_SET1R_CMP1;
+        HRTIM_OUTPUTSET_EEV_4 | HRTIM_SET1R_CMP2;
 }
 
 /**
@@ -988,7 +1043,7 @@ static bool software_safety_checks_pass(uint32_t v_out_mv,
             return false;
         }
     }
-    else /* BOOST */
+    else /* BOOST (future: BUCK_BOOST for four-switch mode) */
     {
         /* Boost requires V_in < V_out - margin */
         if (v_setpoint_mv > BOOST_VIN_MARGIN_MV &&

@@ -232,38 +232,81 @@ extern "C" {
  * =========================================================================*/
 
 /**
+ * SYSCLK_HZ — System clock frequency in Hz.
+ * Units  : Hz
+ * Value  : 170 MHz (STM32G474, confirmed final.ioc PLL configuration).
+ * Purpose: Single source of truth for all time-to-tick conversions.
+ */
+#define SYSCLK_HZ  170000000UL
+
+/**
+ * HRTIM_PRESCALER_MUL — HRTIM internal clock multiplier (DLL factor).
+ * Units  : dimensionless
+ * Value  : 32 (CKPSC = 0 = MUL32 in STM32CubeMX, confirmed final.ioc).
+ * Purpose: HRTIM counter resolution = 1 / (SYSCLK_HZ × HRTIM_PRESCALER_MUL)
+ *          = 1 / (170 MHz × 32) = 183.82 ps/tick.
+ */
+#define HRTIM_PRESCALER_MUL  32UL
+
+/**
+ * HRTIM_SWITCHING_FREQ_HZ — Target switching frequency.
+ * Units  : Hz
+ * Value  : 200 kHz (5.0 µs period).  Target upgrade: 500 kHz → 10 880 counts.
+ */
+#define HRTIM_SWITCHING_FREQ_HZ  200000UL
+
+/**
+ * HRTIM_NS_TO_TICKS — Convert a nanosecond duration to HRTIM timer counts.
+ * Formula : ticks = ns × SYSCLK_HZ × HRTIM_PRESCALER_MUL / 1 000 000 000
+ *                 = ns × (SYSCLK_HZ / 1 000 000) × HRTIM_PRESCALER_MUL / 1 000
+ * Note    : Uses uint64_t intermediary to prevent 32-bit overflow for inputs
+ *           up to ~780 ns.  Evaluated entirely at compile time for constant ns.
+ * Examples: 100 ns → 544 ticks, 200 ns → 1088 ticks, 500 ns → 2720 ticks.
+ */
+#define HRTIM_NS_TO_TICKS(ns) \
+    ((uint32_t)((uint64_t)(ns) * (SYSCLK_HZ / 1000000UL) * HRTIM_PRESCALER_MUL / 1000UL))
+
+/**
  * HRTIM_PERIOD_COUNTS — HRTIM period register value; sets switching frequency.
  * Units  : HRTIM timer counts (183.82 ps/count at MUL32 prescaler)
- * Derive : 170 MHz × 32 / f_sw.  170e6 × 32 / 200e3 = 27 200 (exact). (§5.5)
- * Default: 200 kHz (5.0 µs period).
- * Target : 500 kHz → 10 880 counts.
+ * Derive : SYSCLK_HZ × HRTIM_PRESCALER_MUL / HRTIM_SWITCHING_FREQ_HZ
+ *          = 170e6 × 32 / 200e3 = 27 200 (exact). (§5.5)
  * Range  : [5440, 54400]   (100 kHz to 1 MHz)
  */
-#define HRTIM_PERIOD_COUNTS 27200u
+#define HRTIM_PERIOD_COUNTS \
+    ((uint32_t)(HRTIM_PRESCALER_MUL * (SYSCLK_HZ / HRTIM_SWITCHING_FREQ_HZ)))
 
 _Static_assert(HRTIM_PERIOD_COUNTS >= 5440u && HRTIM_PERIOD_COUNTS <= 54400u,
                "HRTIM_PERIOD_COUNTS out of valid range [5440, 54400]");
 
 /**
- * HRTIM_BLANKING_TICKS_BUCK — Comparator blanking window in buck mode.
- * Units  : HRTIM ticks (183.82 ps/tick at MUL32 prescaler)
- * Derive : 100 ns / 183.82e-12 ≈ 544 ticks. (§5.5, §7.3)
- * Purpose: Suppress IL_MON ringing after the Period-reset switching edge
- *          so COMP1 does not false-trip on parasitic ringing.
- * Adjust : Empirically in range 100–500 ns (544–2720 ticks) using an
- *          oscilloscope on IL_MON.
+ * HRTIM_BLANKING_NS_BUCK / HRTIM_BLANKING_NS_BOOST / BOOTSTRAP_REFRESH_NS
+ * Source time-domain constants for blanking window and bootstrap pulse.
+ * Adjust empirically using an oscilloscope on IL_MON and the switching nodes.
  */
-#define HRTIM_BLANKING_TICKS_BUCK 544u
+#define HRTIM_BLANKING_NS_BUCK   100u  /**< Buck blanking:  100 ns after switching edge */
+#define HRTIM_BLANKING_NS_BOOST  500u  /**< Boost blanking: 500 ns covers bootstrap + ring */
+#define BOOTSTRAP_REFRESH_NS     200u  /**< Bootstrap LOW pulse: 200 ns per gate driver spec */
 
 /**
- * HRTIM_BLANKING_TICKS_BOOST — Comparator blanking window in boost mode.
- * Units  : HRTIM ticks (183.82 ps/tick at MUL32 prescaler)
- * Derive : 500 ns / 183.82e-12 ≈ 2720 ticks. (§5.5, §12.2)
- * Purpose: Must cover the bootstrap refresh pulse (200–500 ns) plus
- *          switching transient ringing.  Larger than buck because the
- *          boost refresh occupies the start of the period.
+ * HRTIM_BLANKING_TICKS_BUCK — Comparator blanking window (CMP1) in buck mode.
+ * Units  : HRTIM ticks; derived from HRTIM_BLANKING_NS_BUCK via HRTIM_NS_TO_TICKS.
+ * Purpose: EEV4 (IL_MON comparator) is masked from period reset until CMP1 fires
+ *          (HRTIM_TIMEEVFLT_BLANKINGCMP1).  Prevents false trips on switching
+ *          ringing during the dead-time and turn-on transient. (§5.5, §7.3)
+ * Compare: CMP1xR on Timer A (active leg in buck mode).
  */
-#define HRTIM_BLANKING_TICKS_BOOST 2720u
+#define HRTIM_BLANKING_TICKS_BUCK   HRTIM_NS_TO_TICKS(HRTIM_BLANKING_NS_BUCK)
+
+/**
+ * HRTIM_BLANKING_TICKS_BOOST — Comparator blanking window (CMP1) in boost mode.
+ * Units  : HRTIM ticks; derived from HRTIM_BLANKING_NS_BOOST via HRTIM_NS_TO_TICKS.
+ * Purpose: Must cover the bootstrap refresh pulse (BOOTSTRAP_REFRESH_TICKS) plus
+ *          switching transient ringing.  Larger than buck because the boost static
+ *          leg (CHA1) refresh pulse occupies the start of the period. (§5.5, §12.2)
+ * Compare: CMP1xR on Timer B (active leg in boost mode).
+ */
+#define HRTIM_BLANKING_TICKS_BOOST  HRTIM_NS_TO_TICKS(HRTIM_BLANKING_NS_BOOST)
 
 _Static_assert(HRTIM_BLANKING_TICKS_BUCK >= 544u &&
                    HRTIM_BLANKING_TICKS_BUCK <= 2720u,
@@ -273,23 +316,23 @@ _Static_assert(HRTIM_BLANKING_TICKS_BOOST >= 1088u &&
                "HRTIM_BLANKING_TICKS_BOOST out of valid range [1088, 5440]");
 
 /**
- * BOOTSTRAP_REFRESH_TICKS — Duration of the bootstrap refresh LOW pulse.
- * Units  : HRTIM ticks (183.82 ps/tick at MUL32 prescaler)
- * Derive : 200 ns / 183.82e-12 ≈ 1088 ticks. (§5.4)
- * Purpose: CMP2 is programmed to this value on the static leg timer.  At each
+ * BOOTSTRAP_REFRESH_TICKS — Duration of the bootstrap refresh LOW pulse (CMP3).
+ * Units  : HRTIM ticks; derived from BOOTSTRAP_REFRESH_NS via HRTIM_NS_TO_TICKS.
+ * Purpose: CMP3xR on the static leg timer is programmed to this value.  At each
  *          period reset the static leg output goes LOW (bootstrap cap charges
- *          through the gate driver bootstrap diode).  CMP2 fires after this
- *          interval and drives the output back HIGH.
+ *          through the gate driver bootstrap diode).  CMP3 fires after this
+ *          interval and drives the output back HIGH. (§5.4)
+ * Compare: CMP3xR on Timer B (buck static) or Timer A (boost static).
  * Constraint: Must be ≤ HRTIM_BLANKING_TICKS_BOOST so the refresh pulse on
  *             the boost static leg (CHA1) completes before COMP1 is unmasked.
- *             Also must be ≤ HRTIM_PERIOD_COUNTS − MAX_ON_TIME_COUNTS to avoid
+ *             Also must be < HRTIM_PERIOD_COUNTS − MAX_ON_TIME_COUNTS to avoid
  *             overlap with the active switching phase.
  * NOTE: During the boost-mode refresh, both input (Q2) and output (Q4)
  *       low-side FETs are simultaneously ON for ~200 ns.  Inductor voltage is
  *       clamped to ~0 V; current change is negligible (ΔI ≈ 0 over 200 ns at
  *       4.7 µH).  Verify safe operation during hardware bring-up.
  */
-#define BOOTSTRAP_REFRESH_TICKS 1088u
+#define BOOTSTRAP_REFRESH_TICKS  HRTIM_NS_TO_TICKS(BOOTSTRAP_REFRESH_NS)
 
 _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
                "BOOTSTRAP_REFRESH_TICKS must fit within boost blanking window");
@@ -309,13 +352,14 @@ _Static_assert(MAX_DUTY_CYCLE_PCT >= 50u && MAX_DUTY_CYCLE_PCT <= 96u,
                "MAX_DUTY_CYCLE_PCT out of valid range [50, 96]");
 
 /**
- * MAX_ON_TIME_COUNTS — HRTIM Compare 1 value for hardware backstop.
+ * MAX_ON_TIME_COUNTS — HRTIM Compare 2 value for hardware backstop.
  * Units  : HRTIM timer counts
  * Derive : HRTIM_PERIOD_COUNTS × MAX_DUTY_CYCLE_PCT / 100. (§10.3)
  *          27200 × 85 / 100 = 23120 counts at 200 kHz.
- * Purpose: Hardware Compare 1 match ends the charge phase if COMP1 (EEV4)
+ * Purpose: Hardware Compare 2 match ends the charge phase if COMP1 (EEV4)
  *          has not fired by this point in the period.  Prevents unbounded
  *          inductor current ramp when COMP1 is inactive.
+ * Compare: CMP2xR on both Timer A (buck active) and Timer B (boost active).
  */
 #define MAX_ON_TIME_COUNTS ((HRTIM_PERIOD_COUNTS) * (MAX_DUTY_CYCLE_PCT) / 100u)
 
@@ -328,6 +372,15 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <
  * =========================================================================*/
 
 /**
+ * TIM6_RATE_HZ — Slope compensation timer interrupt rate.
+ * Units  : Hz
+ * Value  : 2 MHz (10 ticks per switching period at 200 kHz; 4 at 500 kHz)
+ * Purpose: Drives DAC3 CH1 staircase ramp.  Rate >> f_sw ensures smooth
+ *          ramp approximation (§7.5 CPU budget: ~10–30 cycles/ISR).
+ */
+#define TIM6_RATE_HZ 2000000u
+
+/**
  * TIM6_PRESCALER — TIM6 prescaler register value (PSC).
  * Units  : register value (0 = ÷1)
  * Derive : APBCLK / (PSC+1) / (ARR+1) = TIM6 rate.  PSC=0 → no division.
@@ -338,38 +391,14 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <
 /**
  * TIM6_PERIOD_COUNTS — TIM6 auto-reload register value (ARR).
  * Units  : timer counts
- * Derive : ARR = SYSCLK / TIM6_RATE_HZ − 1 = 170e6 / 2e6 − 1 = 84. (§7.3)
- *          Period = (PSC+1)(ARR+1)/170e6 = 1×85/170e6 = 500 ns = 2 MHz ✓
+ * Derive : ARR = SYSCLK_HZ / TIM6_RATE_HZ − 1 = 170e6 / 2e6 − 1 = 84. (§7.3)
+ *          Period = (PSC+1)(ARR+1)/SYSCLK_HZ = 1×85/170e6 = 500 ns = 2 MHz ✓
  */
-#define TIM6_PERIOD_COUNTS 84u
-
-/**
- * TIM6_RATE_HZ — Slope compensation timer interrupt rate.
- * Units  : Hz
- * Value  : 2 MHz (10 ticks per switching period at 200 kHz; 4 at 500 kHz)
- * Purpose: Drives DAC3 CH1 staircase ramp.  Rate >> f_sw ensures smooth
- *          ramp approximation (§7.5 CPU budget: ~10–30 cycles/ISR).
- */
-#define TIM6_RATE_HZ 2000000u
+#define TIM6_PERIOD_COUNTS ((SYSCLK_HZ / TIM6_RATE_HZ) - 1u)
 
 /* =========================================================================
  * SECTION 8: PID TIMER (TIM7) CONSTANTS
  * =========================================================================*/
-
-/**
- * TIM7_PRESCALER — TIM7 prescaler register value (PSC).
- * Units  : register value (0 = ÷1)
- */
-#define TIM7_PRESCALER 0u
-
-/**
- * TIM7_PERIOD_COUNTS — TIM7 auto-reload register value (ARR).
- * Units  : timer counts
- * Derive : ARR = SYSCLK / PID_EXECUTION_RATE_HZ − 1
- *          = 170e6 / 20e3 − 1 = 8499. (§8.2)
- *          Period = (0+1)(8499+1)/170e6 = 8500/170e6 = 50 µs = 20 kHz ✓
- */
-#define TIM7_PERIOD_COUNTS 8499u
 
 /**
  * PID_EXECUTION_RATE_HZ — Default PID outer-loop execution rate.
@@ -382,6 +411,21 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <
 _Static_assert(PID_EXECUTION_RATE_HZ >= 1000u &&
                    PID_EXECUTION_RATE_HZ <= 500000u,
                "PID_EXECUTION_RATE_HZ out of valid range [1000, 500000]");
+
+/**
+ * TIM7_PRESCALER — TIM7 prescaler register value (PSC).
+ * Units  : register value (0 = ÷1)
+ */
+#define TIM7_PRESCALER 0u
+
+/**
+ * TIM7_PERIOD_COUNTS — TIM7 auto-reload register value (ARR).
+ * Units  : timer counts
+ * Derive : ARR = SYSCLK_HZ / PID_EXECUTION_RATE_HZ − 1
+ *          = 170e6 / 20e3 − 1 = 8499. (§8.2)
+ *          Period = (0+1)(8499+1)/SYSCLK_HZ = 8500/170e6 = 50 µs = 20 kHz ✓
+ */
+#define TIM7_PERIOD_COUNTS ((SYSCLK_HZ / PID_EXECUTION_RATE_HZ) - 1u)
 
 /* =========================================================================
  * SECTION 9: NVIC PRIORITY ASSIGNMENTS

@@ -44,8 +44,9 @@ extern "C" {
  */
 typedef enum
 {
-    SLOPE_COMP_MODE_BUCK  = 0,  /**< Buck: downslope = V_out / L */
-    SLOPE_COMP_MODE_BOOST = 1   /**< Boost: downslope = (V_out − V_in) / L */
+    SLOPE_COMP_MODE_BUCK      = 0,  /**< Buck: downslope = V_out / L */
+    SLOPE_COMP_MODE_BOOST     = 1,  /**< Boost: downslope = (V_out − V_in) / L */
+    SLOPE_COMP_MODE_BUCK_BOOST = 2  /**< Four-switch: reserved for future use */
 } SlopeCompMode;
 
 /* =========================================================================
