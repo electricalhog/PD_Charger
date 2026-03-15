@@ -288,6 +288,25 @@ void regulator_start(void)
      *   if (HRTIM1->sCommonRegs.ISR & (HRTIM_ISR_FLT1 | HRTIM_ISR_FLT2)) { return; }
      */
 
+    /* --- Take a fresh V_in reading before mode selection (§5.1) ---
+     *
+     * adc_measurements.v_in_mv is only updated by adc_monitor_read_vin_result()
+     * inside the TIM7 PID ISR.  On first entry to regulator_start() the TIM7
+     * has not yet run, so the field holds its power-on value of 0.
+     *
+     * With v_in_mv = 0 the mode selector would always choose BOOST (because
+     * target_voltage_mv > 0 + MODE_HYSTERESIS_MV), then the first TIM7
+     * execution would read the actual V_in, fail the BOOST V_in range check
+     * (V_in > V_set − BOOST_VIN_MARGIN_MV), and call enter_fault() before a
+     * single useful PID cycle completes — killing the outputs and leaving the
+     * debug buffer nearly empty.
+     *
+     * Taking a synchronous ADC2 sample here (≤ 1 ms blocking) gives mode
+     * selection a valid V_in reading.  The poll timeout is safe from the task
+     * context in which regulator_start() is called.                          */
+    adc_monitor_trigger_vin();
+    adc_monitor_read_vin_result();
+
     /* --- Determine operating mode based on V_in vs setpoint (§5.1) --- */
     uint32_t v_in_mv = (uint32_t)adc_measurements.v_in_mv;
     regulator_mode = determine_mode_from_voltages(v_in_mv, voltage_mv);
