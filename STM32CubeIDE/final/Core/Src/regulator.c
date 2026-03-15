@@ -288,6 +288,18 @@ void regulator_start(void)
      *   if (HRTIM1->sCommonRegs.ISR & (HRTIM_ISR_FLT1 | HRTIM_ISR_FLT2)) { return; }
      */
 
+    /* --- Enable input path FIRST so VS_MON sees the real supply voltage ---
+     * INPUT_EN (and OUTPUT_EN) must be asserted before ADC2 can measure a
+     * valid V_in.  Allow ≥ 2 ms for the voltage-divider network to settle
+     * and for at least one ADC2 conversion to complete before reading back.
+     * Called here in task context so HAL_Delay() is safe.                  */
+    power_path_enable();
+    HAL_Delay(2u);
+
+    /* Re-sample V_in with INPUT_EN now asserted. */
+    adc_monitor_trigger_vin();
+    adc_monitor_read_vin_result();
+
     /* --- Determine operating mode based on V_in vs setpoint (§5.1) --- */
     uint32_t v_in_mv = (uint32_t)adc_measurements.v_in_mv;
     regulator_mode = determine_mode_from_voltages(v_in_mv, voltage_mv);
@@ -318,8 +330,7 @@ void regulator_start(void)
         hrtim_apply_boost_mode_static_leg();
     }
 
-    /* --- Enable power path GPIOs --- */
-    power_path_enable();
+    /* Power path already enabled above; no second call needed. */
 
     /* --- Enable HRTIM switching outputs for the active leg (§5.5) --- */
     if (regulator_mode == REGULATOR_MODE_BUCK)

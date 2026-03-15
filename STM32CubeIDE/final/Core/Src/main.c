@@ -41,7 +41,7 @@
 /** Default task test voltage (millivolts).
  *  The default task bypasses PD negotiation and regulates to this voltage
  *  directly, enabling standalone regulation testing. */
-#define DEFAULT_TASK_TEST_VOLTAGE_MV  12000u
+#define DEFAULT_TASK_TEST_VOLTAGE_MV  20000u
 
 /* USER CODE END PD */
 
@@ -174,7 +174,7 @@ int main(void)
 
   /* Create the thread(s) */
   /* definition and creation of defaultTask */
-  osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 128);
+  osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 512);
   defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
@@ -1049,6 +1049,30 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+/**
+ * @brief  FreeRTOS stack overflow hook (configCHECK_FOR_STACK_OVERFLOW = 2).
+ *         Called by the FreeRTOS kernel when a task's stack has been corrupted.
+ *         Halts here — inspect xTask / pcTaskName in the debugger.
+ */
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+    (void)xTask;
+    (void)pcTaskName;
+    __disable_irq();
+    for (;;) {}
+}
+
+/**
+ * @brief  FreeRTOS malloc-failed hook.
+ *         Called when pvPortMalloc() returns NULL (heap exhausted).
+ *         Halts here — increase configTOTAL_HEAP_SIZE if this fires.
+ */
+void vApplicationMallocFailedHook(void)
+{
+    __disable_irq();
+    for (;;) {}
+}
+
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDefaultTask */
@@ -1077,9 +1101,6 @@ void StartDefaultTask(void const * argument)
   /* Allow peripheral initialisation (regulator_init, PD stack) to settle. */
   osDelay(200);
 
-  /* Start a fresh capture window before enabling the regulator. */
-  debug_log_clear();
-
   /* Set a fixed test voltage and start the regulator without PD negotiation. */
   regulator_set_target_voltage(DEFAULT_TASK_TEST_VOLTAGE_MV);
   regulator_start();
@@ -1089,6 +1110,8 @@ void StartDefaultTask(void const * argument)
   for(;;)
   {
     osDelay(1000);
+    /* Start a fresh capture window every second for real-time monitoring. */
+    // debug_log_clear();
   }
   /* USER CODE END 5 */
 }
