@@ -223,6 +223,8 @@ void regulator_init(void)
     TIM7->ARR = TIM7_PERIOD_COUNTS;
     TIM7->EGR = TIM_EGR_UG;   /* force update event to load PSC/ARR */
 
+    /* TODO(debug): During bring-up, verify TIM7 period by scoping a GPIO
+     * toggled in regulator_pid_tim7_isr().  Expect ~50 µs (20 kHz). */
     HAL_NVIC_SetPriority(TIM7_DAC_IRQn, NVIC_PRIORITY_PID_TIM7, 0u);
     HAL_NVIC_EnableIRQ(TIM7_DAC_IRQn);
 
@@ -234,6 +236,8 @@ void regulator_init(void)
     pid_config.output_min  = (float)PID_OUTPUT_MIN;
     pid_config.output_max  = (float)PID_OUTPUT_MAX;
 
+    /* TODO(debug): Kp/Ki/Kd defaults are in regulator_config.h.  Tune via
+     * debugger watch on pid_kp/pid_ki/pid_kd (live-writeable) (§8.7). */
     pid_init(&pid_state, &pid_config);
 
     /* --- Step 9: Enable HRTIM period (Timer A REP) and fault interrupts --- */
@@ -305,8 +309,9 @@ void regulator_start(void)
      *
      * With v_in_mv = 0 the mode selector would always choose BOOST (because
      * target_voltage_mv > 0 + MODE_HYSTERESIS_MV), then the first TIM7
-     * execution would read the actual V_in, fail the BOOST V_in range check
-     * (V_in > V_set − BOOST_VIN_MARGIN_MV), and call enter_fault() before a
+     * execution would read the actual V_in, fail the V_in range check for the
+     * selected mode (e.g. BOOST: V_in > V_set − BOOST_VIN_MARGIN_MV; future
+     * BUCK_BOOST: similar per-mode check), and call enter_fault() before a
      * single useful PID cycle completes — killing the outputs and leaving the
      * debug buffer nearly empty.
      *
@@ -341,8 +346,10 @@ void regulator_start(void)
     {
         hrtim_apply_buck_mode_static_leg();
     }
-    else
+    else /* BOOST (future: BUCK_BOOST for four-switch mode) */
     {
+        /* TODO(future): add hrtim_apply_buck_boost_mode_static_leg() here
+         * when REGULATOR_MODE_BUCK_BOOST is implemented (§5.4 four-switch). */
         hrtim_apply_boost_mode_static_leg();
     }
 
@@ -507,6 +514,11 @@ void regulator_hrtim_tima_period_isr(void)
      * Must happen before the blanking window expires (§7.6).              */
     slope_comp_reload_dac_peak();
 
+    /* TODO(debug): Confirm DAC reload timing with oscilloscope: probe DAC3
+     * output (PA5 / DAC3_OUT1) and TA1 switching node; the DAC must settle
+     * to the new peak value before CMP1 unmasks EEV4 (~100 ns in buck,
+     * ~500 ns in boost from period reset). (§7.6) */
+
     /* Clear the HRTIM Timer A repetition interrupt flag */
     /* This is handled by the HAL callback mechanism or direct register clear:
      * HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].TIMxICR = HRTIM_TIMISR_REP;
@@ -579,6 +591,10 @@ void regulator_pid_tim7_isr(void)
      * at 20 kHz period (50 µs), ADC2 conversion (~354 ns) is complete.    */
     adc_monitor_read_vin_result();
     uint32_t v_in_mv = adc_measurements.v_in_mv;
+
+    /* TODO(debug): If v_out_mv or v_in_mv reads zero, check ADC1/ADC2 DMA
+     * init in stm32g4xx_hal_msp.c and confirm INPUT_EN is asserted before
+     * regulator_start() powers the voltage-divider network (§5.1). */
 
     /* --- 2. Refresh PID config from runtime-mutable variables ---
      * This allows Kp/Ki/Kd to be tuned at runtime without restart (§8.7). */
@@ -666,6 +682,11 @@ void regulator_pid_tim7_isr(void)
     /* --- 6. Update slope compensation peak and step --- */
     slope_comp_set_peak(dac_counts);
     slope_comp_update_step(v_out_mv, v_in_mv, (SlopeCompMode)regulator_mode);
+
+    /* TODO(debug): Verify slope_comp_step_counts in debugger watch.
+     * Expect ~1–5 DAC counts/tick at 2 MHz with default inductor value.
+     * If zero, check INDUCTOR_VALUE_UH / INDUCTOR_VALUE_UH_TENTHS in
+     * regulator_config.h (§7.2, §16). */
 
     /* --- 7. Update telemetry --- */
     regulator_pid_output_dac_counts = (uint16_t)dac_counts;

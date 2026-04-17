@@ -283,6 +283,15 @@ void LPUART1_IRQHandler(void)
 
 /* USER CODE BEGIN 1 */
 
+/* TODO(debug): NVIC priority map for regulator ISRs (must NOT call FreeRTOS API):
+ *   TIM6_DAC_IRQn   (IRQ 54): priority 0 — slope compensation, 2 MHz
+ *   HRTIM1_TIMA_IRQn(IRQ 67): priority 1 — DAC reload + backstop, 200 kHz
+ *   HRTIM1_FLT_IRQn (IRQ 66): priority 1 — hardware fault
+ *   TIM7_DAC_IRQn   (IRQ 55): priority 2 — PID loop, 20 kHz
+ * All of these are below FreeRTOS configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY=5
+ * (numerically; lower number = higher urgency on Cortex-M4 with BASEPRI).
+ * During bring-up verify with: NVIC->IP[IRQn] >> 4 in debugger memory view. */
+
 /**
  * @brief TIM6 and DAC underrun interrupt handler.
  *        TIM6 is used for slope compensation (2 MHz, priority 0).
