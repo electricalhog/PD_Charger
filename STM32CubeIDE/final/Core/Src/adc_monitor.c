@@ -93,6 +93,32 @@ void adc_monitor_init(void)
     {
         /* TODO(hardware): same as above */
     }
+
+    /* Enable ADC2 once, here in task context, so every subsequent trigger
+     * from the TIM7 PID ISR only needs to write ADSTART.  Keeping the
+     * enable step out of the ISR path is what lets adc_monitor_trigger_vin()
+     * avoid HAL_ADC_Start() — the HAL's ADC_Enable() internally spins on
+     * HAL_GetTick() while waiting for ADRDY, and HAL_GetTick() is frozen at
+     * ISR priorities above TIM2 (priority 15).  See the rationale in
+     * adc_monitor_read_vin_result() for the broader freeze discussion.      */
+    if ((ADC2->CR & ADC_CR_ADEN) == 0u)
+    {
+        /* Clear ADRDY so we can see the fresh transition. */
+        ADC2->ISR = ADC_ISR_ADRDY;
+        ADC2->CR |= ADC_CR_ADEN;
+
+        /* Wait for ADRDY with a CPU-cycle guard.  Datasheet t_STAB ≈
+         * 3 ADC cycles at 42.5 MHz = 71 ns; a loop of 10 000 iterations at
+         * 170 MHz is well over 50 µs, which is ample margin.                */
+        uint32_t guard = 10000u;
+        while (((ADC2->ISR & ADC_ISR_ADRDY) == 0u) && (guard != 0u))
+        {
+            guard--;
+        }
+        /* Clear ADRDY after observing the transition so a later EOC read
+         * does not conflict with a stale ADRDY flag.                        */
+        ADC2->ISR = ADC_ISR_ADRDY;
+    }
 }
 
 void adc_monitor_start_adc1_dma(void)
@@ -113,20 +139,57 @@ void adc_monitor_start_adc1_dma(void)
 
 void adc_monitor_trigger_vin(void)
 {
-    /* Start a single software-triggered ADC2 conversion.
-     * Non-blocking: conversion runs asynchronously.  Read the result with
-     * adc_monitor_read_vin_result() after the estimated conversion time.   */
-    HAL_ADC_Start(&hadc2);
+    /* Low-overhead software trigger on ADC2.  HAL_ADC_Start() is avoided
+     * here because it manipulates the handle state machine and, via
+     * ADC_Enable(), can spin on HAL_GetTick() when the ADC is coming out of
+     * deep-power-down.  That path is unreachable from a regulator ISR once
+     * ADC2 has been enabled during regulator_init(), but using it would
+     * expose us to a HAL_GetTick() deadlock if ADC2 ever needed to be
+     * re-enabled (see adc_monitor_read_vin_result() for the same reason).
+     *
+     * Direct register access is safe because MX_ADC2_Init() + calibration
+     * have already enabled the ADC (ADEN=1) and the channel sequence is
+     * fixed to CH17 only.  Writing ADSTART starts a regular conversion;
+     * EOC is cleared implicitly by the previous read of DR in
+     * adc_monitor_read_vin_result().                                         */
+    ADC2->CR |= ADC_CR_ADSTART;
 }
 
 void adc_monitor_read_vin_result(void)
 {
-    /* Poll for conversion complete (with a short timeout).
-     * At 42.5 MHz ADC clock, 2.5 + 12.5 = 15 cycles ≈ 354 ns.
-     * We wait up to 1 ms; in practice the conversion is done in < 1 µs.    */
-    if (HAL_ADC_PollForConversion(&hadc2, 1u) == HAL_OK)
+    /* Poll ADC2 EOC directly (no HAL call).
+     *
+     * RATIONALE (freeze fix, NLSpec §8.5 / §13.2 interaction):
+     * This function is called from regulator_pid_tim7_isr() at NVIC
+     * priority 2.  The HAL tick source (TIM2) runs at priority 15, which is
+     * numerically lower urgency and therefore MASKED while the PID ISR
+     * executes.  HAL_ADC_PollForConversion() is implemented as
+     *     tickstart = HAL_GetTick();
+     *     while (!EOC) {
+     *         if ((HAL_GetTick() - tickstart) > Timeout) return HAL_TIMEOUT;
+     *     }
+     * With uwTick frozen for the duration of the ISR, the timeout check
+     * never fires — if EOC is ever late or the ADC is in an unexpected
+     * state the ISR hangs indefinitely (this was the post-switching freeze
+     * observed on hardware v0.1.2j).
+     *
+     * FIX: bound the wait with a CPU-cycle guard.  At 170 MHz the loop body
+     * is a few cycles, so GUARD_LOOPS = 2000 caps the wait at O(microseconds)
+     * which is an order of magnitude above the 354 ns ADC conversion time
+     * but still fits inside the 50 µs PID period.  If the guard expires we
+     * leave adc_measurements.v_in_mv unchanged (previous sample remains
+     * current) rather than risk a stale partial read from DR.                */
+    static const uint32_t GUARD_LOOPS = 2000u;
+    uint32_t guard = GUARD_LOOPS;
+    while (((ADC2->ISR & ADC_ISR_EOC) == 0u) && (guard != 0u))
     {
-        uint16_t raw = (uint16_t)HAL_ADC_GetValue(&hadc2);
+        guard--;
+    }
+    if (guard != 0u)
+    {
+        /* Reading DR clears EOC.  Only update the measurement if the
+         * conversion actually finished within the guard window.              */
+        uint16_t raw = (uint16_t)(ADC2->DR & 0xFFFFu);
         adc_measurements.v_in_mv = scale_voltage_mv(raw);
     }
 }

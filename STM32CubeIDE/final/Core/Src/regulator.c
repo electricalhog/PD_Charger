@@ -19,11 +19,17 @@
  *   CHB1 (PA10) = Timer B Output 1 = output-side high-side FET (Q3)
  *   CHB2 (PA11) = Timer B Output 2 = output-side low-side  FET (Q4, complementary)
  *
- * Buck mode:  Timer A switches (CHA1 Set=Period, Reset=EEV4|CMP2)
- *             Timer B static   (CHB1 Set=CMP3,   Reset=Period — bootstrap refresh)
+ * Buck mode:       Timer A switches (CHA1 Set=Period, Reset=EEV4|CMP2)
+ *                  Timer B static   (CHB1 Set=CMP3,   Reset=Period — bootstrap refresh)
  *
- * Boost mode: Timer B switches (CHB1 Set=EEV4|CMP2, Reset=Period)
- *             Timer A static   (CHA1 Set=CMP3,       Reset=Period — bootstrap refresh)
+ * Boost mode:      Timer B switches (CHB1 Set=EEV4|CMP2, Reset=Period)
+ *                  Timer A static   (CHA1 Set=CMP3,       Reset=Period — bootstrap refresh)
+ *
+ * Buck-boost mode: Both timers switch in lock-step (§5.4 four-switch):
+ *                  Timer A: Set=Period, Reset=EEV4|CMP2   (Q1 charges, Q2 discharges)
+ *                  Timer B: Set=EEV4|CMP2, Reset=Period   (Q3 discharges, Q4 charges)
+ *                  No static leg and no CMP3 bootstrap refresh (natural refresh
+ *                  each cycle via the complementary low-sides Q2/Q4).
  *
  * Both timer Set/Reset sources are pre-configured by CubeMX (final.ioc,
  * confirmed v0.1.2i, §5.5).  No polarity swap is needed at mode transition.
@@ -173,12 +179,14 @@ static volatile uint8_t consecutive_backstop_count = 0u;
  * Internal helper declarations
  * =========================================================================*/
 
+static void hrtim_configure_periods(void);
 static void hrtim_configure_fault_levels_and_enable(void);
 static void hrtim_configure_compare_registers(void);
 static void hrtim_enable_period_and_fault_interrupts(void);
 static void hrtim_start_timers(void);
 static void hrtim_apply_buck_mode_static_leg(void);
 static void hrtim_apply_boost_mode_static_leg(void);
+static void hrtim_apply_buck_boost_mode(void);
 static void hrtim_disable_all_outputs(void);
 static void power_path_enable(void);
 static void power_path_disable(void);
@@ -193,6 +201,22 @@ static bool software_safety_checks_pass(uint32_t v_out_mv, uint32_t v_in_mv,
 
 void regulator_init(void)
 {
+    /* --- Step 0: Program the HRTIM period registers (§5.5). ---
+     *  MX_HRTIM1_Init() loads Period = 0xFFDF (65503) as a placeholder for
+     *  Master, Timer A, and Timer B.  That yields ~83 kHz switching instead
+     *  of the intended 200 kHz, invalidates every duty-cycle-dependent
+     *  assumption (blanking, backstop, slope step, bootstrap refresh
+     *  proportionality), and caused the post-switching freeze observed on
+     *  hardware v0.1.2j: the slope-comp staircase was sized for a 5 µs
+     *  period but ran in a 12 µs window, so DAC3 CH1 would hit zero well
+     *  before the next period reset — trapping COMP1 in a continuous trip
+     *  and starving the PID ISR on every cycle.
+     *
+     *  Overwriting the period register here matches the existing "CubeMX
+     *  places a placeholder, regulator_init() installs the correct value"
+     *  pattern already used for fault levels and compare registers.       */
+    hrtim_configure_periods();
+
     /* --- Step 1: Reconfigure HRTIM output fault levels and enable fault
      *             response on Timer A and Timer B (§5.5, §10.1).
      *  CubeMX sets FaultLevel = NONE and FaultEnable = NONE — this must
@@ -341,39 +365,32 @@ void regulator_start(void)
     softstart_setpoint_mv = 0u;
     softstart_active      = true;
 
-    /* --- Apply forced-HIGH to the static leg for the selected mode --- */
+    /* --- Configure HRTIM source wiring for the selected mode ---
+     * BUCK  → Timer A switches, Timer B static (bootstrap-refreshed HIGH)
+     * BOOST → Timer B switches, Timer A static (bootstrap-refreshed HIGH)
+     * BUCK_BOOST → both timers switch in lock-step (no static leg, §5.4). */
     if (regulator_mode == REGULATOR_MODE_BUCK)
     {
         hrtim_apply_buck_mode_static_leg();
     }
-    else /* BOOST (future: BUCK_BOOST for four-switch mode) */
+    else if (regulator_mode == REGULATOR_MODE_BOOST)
     {
-        /* TODO(future): add hrtim_apply_buck_boost_mode_static_leg() here
-         * when REGULATOR_MODE_BUCK_BOOST is implemented (§5.4 four-switch). */
         hrtim_apply_boost_mode_static_leg();
+    }
+    else /* REGULATOR_MODE_BUCK_BOOST */
+    {
+        hrtim_apply_buck_boost_mode();
     }
 
     /* Power path already enabled above; no second call needed. */
 
-    /* --- Enable HRTIM switching outputs for the active leg (§5.5) --- */
-    if (regulator_mode == REGULATOR_MODE_BUCK)
-    {
-        /* Enable Timer A outputs (CHA1/CHA2 = input-side switching leg) */
-        HAL_HRTIM_WaveformOutputStart(&hhrtim1,
-                                       HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2);
-        /* Enable Timer B outputs (CHB1/CHB2 = output-side static leg) */
-        HAL_HRTIM_WaveformOutputStart(&hhrtim1,
-                                       HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2);
-    }
-    else /* BOOST (future: BUCK_BOOST for four-switch mode) */
-    {
-        /* Enable Timer B outputs (CHB1/CHB2 = output-side switching leg) */
-        HAL_HRTIM_WaveformOutputStart(&hhrtim1,
-                                       HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2);
-        /* Enable Timer A outputs (CHA1/CHA2 = input-side static leg) */
-        HAL_HRTIM_WaveformOutputStart(&hhrtim1,
-                                       HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2);
-    }
+    /* --- Enable HRTIM switching outputs (§5.5) ---
+     * All four outputs are enabled for every mode: static legs still need
+     * their complementary low-side to be active, and BUCK_BOOST switches
+     * all four FETs every cycle.                                           */
+    HAL_HRTIM_WaveformOutputStart(&hhrtim1,
+                                   HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2 |
+                                   HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2);
 
     /* --- Initialise slope compensation and start TIM6 --- */
     uint32_t v_out_mv = (uint32_t)adc_measurements.v_out_mv;
@@ -627,17 +644,18 @@ void regulator_pid_tim7_isr(void)
             if (regulator_mode == REGULATOR_MODE_BUCK)
             {
                 hrtim_apply_buck_mode_static_leg();
-                HAL_HRTIM_WaveformOutputStart(&hhrtim1,
-                                               HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2 |
-                                               HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2);
             }
-            else /* BOOST (future: BUCK_BOOST for four-switch mode) */
+            else if (regulator_mode == REGULATOR_MODE_BOOST)
             {
                 hrtim_apply_boost_mode_static_leg();
-                HAL_HRTIM_WaveformOutputStart(&hhrtim1,
-                                               HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2 |
-                                               HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2);
             }
+            else /* REGULATOR_MODE_BUCK_BOOST (four-switch, §5.4) */
+            {
+                hrtim_apply_buck_boost_mode();
+            }
+            HAL_HRTIM_WaveformOutputStart(&hhrtim1,
+                                           HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2 |
+                                           HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2);
 
             /* Reset soft-start for the mode transition (§11.4) */
             uint32_t ramp_steps = (uint32_t)SOFT_START_RAMP_MS *
@@ -736,6 +754,27 @@ void regulator_pid_tim7_isr(void)
 /* =========================================================================
  * Internal helper implementations
  * =========================================================================*/
+
+/**
+ * hrtim_configure_periods — Install HRTIM_PERIOD_COUNTS on Master/TimerA/TimerB.
+ *
+ * MX_HRTIM1_Init() loads Period = 0xFFDF (65503) as a CubeMX placeholder for
+ * every timer (§5.5).  At the MUL32 prescaler that evaluates to ~83 kHz,
+ * which is not the intended 200 kHz and breaks every duty-cycle-relative
+ * constant (blanking CMP1, backstop CMP2, bootstrap CMP3).
+ *
+ * Writing the PERxR registers directly (RM0440 §27.5.x) is safe here because
+ * the timers have not yet been started (hrtim_start_timers() runs later in
+ * regulator_init()).  Register-level access is preferred over re-calling
+ * HAL_HRTIM_TimeBaseConfig() because the HAL path would also reset
+ * PrescalerRatio/Mode/RepetitionCounter — we only want to replace Period.
+ */
+static void hrtim_configure_periods(void)
+{
+    HRTIM1->sMasterRegs.MPER                           = HRTIM_PERIOD_COUNTS;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].PERxR = HRTIM_PERIOD_COUNTS;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].PERxR = HRTIM_PERIOD_COUNTS;
+}
 
 /**
  * hrtim_configure_fault_levels_and_enable — Configure HRTIM fault response.
@@ -896,8 +935,8 @@ static void hrtim_start_timers(void)
 static void hrtim_apply_buck_mode_static_leg(void)
 {
     /* Restore Timer A (input side) switching configuration.
-     * When transitioning from boost mode, Timer A's SET/RST were overwritten
-     * for the bootstrap static leg.  Restore to buck switching sources.     */
+     * When transitioning from boost or buck-boost mode, Timer A's SET/RST
+     * may have been overwritten — restore to buck switching sources.       */
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].SETx1R =
         HRTIM_OUTPUTSET_TIMPER;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].RSTx1R =
@@ -908,6 +947,15 @@ static void hrtim_apply_buck_mode_static_leg(void)
      * hrtim_configure_compare_registers(); only SET/RST sources are changed.*/
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].RSTx1R = HRTIM_OUTPUTRESET_TIMPER;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx1R = HRTIM_OUTPUTSET_TIMCMP3;
+
+    /* Restore mode-appropriate CMP1 blanking values.  The buck-boost helper
+     * writes HRTIM_BLANKING_TICKS_BUCK to both timers; when transitioning
+     * back to BUCK, Timer A already has the right value, and Timer B is
+     * now the static leg (CMP1 is irrelevant for it, but we restore the
+     * documented value for symmetry and so a later BOOST transition has
+     * the correct base to compare against).                                 */
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP1xR = HRTIM_BLANKING_TICKS_BUCK;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP1xR = HRTIM_BLANKING_TICKS_BOOST;
 }
 
 /**
@@ -950,6 +998,81 @@ static void hrtim_apply_boost_mode_static_leg(void)
         HRTIM_OUTPUTRESET_TIMPER;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx1R =
         HRTIM_OUTPUTSET_EEV_4 | HRTIM_SET1R_CMP2;
+
+    /* Restore the boost-mode CMP1 blanking value on Timer B.  A preceding
+     * BUCK_BOOST cycle leaves Timer B CMP1 = HRTIM_BLANKING_TICKS_BUCK;
+     * boost mode requires the longer HRTIM_BLANKING_TICKS_BOOST window to
+     * cover the bootstrap refresh pulse on the input-side static leg.      */
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP1xR = HRTIM_BLANKING_TICKS_BUCK;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP1xR = HRTIM_BLANKING_TICKS_BOOST;
+}
+
+/**
+ * hrtim_apply_buck_boost_mode — Configure both timers for four-switch
+ * synchronous buck-boost operation (NLSpec §5.4 extension, used when
+ * V_in ≈ V_out such that neither pure buck nor pure boost has the V_in
+ * headroom / ceiling required to regulate).
+ *
+ * Topology (all four FETs switch together each period):
+ *   Charge phase (duration = t_on):
+ *     CHA1 (Q1) HIGH, CHA2 (Q2) LOW  → input-side HS on
+ *     CHB1 (Q3) LOW,  CHB2 (Q4) HIGH → output-side LS on
+ *     Current path: V_in → Q1 → L → Q4 → GND   (inductor energized from V_in)
+ *
+ *   Discharge phase (duration = period − t_on):
+ *     CHA1 (Q1) LOW,  CHA2 (Q2) HIGH → input-side LS on
+ *     CHB1 (Q3) HIGH, CHB2 (Q4) LOW  → output-side HS on
+ *     Current path: GND → Q2 → L → Q3 → V_out  (inductor dumps into V_out)
+ *
+ *   V_out / V_in = D / (1 − D)        (ideal)
+ *   D = 0.5  → V_out = V_in           (pass-through point)
+ *
+ * HRTIM source wiring (uses the UNION of buck and boost switching logic —
+ * each timer behaves as if it were the active leg in its own mode):
+ *   Timer A (input leg):  Set = TIMPER           Reset = EEV4 | CMP2
+ *     → Q1 turns on at period start, off on peak current or backstop.
+ *   Timer B (output leg): Set = EEV4 | CMP2      Reset = TIMPER
+ *     → Q3 turns on simultaneously with Q1 going off (both gated by COMP1),
+ *       turns off at the next period start.
+ *
+ * With this wiring, CMP2 (MAX_ON_TIME_COUNTS) simultaneously bounds the
+ * charge-phase length on Timer A and starts the discharge phase on Timer B —
+ * exactly the symmetry the topology requires.  The inductor peak is still
+ * set by the COMP1/DAC3 threshold just like buck and boost, and slope
+ * compensation uses the BUCK-mode formula V_out / L — during the off-phase
+ * Q2+Q3 are on, so the inductor has GND at one end and V_out at the other
+ * and sees −V_out across it (same magnitude as pure buck).  The slope code
+ * in slope_comp.c reuses the buck branch for SLOPE_COMP_MODE_BUCK_BOOST.
+ *
+ * NOTE: This mode does NOT use CMP3 (bootstrap refresh).  Both bootstraps
+ * are refreshed naturally on every cycle — Q1 and Q3 each see a LOW edge
+ * once per period, so their bootstrap caps charge through Q2 / Q4 whenever
+ * those low-side FETs are on.  No forced refresh pulse is needed.
+ *
+ * Timing constraints verified against regulator_config.h:
+ *   - MAX_ON_TIME_COUNTS (23120) < HRTIM_PERIOD_COUNTS − dead-time,
+ *     leaving room for the discharge phase.
+ *   - Blanking uses HRTIM_BLANKING_TICKS_BUCK on both timers (shorter of the
+ *     two is appropriate since there is no bootstrap-refresh ring to mask).
+ */
+static void hrtim_apply_buck_boost_mode(void)
+{
+    /* Timer A: buck-style switching sources on CHA1 (and complementary CHA2). */
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].SETx1R = HRTIM_OUTPUTSET_TIMPER;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].RSTx1R =
+        HRTIM_OUTPUTRESET_EEV_4 | HRTIM_RST1R_CMP2;
+
+    /* Timer B: boost-style switching sources on CHB1 (and complementary CHB2). */
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx1R =
+        HRTIM_OUTPUTSET_EEV_4 | HRTIM_SET1R_CMP2;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].RSTx1R = HRTIM_OUTPUTRESET_TIMPER;
+
+    /* Blanking: use the shorter buck-mode blanking window on both timers.
+     * There is no bootstrap refresh pulse in this mode, so the longer
+     * boost-mode blanking (500 ns, sized for the refresh pulse) is
+     * unnecessary and would waste usable charge-phase time.                 */
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP1xR = HRTIM_BLANKING_TICKS_BUCK;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP1xR = HRTIM_BLANKING_TICKS_BUCK;
 }
 
 /**
@@ -986,29 +1109,50 @@ static void power_path_disable(void)
 }
 
 /**
- * determine_mode_from_voltages — Select buck or boost based on V_in vs
- * V_setpoint with hysteresis (§5.1).
+ * determine_mode_from_voltages — Select buck / boost / buck-boost based on
+ * V_in vs V_setpoint with hysteresis (§5.1).
+ *
+ * Three-band selection:
+ *   V_in ≥ V_set + 2·MODE_HYSTERESIS_MV  → BUCK          (headroom for step-down)
+ *   V_in ≤ V_set − 2·MODE_HYSTERESIS_MV  → BOOST         (headroom for step-up)
+ *   otherwise (transition region)        → BUCK_BOOST   (four-switch, §5.4)
+ *
+ * The outer hysteresis band is 2× MODE_HYSTERESIS_MV on each side so BUCK or
+ * BOOST cannot directly "jump" over BUCK_BOOST on a single PID cycle; there
+ * is always at least one BUCK_BOOST cycle in the transition.  This prevents
+ * mode chatter at the boundaries (§5.1 rationale, extended for §5.4).
  *
  * @param v_in_mv       Measured input voltage in millivolts.
  * @param v_setpoint_mv Target output voltage in millivolts.
- * @return REGULATOR_MODE_BUCK or REGULATOR_MODE_BOOST.
+ * @return REGULATOR_MODE_BUCK, REGULATOR_MODE_BOOST, or REGULATOR_MODE_BUCK_BOOST.
  */
 static RegulatorMode determine_mode_from_voltages(uint32_t v_in_mv,
                                                    uint32_t v_setpoint_mv)
 {
-    if (v_in_mv > (v_setpoint_mv + MODE_HYSTERESIS_MV))
+    const uint32_t outer_band = 2u * (uint32_t)MODE_HYSTERESIS_MV;
+
+    if (v_in_mv >= (v_setpoint_mv + outer_band))
     {
         return REGULATOR_MODE_BUCK;
     }
-    else if (v_setpoint_mv > (v_in_mv + MODE_HYSTERESIS_MV))
+    if (v_setpoint_mv >= (v_in_mv + outer_band))
     {
         return REGULATOR_MODE_BOOST;
     }
-    else
+    /* Transition region: use four-switch buck-boost.  Allow the current
+     * mode to "stick" inside a narrow inner band (±MODE_HYSTERESIS_MV) to
+     * further damp boundary chatter when already running BUCK or BOOST.    */
+    if (regulator_mode == REGULATOR_MODE_BUCK &&
+        v_in_mv >= (v_setpoint_mv + MODE_HYSTERESIS_MV))
     {
-        /* Within hysteresis band — maintain current mode (§5.1) */
-        return regulator_mode;
+        return REGULATOR_MODE_BUCK;
     }
+    if (regulator_mode == REGULATOR_MODE_BOOST &&
+        v_setpoint_mv >= (v_in_mv + MODE_HYSTERESIS_MV))
+    {
+        return REGULATOR_MODE_BOOST;
+    }
+    return REGULATOR_MODE_BUCK_BOOST;
 }
 
 /**
@@ -1091,7 +1235,7 @@ static bool software_safety_checks_pass(uint32_t v_out_mv,
             return false;
         }
     }
-    else /* BOOST (future: BUCK_BOOST for four-switch mode) */
+    else if (mode == REGULATOR_MODE_BOOST)
     {
         /* Boost requires V_in < V_out - margin */
         if (v_setpoint_mv > BOOST_VIN_MARGIN_MV &&
@@ -1100,6 +1244,15 @@ static bool software_safety_checks_pass(uint32_t v_out_mv,
             enter_fault(REGULATOR_FAULT_SW_VIN_RANGE);
             return false;
         }
+    }
+    else /* REGULATOR_MODE_BUCK_BOOST (four-switch, §5.4) */
+    {
+        /* Four-switch buck-boost can regulate for any V_in in the transition
+         * region; there is no per-mode V_in range fault.  The mode selector
+         * (determine_mode_from_voltages) already restricts BUCK_BOOST to the
+         * ±2·MODE_HYSTERESIS_MV band around V_setpoint, which is what makes
+         * this mode necessary in the first place — further gating here
+         * would just re-fight that decision.                                */
     }
 
     return true;

@@ -121,16 +121,20 @@ void slope_comp_reload_dac_peak(void)
 
 void slope_comp_update_step(uint32_t v_out_mv, uint32_t v_in_mv, SlopeCompMode mode)
 {
-    /* Compute the slope (§7.2) using floating-point.
+    /* Compute the inductor-current downslope (§7.2) in amps per second.
      *
-     * Buck:  S_A_per_s = V_out_V / L_H
-     * Boost: S_A_per_s = (V_out_V − V_in_V) / L_H   (only if V_out > V_in)
+     * Buck:       S = V_out / L                 (off-phase: L dumps into V_out)
+     * Boost:      S = (V_out − V_in) / L        (off-phase: L dumps into V_out
+     *                                            while still driven from V_in)
+     * Buck-boost: S = V_out / L                 (four-switch off-phase has Q2+Q3
+     *                                            on, so the inductor sees −V_out;
+     *                                            magnitude matches buck)
      *
-     * step_counts = S_A_per_s × DAC_COUNTS_PER_AMP / TIM6_RATE_HZ
+     * step_counts = S × DAC_COUNTS_PER_AMP / TIM6_RATE_HZ
      *
-     * L = INDUCTOR_VALUE_NH nH = INDUCTOR_VALUE_NH × 1e-9 H
-     * The integer parts INDUCTOR_VALUE_UH and INDUCTOR_VALUE_UH_TENTHS define
-     * L as (INDUCTOR_VALUE_UH + INDUCTOR_VALUE_UH_TENTHS/10) µH. (§16)
+     * L = INDUCTOR_VALUE_NH nH = INDUCTOR_VALUE_NH × 1e-9 H.  The integer
+     * parts INDUCTOR_VALUE_UH and INDUCTOR_VALUE_UH_TENTHS define L as
+     * (INDUCTOR_VALUE_UH + INDUCTOR_VALUE_UH_TENTHS/10) µH. (§16)
      */
     const float l_henries = ((float)INDUCTOR_VALUE_UH +
                               (float)INDUCTOR_VALUE_UH_TENTHS * 0.1f) * 1e-6f;
@@ -140,17 +144,17 @@ void slope_comp_update_step(uint32_t v_out_mv, uint32_t v_in_mv, SlopeCompMode m
     float v_out_volts = (float)v_out_mv * 1e-3f;
     float slope_a_per_s;
 
-    if (mode == SLOPE_COMP_MODE_BUCK)
-    {
-        slope_a_per_s = v_out_volts / l_henries;
-    }
-    else /* SLOPE_COMP_MODE_BOOST */
+    if (mode == SLOPE_COMP_MODE_BOOST)
     {
         float v_in_volts = (float)v_in_mv * 1e-3f;
         float v_diff = v_out_volts - v_in_volts;
-        /* In boost mode the inductor downslope magnitude = (V_out - V_in) / L.
-         * If V_out ≤ V_in (should not happen in boost mode) clamp to 0.      */
+        /* Clamp to 0 if V_out ≤ V_in (should not happen in boost mode). */
         slope_a_per_s = (v_diff > 0.0f) ? (v_diff / l_henries) : 0.0f;
+    }
+    else /* SLOPE_COMP_MODE_BUCK or SLOPE_COMP_MODE_BUCK_BOOST */
+    {
+        /* Both share the V_out / L formula — see comment block above. */
+        slope_a_per_s = v_out_volts / l_henries;
     }
 
     float step_float = slope_a_per_s * dac_counts_per_amp / tim6_rate;

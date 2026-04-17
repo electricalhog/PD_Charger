@@ -2,7 +2,7 @@
 
 ## Version
 
-0.1.2j
+0.1.2k
 
 ---
 
@@ -14,7 +14,7 @@
 - **Target MCU:** STM32G474RETx (170 MHz Cortex-M4F, LQFP64)
 - **Target Board:** PD Regulator Prototype Rev 0 (Daniel Raymond, 2024-12-20)
 - **Toolchain:** STM32CubeIDE, STM32CubeMX 6.16.1, STM32Cube FW_G4 V1.6.1, HAL
-- **Lineage:** ... v0.1.2i: TB1 Set/Reset swapped in IOC; static leg uses forced output. v0.1.2j: §12 timing diagrams corrected for boost mode switching polarity; bootstrap refresh timing made mode-specific (buck: end of period, boost: start of period); FET part numbers confirmed (EPC2306 bringup 200 A peak, EPC2302 implementation 400 A peak); Q15 resolved.
+- **Lineage:** ... v0.1.2i: TB1 Set/Reset swapped in IOC; static leg uses forced output. v0.1.2j: §12 timing diagrams corrected for boost mode switching polarity; bootstrap refresh timing made mode-specific (buck: end of period, boost: start of period); FET part numbers confirmed (EPC2306 bringup 200 A peak, EPC2302 implementation 400 A peak); Q15 resolved. v0.1.2k: post-switching freeze debug pass — two root causes identified and fixed (§2.2, §14.3); four-switch buck-boost transition mode (`REGULATOR_MODE_BUCK_BOOST`) promoted from future scope to v0.1.2 deliverable with three-band mode selector (§5.1, §5.6); slope compensation formula extended to the new mode (§7.2); HAL tick / ISR priority interaction documented as §8.5.1 and §13.3.
 - **Jonah-prescribed items (not in transcripts, confirmed during preliminary spec review):** EPR scope (§1, §10.2 absolute OVP), boost mode as v0.1.2 deliverable (§1.1, §5.3), centralized config header requirements (§2.1), code quality mandates (`-Wall -Werror`, `_Static_assert`, doc-comments in §2.1 and §16).
 - **Sources of truth (priority order):** manual corrections > KiCad schematics > (`dc-dc`, `input`, `output`, `PD_Charger`) > `final.ioc` > Round 3 answers > Round 2a debrief > Round 2b answers > Round 1 answers.
 - **Clarification that EPR voltage range is in scope [Jonah-prescribed]:** USB PD Extended Power Range (up to 48 V / 5 A / 240 W) is in scope for this project and this firmware. The regulator must support all SPR and EPR voltage/current combinations within hardware limits (60 V input OVP, inductor/FET current ratings). This was not discussed in transcripts; Jonah confirmed EPR scope during preliminary spec review.
@@ -39,6 +39,7 @@ These two responsibilities are architecturally independent. The PD stack runs un
 
 - Buck mode operation (V_in > V_out) — default mode, primary test target
 - Boost mode operation (V_in < V_out) — fully specified, implementation required **[Jonah-prescribed; transcript says "not in scope" but Jonah confirmed during preliminary spec review]**
+- Four-switch buck-boost transition mode (V_in ≈ V_out) — promoted to v0.1.2 scope in v0.1.2k to eliminate the mode-selection dead band (§5.1, §5.6)
 - USB PD Standard Power Range (SPR) and Extended Power Range (EPR) voltage support (5 V to 48 V)
 - Peak current mode control via hardware comparator (COMP1 → EEV4 → HRTIM)
 - Slope compensation of the current-mode comparator threshold
@@ -52,7 +53,6 @@ These two responsibilities are architecturally independent. The PD stack runs un
 
 **Out of scope:**
 
-- Four-switch buck-boost transition region (future spec revision)
 - USB PD stack internals (handled by X-CUBE-TCPP middleware)
 - PID coefficient tuning (empirical; values are runtime-configurable)
 - PCB layout, thermal management, EMI
@@ -134,6 +134,22 @@ The following peripheral configurations must be present in the CubeMX project. T
 | TB2 IdleLevel          | INACTIVE (Q16 resolved — Dan reverted). CHB2 idles LOW. No shoot-through hazard. | Yes — Dan v0.1.2i | Dan IOC update |
 | Mode-switch reconfiguration | Changing between switching and static leg at runtime requires direct writes to HAL HRTIM registers (SET1R, RST1R, OENR, ODISR) and IdleLevel configuration. **Cannot be accomplished with CubeMX-generated functions alone.** | Determined | §5.5, RM0440 §27 |
 | Fault action           | All outputs forced inactive (all FETs off)                         | Expected                  | CubeMX default |
+
+**⚠ Post-init HRTIM period write-back (v0.1.2k — freeze root cause #1):**
+
+CubeMX calls `HAL_HRTIM_TimeBaseConfig()` three times in `MX_HRTIM1_Init()` — once for `HRTIM_TIMERINDEX_MASTER`, once for `HRTIM_TIMERINDEX_TIMER_A`, once for `HRTIM_TIMERINDEX_TIMER_B`. All three invocations reuse the *same* `HRTIM_TimeBaseCfgTypeDef` struct, and CubeMX populates its `Period` field with the placeholder `0xFFDF` (65503), not the application's `HRTIM_PERIOD_COUNTS` (27200 for 200 kHz). Result: every timer runs at ~83 kHz, **every** duty-cycle-relative timing (blanking window, backstop compare, slope compensation step per period, bootstrap refresh pulse width) is invalid, and the inner loop cannot stabilise.
+
+**Observed failure mode on hardware v0.1.2j:** switching waveforms appear briefly at the wrong frequency after `regulator_start()`, then the core enters a tight loop or WFI from which it never returns. The secondary contributor (HAL tick freeze, §14.3) turns this transient instability into a hard hang.
+
+**Required fix — `regulator_init()` must overwrite the master and both timer period registers directly after `MX_HRTIM1_Init()`:**
+
+```c
+HRTIM1->sMasterRegs.MPER                            = HRTIM_PERIOD_COUNTS;
+HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].PERxR = HRTIM_PERIOD_COUNTS;
+HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].PERxR = HRTIM_PERIOD_COUNTS;
+```
+
+This must execute as **Step 0** of `regulator_init()` — before any compare register, output configuration, or `regulator_start()` call depends on the period value. The write is idempotent and safe to repeat on every re-init. The alternative (editing the generated `MX_HRTIM1_Init` or modifying the IOC `Period` field) is rejected because CubeMX regenerates from the IOC and would silently revert the fix.
 
 **COMP1:**
 
@@ -378,21 +394,33 @@ Recovery from a fault condition is **not automatic** in v0.1.2.
 
 ### 5.1 Mode Selection
 
-The default operating mode is **BUCK**. The operating mode is determined by comparing V_in (measured) to V_setpoint (commanded):
+The default operating mode is **BUCK**. Three operating modes are defined; the selector uses a three-band decision over the measured V_in / setpoint ratio with outer and inner hysteresis:
 
-- **Buck mode:** V_in > V_setpoint + V_hysteresis
-- **Boost mode:** V_in < V_setpoint − V_hysteresis
+- **BUCK:** `V_in > V_setpoint + 2 × V_hysteresis` (plenty of headroom to step the input voltage down)
+- **BOOST:** `V_in < V_setpoint − 2 × V_hysteresis` (input clearly below the target)
+- **BUCK_BOOST:** transition band around `V_in ≈ V_setpoint` — either the two-switch mode cannot hold the setpoint with a physical duty cycle, or the dead-time-limited duty cycle bound is reached
 
-V_hysteresis = 1.0 V (compile-time constant; confirmed as needed — Round 3 Q8). Adjust empirically during bring-up if chattering occurs near transition boundary.
+`V_hysteresis` = 1.0 V (compile-time constant; confirmed as needed — Round 3 Q8). The outer band at ±2 × V_hysteresis gives a clean, non-chattering hand-off into BUCK_BOOST; within the inner band the selector sticks to the current mode so normal ripple on V_in does not provoke repeated transitions.
 
-When V_in is within ±V_hysteresis of V_setpoint, the system remains in its current mode. The four-switch transition region is out of scope for v0.1.2.
+Pseudocode for `determine_mode_from_voltages(v_in_mv, v_setpoint_mv, current_mode)`:
+
+```
+if v_in_mv > v_setpoint_mv + 2 × V_HYSTERESIS_MV → return BUCK
+if v_in_mv < v_setpoint_mv − 2 × V_HYSTERESIS_MV → return BOOST
+# inside the outer band — return BUCK_BOOST if already there,
+# otherwise stick to current mode until the inner band is crossed
+if current_mode == BUCK_BOOST → return BUCK_BOOST
+if current_mode == BUCK  and v_in_mv < v_setpoint_mv + V_HYSTERESIS_MV → return BUCK_BOOST
+if current_mode == BOOST and v_in_mv > v_setpoint_mv − V_HYSTERESIS_MV → return BUCK_BOOST
+return current_mode
+```
 
 Mode transitions while RUNNING are permitted but require a controlled sequence:
 1. Disable HRTIM outputs (all FETs off).
-2. Reconfigure which timer is the switching leg and which is the wire leg.
-3. Reconfigure EEV4 to act on the correct timer.
+2. Reconfigure which timer(s) are the switching leg(s) and which are held as a wire.
+3. Route EEV4 to the correct timer(s). For BUCK_BOOST both timers respond to EEV4 (see §5.6).
 4. Reconfigure HRTIM output polarity so EEV4 ends the charge phase in the new mode.
-5. Update software safety check thresholds for the new mode.
+5. Update software safety check thresholds for the new mode (BUCK_BOOST has no V_in/V_out ordering constraint — see §10.2).
 6. Reset PID integrator.
 7. Re-enable HRTIM outputs.
 8. Perform soft-start to the target voltage (§11.2).
@@ -565,6 +593,33 @@ The firmware must write the appropriate value to the HRTIM blanking register on 
 
 If blanking is not configured, the system will exhibit false comparator trips and erratic duty cycle behavior. This is a required configuration, not optional.
 
+### 5.6 Four-Switch Buck-Boost Mode (v0.1.2k)
+
+**Purpose.** The two-switch buck and boost topologies each require a minimum finite duty cycle — buck cannot produce `V_out` arbitrarily close to `V_in` because the low-side FET needs a non-zero off-time (dead-time + bootstrap), and boost cannot produce `V_out` arbitrarily close to `V_in` because the high-side FET needs a non-zero on-time of the low-side switch to recharge the bootstrap cap and to resolve a measurable peak current. The resulting dead band around `V_in ≈ V_setpoint` is where the four-switch topology operates. v0.1.2k adds it as a first-class mode (`REGULATOR_MODE_BUCK_BOOST`) so the regulator can follow PD voltage steps that cross `V_in`.
+
+**Topology.** The four-switch buck-boost uses all four H-bridge FETs simultaneously:
+
+| Phase     | Q1 (CHA1, input HS) | Q2 (CHA2, input LS) | Q3 (CHB1, output HS) | Q4 (CHB2, output LS) | Inductor sees | dI_L/dt      |
+| --------- | ------------------- | ------------------- | -------------------- | -------------------- | ------------- | ------------ |
+| Charge    | ON                  | OFF                 | OFF                  | ON                   | +V_in         | +V_in / L    |
+| Discharge | OFF                 | ON                  | ON                   | OFF                  | −V_out        | −V_out / L   |
+
+During the charge phase the inductor connects V_in to GND (Q1+Q4 on). During the discharge phase the inductor connects GND to V_out through the opposite diagonal (Q2+Q3 on). The conversion ratio is `V_out / V_in = D / (1 − D)`, which crosses unity at `D = 0.5`.
+
+**HRTIM wiring.** Both Timer A and Timer B switch every period. They share the same Set/Reset events so the two half-bridges move in lockstep:
+
+- Timer A (input side): Set = `TIMPER`, Reset = `EEV4 | CMP2` → CHA1 HIGH at period start (charge), CHA1 LOW on COMP1 trip or backstop (discharge).
+- Timer B (output side): Set = `EEV4 | CMP2`, Reset = `TIMPER` → CHB1 LOW at period start (charge, inductor output at GND via Q4), CHB1 HIGH on COMP1 trip or backstop (discharge, inductor output at V_out via Q3).
+- Both timers run `CMP1 = HRTIM_BLANKING_TICKS_BUCK` as the current-sense blanking window. The buck value is used (not BOOST) because no bootstrap refresh pulse precedes the charge phase in this mode — the refresh is supplied naturally by Q4 (charge) and Q2 (discharge) each period.
+
+Because both legs switch, neither leg is a static "wire": bootstrap capacitors on both halves are refreshed naturally every period. The dedicated refresh pulse (§5.4) is not required.
+
+**EEV4 / COMP1.** Peak current mode control is retained: COMP1 compares IL_MON against DAC3 CH1. When it fires, EEV4 resets both timers' charge phase simultaneously. Slope compensation (§7) applies exactly as in buck mode — the downslope magnitude is V_out / L (the inductor sees −V_out during discharge), so the existing buck slope formula is reused.
+
+**Transitions to/from BUCK_BOOST.** Any transition into or out of `REGULATOR_MODE_BUCK_BOOST` reuses the generic RUNNING mode-change sequence (§5.1, steps 1–8). When leaving BUCK_BOOST for BUCK or BOOST, the static-leg CMP1 blanking value must be restored to `HRTIM_BLANKING_TICKS_BUCK` or `HRTIM_BLANKING_TICKS_BOOST` respectively — both `hrtim_apply_buck_mode_static_leg()` and `hrtim_apply_boost_mode_static_leg()` write CMP1 to be safe regardless of which mode preceded them.
+
+**Safety in BUCK_BOOST.** Because V_in may be above, equal to, or below V_out in this mode, the BUCK-specific `V_in > V_out` check and the BOOST-specific `V_in < V_out` check are both waived (§10.2). All other safety checks (absolute OVP, UVP, inductor peak current limit, HRTIM backstop) remain active and unchanged.
+
 ---
 
 ## 6. Inner Control Loop: Peak Current Mode
@@ -622,11 +677,14 @@ The compensation slope must exceed 50% of the inductor current downslope in the 
 
 **Boost mode:** |dI/dt|_down = (V_out − V_in) / L. At V_out = 20 V, V_in = 5 V, L = 4.7 µH: downslope = 3.19 A/µs. Minimum compensation slope = 1.60 A/µs. The buck worst case governs.
 
+**Four-switch buck-boost (v0.1.2k):** during the discharge phase Q2+Q3 are on, so the inductor sees −V_out just as in buck mode. |dI/dt|_down = V_out / L — identical to the buck formula. No extra slope-comp math is required; the implementation reuses the buck path for this mode.
+
 **Dynamic implementation (Round 3 Q10 resolved):** The slope is derived from the current operating point, not a fixed compile-time constant. At each PID execution, the slope step size is recomputed:
 
 ```
-Buck mode:   S_A_per_s = V_out_measured / L
-Boost mode:  S_A_per_s = (V_out_measured - V_in_measured) / L
+Buck mode:        S_A_per_s = V_out_measured / L
+Boost mode:       S_A_per_s = (V_out_measured - V_in_measured) / L
+Buck-boost mode:  S_A_per_s = V_out_measured / L            # same as buck (v0.1.2k)
 
 step_counts_per_tick = S_A_per_s / (DAC_SENSITIVITY_A_per_count × TIM6_RATE_HZ)
                      = S_A_per_s × (DAC_counts/A) / TIM6_RATE_HZ
@@ -785,6 +843,15 @@ The spec does not prescribe the unit system (raw ADC counts, millivolts, or fixe
 
 V_in (PA4 / ADC2_IN17) is on a separate ADC instance (PA4 is not available on ADC1 on this package). Used for mode selection and telemetry. Does not need to be synchronous with switching.
 
+#### 8.5.1 ADC2 access from the PID ISR must not block on `HAL_GetTick()` (v0.1.2k — freeze root cause #2)
+
+The PID ISR runs at NVIC priority 2 (§13.2). The HAL tick source, TIM2, is at priority 15 and is masked for the entire duration of the PID ISR. Any HAL API that spins on `HAL_GetTick()` while waiting for a peripheral-readiness flag will deadlock once it is called from priority ≤ 2. Two culprits exist in the ADC2 trigger/read path:
+
+1. **`HAL_ADC_Start()` → `ADC_Enable()`** — spins waiting for ADRDY using `HAL_GetTick()` timeout. Avoided by enabling ADC2 (setting `ADEN` and waiting for `ADRDY` with a CPU-cycle guard) once in `adc_monitor_init()` (task context), then *never* calling `HAL_ADC_Start()` from the ISR. ISR-context triggers use `ADC2->CR |= ADC_CR_ADSTART` directly.
+2. **`HAL_ADC_PollForConversion()`** — spins waiting for EOC using `HAL_GetTick()` timeout. With uwTick frozen, any ADC stall turns into an infinite loop. This was the empirically-observed hang on hardware v0.1.2j immediately after the switching waveforms came up. Replaced with a bounded CPU-cycle poll of `ADC2->ISR.EOC`; the bound (`GUARD_LOOPS = 2000` ≈ a few µs at 170 MHz) is ~10× the 354 ns conversion time but fits inside the 50 µs PID period. On guard-expiry the previous sample is retained and the ISR returns cleanly — never hangs.
+
+Both fixes are required. Omitting the `ADEN` pre-enable re-introduces the hang the first time the ADC is triggered from the ISR.
+
 ### 8.6 PID Output
 
 The PID output is in DAC counts (0–4095), representing the peak inductor current threshold. Clamping bounds:
@@ -914,15 +981,18 @@ The firmware must also register an HRTIM fault interrupt to:
 
 The PID loop ISR must check the following conditions on every execution. If any condition is violated, the firmware must execute a controlled shutdown (disable HRTIM outputs, zero DAC, set FAULT state):
 
-| Condition                    | Threshold                                  | Rationale                                                                    |
-| ---------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------- |
-| V_out overvoltage (relative) | V_out_target × 1.10 (110% of setpoint)     | Output/load protection                                                       |
-| V_out overvoltage (absolute) | 52.8 V hard cap, **compile-time constant** | 110% of USB PD EPR maximum (48 V × 1.10); hardware ceiling is 60 V (ADM1270) |
-| V_out undervoltage           | V_out_target × 0.50 (50% of setpoint)      | Loss of regulation                                                           |
-| V_in out-of-range (buck)     | V_in < V_out_target + margin               | Buck requires V_in > V_out                                                   |
-| V_in out-of-range (boost)    | V_in > V_out_target − margin               | Boost requires V_in < V_out                                                  |
+| Condition                         | Threshold                                  | Rationale                                                                    |
+| --------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------- |
+| V_out overvoltage (relative)      | V_out_target × 1.10 (110% of setpoint)     | Output/load protection                                                       |
+| V_out overvoltage (absolute)      | 52.8 V hard cap, **compile-time constant** | 110% of USB PD EPR maximum (48 V × 1.10); hardware ceiling is 60 V (ADM1270) |
+| V_out undervoltage                | V_out_target × 0.50 (50% of setpoint)      | Loss of regulation                                                           |
+| V_in out-of-range (buck)          | V_in < V_out_target + margin               | Buck requires V_in > V_out                                                   |
+| V_in out-of-range (boost)         | V_in > V_out_target − margin               | Boost requires V_in < V_out                                                  |
+| V_in out-of-range (buck-boost)    | *Not applicable* (v0.1.2k)                  | Four-switch mode operates with V_in above, below, or equal to V_out          |
 
 The relative thresholds and margin values are runtime-mutable tuning parameters. The 52.8 V absolute hard cap is a compile-time constant (not runtime-tunable) — it represents 110% of the USB PD EPR maximum voltage (48 V). The true hardware ceiling is the ADM1270 OVP at 60 V.
+
+The V_in ordering checks are mode-specific. In `REGULATOR_MODE_BUCK_BOOST` the check is explicitly waived because the mode exists precisely to span the V_in ≈ V_out transition band where neither buck's nor boost's V_in ordering holds. All other safety checks (absolute OVP, UVP, over-temperature if implemented, HRTIM backstop) remain active in every mode.
 
 ### 10.3 Maximum On-Time / Overcurrent Protection
 
@@ -1137,6 +1207,18 @@ FreeRTOS `configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY` = **5** (confirmed from 
 
 All regulator ISRs must have NVIC priority numerically less than 5. No FreeRTOS API calls from regulator control ISRs.
 
+### 13.3 HAL tick visibility inside regulator ISRs (v0.1.2k)
+
+TIM2 generates the HAL tick (`uwTick`) at priority 15. Any ISR at numerically lower priority (higher urgency) will pre-empt TIM2, which means `HAL_GetTick()` returns a *frozen* value for the lifetime of that ISR. Concretely: inside any regulator ISR (TIM6 @ 0, HRTIM @ 1, TIM7 / ADC @ 2), **`HAL_GetTick()` is effectively a constant.**
+
+The consequences for spec conformance:
+
+- Any HAL function that internally waits on a timeout driven by `HAL_GetTick()` — notably `HAL_ADC_Start()`, `HAL_ADC_PollForConversion()`, `HAL_ADC_Stop()`, `HAL_DAC_Start()` in some paths — must not be called from a regulator ISR. If these functions are needed, either call them from task context during `regulator_init()` or replace them with direct register writes plus a CPU-cycle guard (§8.5.1).
+- Any loop that busy-waits on `HAL_GetTick()` is an unbounded hang in a regulator ISR. Use a bounded iteration counter sized for the core clock (170 MHz) and a short worst-case expected duration.
+- Logging / telemetry that calls `HAL_GetTick()` from an ISR will produce a constant timestamp across a single ISR invocation. Use DWT cycle counter or a free-running hardware timer if per-event timing is needed inside the ISR.
+
+This is a general hazard surfaced by the v0.1.2j debug investigation. The offending path (ADC2 poll) has been eliminated in v0.1.2k; this subsection exists so future additions to the regulator ISRs do not re-introduce the class of bug.
+
 ---
 
 ## 14. ADC Measurement Subsystem
@@ -1176,6 +1258,18 @@ R25 = 5 mΩ (confirmed, see §3.3). Gain = 50 V/V. Sensitivity = 250 mV/A (same 
 I_mA = (uint32_t)ADC_raw * 13200u / 4096u     /* ≈ 3.22 mA/count */
 ```
 
+### 14.3 ADC2 trigger / read from the PID ISR (v0.1.2k)
+
+V_in is read by ADC2 once per PID cycle. The PID ISR runs at priority 2; see §13.3 for why HAL ADC functions that depend on `HAL_GetTick()` cannot be used there. The required access pattern is:
+
+1. **Task context (`adc_monitor_init`)** — run `HAL_ADCEx_Calibration_Start()` for ADC2, then enable the peripheral directly: set `ADC2_CR.ADEN = 1`, poll `ADC2_ISR.ADRDY` with a CPU-cycle guard, and clear `ADRDY`. This is a one-shot, task-context path and is allowed to use bounded loops.
+2. **ISR trigger** — `adc_monitor_trigger_vin()` writes `ADC2->CR |= ADC_CR_ADSTART`. No HAL call; no tick dependency.
+3. **ISR read** — `adc_monitor_read_vin_result()` polls `ADC2->ISR.EOC` with a CPU-cycle guard (default 2000 iterations ≈ a few µs at 170 MHz, comfortably above the ~354 ns conversion time and well below the 50 µs PID period). If the guard expires, the previous `adc_measurements.v_in_mv` sample is retained and the ISR exits cleanly.
+
+The order within one PID cycle is: trigger near the top of the ISR, do PID math and other work, read near the bottom — by which point the conversion has long completed and the guard is not exercised. The guard exists only so a failed trigger (e.g., ADC hung in an unexpected state) cannot turn into an infinite loop.
+
+This design eliminates the v0.1.2j post-switching freeze and is required, not optional.
+
 ---
 
 ## 15. Diagnostic / Debug Interface
@@ -1196,7 +1290,7 @@ The firmware must expose telemetry via LPUART1 (921600 baud, 7-bit word, matchin
 | PID setpoint                | uint16_t | mV          | On change              |
 | Current duty cycle          | uint16_t | HRTIM ticks | Every switching period |
 | System state                | enum     | —           | On change              |
-| Operating mode (BUCK/BOOST) | enum     | —           | On change              |
+| Operating mode (BUCK/BOOST/BUCK_BOOST) | enum     | —           | On change              |
 | Fault status                | bitfield | —           | On change              |
 
 ### 15.2 Required Configurable Parameters
@@ -1212,7 +1306,7 @@ The firmware must expose telemetry via LPUART1 (921600 baud, 7-bit word, matchin
 | Voltage setpoint (mV)               | uint16_t | 0       | 0–48000     | Yes                            |
 | Max duty cycle (%)                  | uint8_t  | 85      | 50–96       | Yes                            |
 | Max consecutive backstops           | uint8_t  | 3       | 1–10        | Yes                            |
-| Operating mode                      | enum     | BUCK    | BUCK, BOOST | Yes (triggers mode transition) |
+| Operating mode                      | enum     | BUCK    | BUCK, BOOST, BUCK_BOOST | Yes (triggers mode transition) |
 | OVP threshold (% of target)         | uint8_t  | 110     | 105–150     | Yes                            |
 | UVP threshold (% of target)         | uint8_t  | 50      | 20–90       | Yes                            |
 | Integrator reset threshold (%)      | uint8_t  | 20      | 5–100       | Yes                            |
@@ -1256,6 +1350,21 @@ Each item is binary — it passes or it does not.
 - [ ] Charge phase terminates when IL_MON exceeds DAC3 CH1 (COMP1 → EEV4 → CHB1 goes HIGH).
 - [ ] With V_in = 12 V, V_out = 20 V regulates to within ±2% under: (a) no-load, (b) 500 mA.
 - [ ] Mode switch from buck to boost completes via disable → reconfigure → soft-start without power stage damage.
+
+### Buck-Boost Mode (v0.1.2k)
+- [ ] Both Timer A and Timer B switch every period, in lockstep (Q1+Q4 on during charge, Q2+Q3 on during discharge).
+- [ ] Charge phase begins at period reset on both timers (CHA1 HIGH, CHB1 LOW).
+- [ ] Charge phase terminates on both timers when IL_MON exceeds DAC3 CH1 (COMP1 → EEV4 resets Timer A and sets Timer B).
+- [ ] With V_in = 20 V and V_out = 20 V setpoint, the regulator enters BUCK_BOOST and holds V_out to within ±5% at no-load and 500 mA.
+- [ ] Sweeping V_in from 25 V down to 15 V with a 20 V setpoint produces a clean BUCK → BUCK_BOOST → BOOST transition with no power-stage faults and no mode chattering.
+- [ ] Transitions out of BUCK_BOOST restore the correct CMP1 blanking value (BUCK or BOOST) on the target mode's switching timer.
+
+### Post-Switching Freeze Fixes (v0.1.2k)
+- [ ] HRTIM MPER, Timer A PERxR, and Timer B PERxR are programmed to `HRTIM_PERIOD_COUNTS` as Step 0 of `regulator_init()` (overrides the CubeMX 0xFFDF placeholder — see §2.2).
+- [ ] Measured switching frequency on CHA1 / CHB1 matches `HRTIM_RATE_HZ` (default 200 kHz) within ±1% after `regulator_start()`.
+- [ ] ADC2 is enabled (`ADEN`) with ADRDY confirmed in `adc_monitor_init()` — no `HAL_ADC_Start()` is called from the PID ISR.
+- [ ] ADC2 EOC polling in the PID ISR uses a bounded CPU-cycle guard; no call to `HAL_GetTick()` reachable from any ISR at priority < 5.
+- [ ] The regulator runs continuously through a PD voltage step (5 V → 20 V → 5 V) without freezing; uwTick continues to advance; LPUART telemetry remains responsive.
 
 ### Slope Compensation
 - [ ] DAC3 CH1 resets to PID peak value at each period start.
@@ -1340,12 +1449,13 @@ Questions tagged `[Jonah]` were answered by Jonah. Questions tagged `[Dan needed
 
 ## Appendix B: Future Scope (Not Specified, Must Not Be Precluded)
 
-1. **Four-switch buck-boost mode.** Both timers switch per period (see LT8390 datasheet page 14).
+1. **Four-switch buck-boost mode — promoted to v0.1.2 scope in v0.1.2k.** See §5.6. Retained here (crossed out) as a lineage marker: ~~Both timers switch per period (see LT8390 datasheet page 14).~~
 2. **Dynamic switching frequency.** Increase f_sw when duty cycle is small to maintain CCM.
 3. **Hardware slope compensation.** DAC3 sawtooth generator or DMA-based for zero CPU overhead.
 4. **Current-limiting outer loop.** A wrapper around the PID output that monitors actual output current (ID_MON) and clamps the peak current setpoint to prevent I_out from exceeding the USB PD PDO limit (5 A). This is distinct from the inductor peak current limit enforced by COMP1 + HRTIM. The inductor peak current limit (PID_OUTPUT_MAX) is set to the hardware ceiling; the output current limit is the USB PD contract. v0.1.2 has no mechanism to enforce the PDO output current limit.
 5. **Adaptive slope compensation.** Slope as a function of V_in, V_out, and operating mode.
 6. **Bootstrap refresh optimization.** Refresh every N periods instead of every period.
+7. **Pulse-skipping / mode-hopping across very large V_in/V_out steps** (e.g., USB PD EPR 48 V → 5 V), to reduce BUCK_BOOST dwell time during transitions.
 
 ---
 
