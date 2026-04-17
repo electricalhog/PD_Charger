@@ -72,6 +72,17 @@ extern "C" {
  *
  * All fields are in "engineering" units (mV, mA) so they can be read
  * directly in the debugger without scaling.  Total size: 24 bytes.
+ *
+ * TODO(debug): Quick triage guide for debug_log inspection:
+ *   - If v_out_mv is always 0    → check ADC1 DMA init, INPUT_EN assert.
+ *   - If v_in_mv  is always 0    → check ADC2 trigger / INPUT_EN (§5.1).
+ *   - If dac_counts stays at max → PID saturated; verify setpoint & gains.
+ *   - If state == 3 (FAULT)      → check regulator_last_fault_source for
+ *                                   cause (OVP/UVP/VIN_RANGE/HW_FLTx).
+ *   - If mode == 1 in buck HW    → v_in_mv=0 at start caused wrong mode;
+ *                                   fixed by regulator_start() ADC pre-sample.
+ *   - If total_count never grows → TIM7 ISR not firing; check TIM7_DAC_IRQn
+ *                                   NVIC priority and vector name.
  */
 typedef struct
 {

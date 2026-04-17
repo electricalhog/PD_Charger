@@ -41,12 +41,19 @@ extern "C" {
 /**
  * SlopeCompMode — operating mode selector for slope step calculation.
  * Matches RegulatorMode in regulator.h but does not depend on it.
+ * Values are intentionally identical to RegulatorMode so a direct cast is
+ * safe: (SlopeCompMode)regulator_mode.
+ *
+ * @see RegulatorMode (regulator.h) — parallel enum; keep values in sync.
  */
 typedef enum
 {
-    SLOPE_COMP_MODE_BUCK      = 0,  /**< Buck: downslope = V_out / L */
-    SLOPE_COMP_MODE_BOOST     = 1,  /**< Boost: downslope = (V_out − V_in) / L */
-    SLOPE_COMP_MODE_BUCK_BOOST = 2  /**< Four-switch: reserved for future use */
+    SLOPE_COMP_MODE_BUCK       = 0,  /**< Buck: downslope = V_out / L.
+                                      *   Mirrors REGULATOR_MODE_BUCK = 0. */
+    SLOPE_COMP_MODE_BOOST      = 1,  /**< Boost: downslope = (V_out − V_in) / L.
+                                      *   Mirrors REGULATOR_MODE_BOOST = 1. */
+    SLOPE_COMP_MODE_BUCK_BOOST = 2   /**< Four-switch: reserved for future use.
+                                      *   Mirrors REGULATOR_MODE_BUCK_BOOST = 2. */
 } SlopeCompMode;
 
 /* =========================================================================
