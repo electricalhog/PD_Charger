@@ -24,6 +24,8 @@
 #include "tracer_emb.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "regulator.h"
+#include "slope_comp.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -64,7 +66,10 @@ extern UART_HandleTypeDef hlpuart1;
 extern TIM_HandleTypeDef htim2;
 
 /* USER CODE BEGIN EV */
-
+/* Peripheral handles needed by regulator ISRs */
+extern TIM_HandleTypeDef    htim6;
+extern TIM_HandleTypeDef    htim7;
+extern HRTIM_HandleTypeDef  hhrtim1;
 /* USER CODE END EV */
 
 /******************************************************************************/
@@ -277,5 +282,77 @@ void LPUART1_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+
+/* TODO(debug): NVIC priority map for regulator ISRs (must NOT call FreeRTOS API):
+ *   TIM6_DAC_IRQn   (IRQ 54): priority 0 — slope compensation, 2 MHz
+ *   HRTIM1_TIMA_IRQn(IRQ 67): priority 1 — DAC reload + backstop, 200 kHz
+ *   HRTIM1_FLT_IRQn (IRQ 66): priority 1 — hardware fault
+ *   TIM7_DAC_IRQn   (IRQ 55): priority 2 — PID loop, 20 kHz
+ * All of these are below FreeRTOS configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY=5
+ * (numerically; lower number = higher urgency on Cortex-M4 with BASEPRI).
+ * During bring-up verify with: NVIC->IP[IRQn] >> 4 in debugger memory view. */
+
+/**
+ * @brief TIM6 and DAC underrun interrupt handler.
+ *        TIM6 is used for slope compensation (2 MHz, priority 0).
+ *        Called every 500 ns while the regulator is RUNNING.
+ *        ISR body is in slope_comp.c (§7.5, §13.2).
+ */
+void TIM6_DAC_IRQHandler(void)
+{
+  /* Clear the TIM6 update interrupt flag */
+  if (__HAL_TIM_GET_FLAG(&htim6, TIM_FLAG_UPDATE) &&
+      __HAL_TIM_GET_IT_SOURCE(&htim6, TIM_IT_UPDATE))
+  {
+    __HAL_TIM_CLEAR_IT(&htim6, TIM_IT_UPDATE);
+    slope_comp_tim6_isr();
+  }
+}
+
+/**
+ * @brief TIM7/DAC2/DAC4 shared interrupt handler.
+ *        On STM32G474, TIM7 shares IRQ 55 (TIM7_DAC_IRQn) with DAC2/DAC4
+ *        underrun events.  The vector must be named TIM7_DAC_IRQHandler.
+ *        TIM7 is used for the PID outer control loop (20 kHz, priority 2).
+ *        ISR body is in regulator.c (§8, §13.2).
+ */
+void TIM7_DAC_IRQHandler(void)
+{
+  /* Clear the TIM7 update interrupt flag */
+  if (__HAL_TIM_GET_FLAG(&htim7, TIM_FLAG_UPDATE) &&
+      __HAL_TIM_GET_IT_SOURCE(&htim7, TIM_IT_UPDATE))
+  {
+    __HAL_TIM_CLEAR_IT(&htim7, TIM_IT_UPDATE);
+    regulator_pid_tim7_isr();
+  }
+}
+
+/**
+ * @brief HRTIM1 Timer A interrupt handler.
+ *        Fires on every switching period reset (200 kHz, priority 1).
+ *        Reloads DAC3 CH1 with the current PID peak value (§7.6).
+ */
+void HRTIM1_TIMA_IRQHandler(void)
+{
+  /* Check for repetition (period) interrupt */
+  if (__HAL_HRTIM_TIMER_GET_ITSTATUS(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A,
+                                      HRTIM_TIM_IT_REP))
+  {
+    __HAL_HRTIM_TIMER_CLEAR_IT(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A,
+                                HRTIM_TIM_IT_REP);
+    regulator_hrtim_tima_period_isr();
+  }
+}
+
+/**
+ * @brief HRTIM1 fault interrupt handler.
+ *        Fires when FLT1 (VS_GOOD, PA12) or FLT2 (IS_GOOD, PA15) asserts
+ *        (active-low).  Priority 1.  ISR body is in regulator.c (§10.1).
+ */
+void HRTIM1_FLT_IRQHandler(void)
+{
+  regulator_hrtim_fault_isr();
+  /* Flag clearing is performed inside regulator_hrtim_fault_isr() */
+}
 
 /* USER CODE END 1 */

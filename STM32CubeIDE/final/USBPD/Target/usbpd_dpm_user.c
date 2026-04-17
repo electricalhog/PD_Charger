@@ -39,7 +39,8 @@
 #if !defined(_TRACE)
 #include "string.h"
 #endif /* !_TRACE */
-
+#include "pd_interface.h"
+#include "regulator.h"
 /* USER CODE END Includes */
 
 /** @addtogroup STM32_USBPD_APPLICATION
@@ -408,7 +409,27 @@ void USBPD_DPM_HardReset(uint8_t PortNum, USBPD_PortPowerRole_TypeDef CurrentRol
 USBPD_StatusTypeDef USBPD_DPM_SetupNewPower(uint8_t PortNum)
 {
 /* USER CODE BEGIN USBPD_DPM_SetupNewPower */
-  return USBPD_PWR_IF_SetProfile(PortNum);
+  USBPD_StatusTypeDef status = USBPD_PWR_IF_SetProfile(PortNum);
+
+  /* Notify the regulator of the new voltage contract (§9.2).
+   * DPM_RequestedVoltage is already set by USBPD_DPM_EvaluateRequest()
+   * from the accepted sink request PDO.
+   * If USBPD_PWR_IF_SetProfile succeeded, the voltage contract is in effect.
+   * NOTE: The regulator must be explicitly started via regulator_start()
+   * (e.g., from a separate enable signal or debug command) — a new setpoint
+   * alone does not auto-start the regulator (§9.2 explicit enable requirement). */
+  if (status == USBPD_OK)
+  {
+    pd_interface_notify_voltage_contract(DPM_Ports[PortNum].DPM_RequestedVoltage);
+    /* Auto-start: if regulator is in IDLE and a valid contract arrives,
+     * attempt to start.  This is the normal PD source power-up sequence.   */
+    if (regulator_get_state() == REGULATOR_STATE_IDLE)
+    {
+      regulator_start();
+    }
+  }
+
+  return status;
 /* USER CODE END USBPD_DPM_SetupNewPower */
 }
 
@@ -1142,6 +1163,11 @@ static USBPD_StatusTypeDef DPM_TurnOffPower(uint8_t PortNum, USBPD_PortPowerRole
 {
   USBPD_StatusTypeDef status;
   status = USBPD_PWR_IF_VBUSDisable(PortNum);
+
+  /* Notify the regulator that the PD contract has ended (§9.2).
+   * This triggers a controlled regulator shutdown via regulator_stop().    */
+  pd_interface_notify_disconnect();
+
   return status;
 }
 
