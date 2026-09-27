@@ -199,7 +199,7 @@ def cmd_scope(cfg, a):
         if op == "wait":
             return s.wait_trigger(a.timeout, arm=not a.no_arm)
         if op == "capture":
-            return s.capture(a.sources, "raw" if a.raw else "normal", a.points)
+            return s.capture(a.sources, "raw" if a.raw else "normal", a.points, a.threshold)
         if op == "screenshot":
             return s.screenshot()
         if op == "scpi":
@@ -293,6 +293,7 @@ def build_parser() -> argparse.ArgumentParser:
     g = sc.add_parser("wait", help="arm single and wait for trigger"); g.add_argument("--timeout", type=float, default=10); g.add_argument("--no-arm", action="store_true")
     g = sc.add_parser("capture", help="download waveform(s) to CSV + summary"); g.add_argument("sources", nargs="+")
     g.add_argument("--raw", action="store_true", help="full memory depth (stops scope)"); g.add_argument("--points", type=int)
+    g.add_argument("--threshold", type=float, help="edge threshold in volts (default: 50%% of min..max per channel)")
     g = sc.add_parser("scpi", help="raw SCPI; queries end with ?"); g.add_argument("command")
 
     # logic analyzer

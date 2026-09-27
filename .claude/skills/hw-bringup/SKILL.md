@@ -152,6 +152,29 @@ bu scope scpi ':ACQuire:SRATe?'           # raw escape hatch
 (fix timebase/scale). A `warning` about clipping in `capture` means adjust
 scale/offset. Prefer `measure` for numbers; use `screenshot` to sanity-check setup.
 
+Lessons from the first bench session (DS1104Z fw 00.04.04.SP3 over USB):
+- **Always screenshot after changing the setup** and look at it. Stacked
+  channels at the same offset hide each other; a trace offset off-screen
+  gives nonsense numbers. With 4 channels at 2 V/div, offsets +3.5/0/-3.5/-7.5 V
+  stack 3.3 V logic without overlap.
+- Check `scope state` probe ratios before trusting amplitudes: a probe
+  menu at 1x on a 10x probe reads 10x low (and vice versa).
+- Use `acquire --type NORM` for edge timing (HRES averages away edges).
+  Sample rate halves per enabled channel pair: turn unused channels off
+  for 500 MSa/s (2 ch) or 1 GSa/s (1 ch).
+- `measure` returns PDUTy/NDUTy in percent (the tool converts the scope's ratio).
+- This firmware has no mixed-edge delay items (FRDelay/RFDelay time out);
+  RDELay/FDELay need the same edge on both channels. For dead-time use
+  `scope capture CH2 CH3 --threshold 1.65` and subtract the `edges` times
+  (interpolated crossings, relative to the trigger).
+- Overshoot/undershoot of ±1-2 V on 3.3 V logic is ground-lead ringing, and
+  a slow edge on one probe inflates edge-to-edge timing: trust a measurement
+  only when it agrees with the configured register value, and say which
+  edge and threshold was used.
+- `resource = "usb"` uses raw USB (pyvisa-py). The kernel usbtmc driver
+  truncates DS1000Z replies to 52 bytes, so don't use `/dev/usbtmcN` for
+  data.
+
 ### 7. Measure: logic analyzer (sigrok)
 ```
 bu la scan

@@ -54,8 +54,8 @@ serial = "002F00343234510836303532"   # only needed with several ST-LINKs attach
 |---|---|
 | ioc, usercode, build, sym, layout, cubemx (dry run) | yes, against `STM32CubeIDE/final` |
 | flash, probe, mem | yes, on the NUCLEO-G474RE (flash + verify, live reads by symbol) |
-| regulator status / clear-fault / stop | offline tests only so far; needs firmware from this branch |
-| scope | written against the DS1000Z programming guide; **not yet run on the scope** |
+| regulator status / stop / bench-pwm | status + stop on the Nucleo; clear-fault and bench-pwm need the firmware start issue fixed (see below) |
+| scope | yes, DS1104Z over USB: state/config, measure, capture + edge timing, screenshot, single-shot trigger across a core reset |
 | la | **not yet run**: sigrok-cli isn't installed |
 
 Offline tests: `cd tools/bringup && uv run pytest`.

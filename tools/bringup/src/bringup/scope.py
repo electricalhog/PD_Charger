@@ -81,7 +81,12 @@ class _Socket:
 
 
 class _UsbtmcDev(_Socket):
-    """Linux kernel usbtmc driver (/dev/usbtmcN): plain read/write, kernel does the USBTMC framing."""
+    """Linux kernel usbtmc driver (/dev/usbtmcN).
+
+    Only for text queries: the DS1000Z sets end-of-message on every 64-byte
+    packet, so the kernel driver truncates replies to 52 bytes (screenshots
+    and waveforms fail). ``resource = "usb"`` uses raw USB via pyvisa instead.
+    """
 
     def __init__(self, path: str, timeout: float):
         import os
@@ -105,6 +110,23 @@ class _UsbtmcDev(_Socket):
         if not chunk:
             raise ToolError("usbtmc read returned no data")
         return chunk
+
+    def read_line(self) -> str:
+        # Each read() returns one USBTMC message; an empty read is end-of-message.
+        # The DS1000Z sends *IDN? without a terminator, so EOM also ends a line.
+        while b"\n" not in self.buf:
+            chunk = self.os.read(self.fd, 65536)
+            if not chunk:
+                if self.buf.strip():
+                    line, self.buf = self.buf, b""
+                    return line.decode(errors="replace").strip()
+                raise ToolError("usbtmc read returned no data")
+            self.buf += chunk
+            if not chunk.endswith(b"\n") and len(chunk) < 65536:
+                line, self.buf = self.buf, b""  # short message without terminator = complete
+                return line.decode(errors="replace").strip()
+        line, self.buf = self.buf.split(b"\n", 1)
+        return line.decode(errors="replace").strip()
 
     def close(self) -> None:
         self.os.close(self.fd)
@@ -131,11 +153,16 @@ class _Visa:
             import pyvisa
         except ImportError as e:
             raise ToolError("pyvisa not installed (run via tools/bringup/bu so uv installs deps)") from e
+        import warnings
         rm = pyvisa.ResourceManager("@py")
         if resource == "usb":
-            found = [r for r in rm.list_resources() if r.startswith("USB") and "0x1AB1" in r.upper()]
+            with warnings.catch_warnings():  # pyvisa-py nags about optional LAN-discovery packages
+                warnings.simplefilter("ignore")
+                listed = rm.list_resources("USB?*INSTR")
+            # Rigol vendor id 0x1AB1 = 6833 (pyvisa-py prints it in decimal)
+            found = [r for r in listed if r.split("::")[1].upper() in ("6833", "0X1AB1")]
             if not found:
-                raise ToolError("no Rigol USBTMC device found", resources=list(rm.list_resources()),
+                raise ToolError("no Rigol USBTMC device found", resources=list(listed),
                                 hint="check USB cable and udev rule for 1ab1:04ce (see tools/bringup/README.md)")
             resource = found[0]
         try:
@@ -154,7 +181,18 @@ class _Visa:
         return self.inst.read().strip()
 
     def read_block(self) -> bytes:
-        return bytes(self.inst.read_binary_values(datatype="B", container=bytes, header_fmt="ieee"))
+        # Read #<n><len> then exactly <len> bytes: the DS1000Z flags end-of-message
+        # on every USB packet, so "read until EOM" stops after 52 bytes.
+        hdr = self.inst.read_bytes(2)
+        while hdr[:1] != b"#":
+            hdr = hdr[1:] + self.inst.read_bytes(1)
+        length = int(self.inst.read_bytes(int(hdr[1:2])))
+        data = self.inst.read_bytes(length)
+        try:
+            self.inst.read_bytes(1)  # trailing newline
+        except Exception:  # noqa: BLE001 - some firmware omits it
+            pass
+        return data
 
     def close(self) -> None:
         self.inst.close()
@@ -174,8 +212,6 @@ class Scope:
             self.io = _Socket(m.group(1), int(m.group(2) or 5555), timeout)
         elif res.startswith("/dev/usbtmc"):
             self.io = _UsbtmcDev(res, timeout)
-        elif res == "usb" and (dev := _find_rigol_usbtmc()):
-            self.io = _UsbtmcDev(dev, timeout)  # kernel driver owns the device; don't fight it with pyusb
         else:
             self.io = _Visa(res, timeout)
         self.cfg = cfg
@@ -328,8 +364,13 @@ class Scope:
         out = {}
         for src in sources:
             s = _src(src)
-            out[src.upper()] = {it: self.query_float(f":MEASure:ITEM? {it},{s}") for it in items}
-        return {"ok": True, "note": "null = measurement not possible on current screen (e.g. <1 period visible)",
+            vals = {it: self.query_float(f":MEASure:ITEM? {it},{s}") for it in items}
+            for it in ("PDUTy", "NDUTy"):  # the scope returns duty as a 0..1 ratio
+                if vals.get(it) is not None:
+                    vals[it] = round(vals[it] * 100, 3)
+            out[src.upper()] = vals
+        return {"ok": True, "note": "null = measurement not possible on current screen (e.g. <1 period visible); "
+                                    "PDUTy/NDUTy in percent; times in seconds, voltages in volts",
                 "measurements": out}
 
     def measure_between(self, item: str, src_a: str, src_b: str) -> dict:
@@ -343,7 +384,8 @@ class Scope:
         keys = ["format", "type", "points", "count", "xinc", "xorig", "xref", "yinc", "yorig", "yref"]
         return {k: float(v) for k, v in zip(keys, p)}
 
-    def capture(self, sources: list[str], mode: str = "normal", points: int | None = None) -> dict:
+    def capture(self, sources: list[str], mode: str = "normal", points: int | None = None,
+                threshold: float | None = None) -> dict:
         """Download waveforms. 'normal' = 1200 screen points (works while running);
         'raw' = acquisition memory (scope is stopped first)."""
         mode = mode.lower()
@@ -378,7 +420,8 @@ class Scope:
                 volts = [(b - pre["yorig"] - pre["yref"]) * pre["yinc"] for b in data]
             cols[src.upper()] = volts
             summaries[src.upper()] = {**_summary(volts, pre["xinc"]), "points": len(volts),
-                                      "sample_interval_s": pre["xinc"], "t0_s": pre["xorig"]}
+                                      "sample_interval_s": pre["xinc"], "t0_s": pre["xorig"],
+                                      **_edges(volts, pre["xinc"], pre["xorig"], threshold)}
             clipped = sum(1 for b in data if b in (0, 255)) if not is_digital else 0
             if clipped > len(data) * 0.01:
                 summaries[src.upper()]["warning"] = f"{clipped} samples at ADC rail: signal clipped, adjust scale/offset"
@@ -416,6 +459,41 @@ def _src(s: str) -> str:
     if s in ("MATH",):
         return s
     raise ToolError(f"bad source '{s}', use CH1..CH4 (or MATH, D0..D15 on MSO)")
+
+
+def _edges(v: list[float], dt: float, t0: float, threshold: float | None, limit: int = 20) -> dict:
+    """Threshold-crossing times (linear interpolation) with 10 % hysteresis.
+
+    threshold defaults to the 50 % level between min and max. Times are
+    relative to the trigger (seconds), so edge-to-edge delays between
+    channels (e.g. dead-time) are differences of these values.
+    """
+    if not v:
+        return {}
+    vmin, vmax = min(v), max(v)
+    if vmax - vmin < 1e-6:
+        return {"edges": {"threshold_v": None, "rising_s": [], "falling_s": []}}
+    th = (vmin + vmax) / 2 if threshold is None else threshold
+    hyst = (vmax - vmin) * 0.1
+    rising, falling, state = [], [], None
+    for i in range(1, len(v)):
+        if state is not True and v[i] > th + hyst:
+            if state is False or (state is None and v[0] < th):
+                j = i
+                while j > 0 and v[j - 1] > th:  # walk back to the actual crossing
+                    j -= 1
+                a, b = v[j - 1], v[j]
+                rising.append(t0 + (j - 1 + (th - a) / (b - a if b != a else 1)) * dt)
+            state = True
+        elif state is not False and v[i] < th - hyst:
+            if state is True or (state is None and v[0] > th):
+                j = i
+                while j > 0 and v[j - 1] < th:
+                    j -= 1
+                a, b = v[j - 1], v[j]
+                falling.append(t0 + (j - 1 + (th - a) / (b - a if b != a else 1)) * dt)
+            state = False
+    return {"edges": {"threshold_v": round(th, 4), "rising_s": rising[:limit], "falling_s": falling[:limit]}}
 
 
 def _summary(v: list[float], dt: float) -> dict:
