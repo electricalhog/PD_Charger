@@ -119,7 +119,12 @@ bu layout debug_log              # struct layout w/ offsets (gdb ptype /o), no t
 bu mem read debug_log+12288 --type u32 --count 2    # live, core keeps running
 bu mem read debug_log --save     # whole struct -> .bin (decode with `layout`)
 bu mem write some_var 1.5 --type f32                # ASK FIRST (see safety)
+bu mem write 0x40016B98 0x1                         # peripheral registers work too (here: HRTIM ODISR, TA1 off)
 ```
+Writes to write-only/self-clearing peripheral registers (HRTIM OENR/ODISR,
+flag-clear registers) come back `ok: true, verified: false`: the
+programmer's read-back check fails although the write happened. Confirm
+the effect instead (e.g. `regulator status` outputs, or the scope).
 Types: u8 i8 u16 i16 u32 i32 f32 u64 i64 f64. Telemetry on this board is the
 `debug_log` ring buffer in RAM (LPUART1 carries the binary UCPD tracer, not text).
 
@@ -135,8 +140,26 @@ result the tool refuses to retry without `--force`: only use that after the
 user has confirmed the hardware is OK. With no power board attached (or VIN
 off) the fault lines float and the firmware sits in FAULT; that's expected.
 
-### 6. Measure: Rigol DS1054Z
+### 6. Measure: Rigol DS1054Z (reports as DS1104Z)
+**Analyse sample data, not pictures.** `scope capture` saves a CSV and returns
+per-channel levels, frequency, duty, period jitter and interpolated edge
+times; `scope analyze <csv>` re-runs that offline with other thresholds or
+delay pairs (no scope needed). Use `screenshot` only to sanity-check the
+setup (traces on screen, not clipped, not overlapping).
 ```
+bu scope capture CH2 CH3 --raw --threshold 1.65 --delay CH2:fall,CH3:rise --delay CH3:fall,CH2:rise
+bu scope analyze bringup_out/<file>.csv --threshold CH2=1.2 --delay CH2:fall,CH3:rise
+```
+- `--raw` downloads acquisition memory at the real sample rate (scope is
+  stopped): e.g. 2 channels, `acquire --mdepth 600k`, 100 us/div = 600k points
+  at 500 MSa/s = ~100 switching periods in ~4 s. Without `--raw` you get the
+  1200 screen points (interpolated at fast timebases).
+- `--delay A:edge,B:edge` pairs every A edge with the next B edge before
+  the following A edge and returns count/mean/min/max/std. Dead-time on
+  every cycle is a single command.
+- Report which threshold you used: edge timing moves by ~0.3 ns between a
+  fixed 1.65 V and the 50 % auto level on these signals.
+
 bu scope idn | state | run | stop | single | force | autoscale | clear
 bu scope chan 1 --on --probe 10 --scale 2 --offset -4 --coupling DC [--bwl 20M]
 bu scope timebase --scale 1e-6 [--offset 0]

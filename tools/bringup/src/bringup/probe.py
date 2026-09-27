@@ -57,6 +57,10 @@ def _openocd_base(cfg: dict) -> list[str]:
     return base + ["-f", pc.get("openocd_target", "target/stm32g4x.cfg")]
 
 
+def _is_peripheral(addr: int) -> bool:
+    return 0x40000000 <= addr < 0x60000000
+
+
 def _backend(cfg: dict) -> str:
     return cfg.get("probe", {}).get("backend", "cubeprog")
 
@@ -243,7 +247,18 @@ def mem_write(cfg: dict, target: str, value: str, dtype: str = "u32") -> dict:
         else:
             args = [a for i, b in enumerate(payload) for a in ("-w8", f"{addr + i:#010x}", f"{b:#x}")]
         out, rc = _prun(cfg, [*_connect(cfg, "HOTPLUG"), *args], timeout=30)
+        if _is_peripheral(addr) and "Failed to download data" in out and "No debug probe" not in out:
+            # STM32_Programmer_CLI verifies each write by reading it back. Write-only or
+            # self-clearing peripheral registers (HRTIM OENR/ODISR, xxICR flag clears, ...)
+            # always fail that check although the write itself was performed.
+            return {"ok": True, "target": label, "address": f"{addr:#010x}", "type": dtype, "written": v,
+                    "verified": False,
+                    "note": "peripheral register: write issued, programmer read-back differed "
+                            "(normal for write-only/self-clearing registers); confirm via its effect"}
         _check(out, rc, "memory write")
     readback = _read_bytes(cfg, addr, len(payload))
-    return {"ok": readback == payload, "target": label, "address": f"{addr:#010x}", "type": dtype,
-            "written": v, "readback": struct.unpack("<" + _FMT[dtype], readback)[0]}
+    result = {"ok": readback == payload, "target": label, "address": f"{addr:#010x}", "type": dtype,
+              "written": v, "readback": struct.unpack("<" + _FMT[dtype], readback)[0], "verified": readback == payload}
+    if readback != payload and _is_peripheral(addr):
+        result.update(ok=True, note="peripheral register reads back differently (normal for status/flag bits)")
+    return result

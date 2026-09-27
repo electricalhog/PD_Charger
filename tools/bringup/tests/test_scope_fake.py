@@ -90,14 +90,15 @@ def test_measure_invalid_is_null(scope):
     assert ":MEASure:ITEM? FREQuency,CHANnel1" in scope.fake.log
 
 
-def test_capture_scales_and_summarises(scope, tmp_path):
+def test_capture_scales_and_analyses(scope, tmp_path):
     r = scope.capture(["CH1"])
-    s = r["summary"]["CH1"]
-    assert s["points"] == 1200
-    assert s["max"] == pytest.approx((200 - 125) * 0.04)
-    assert s["min"] == pytest.approx((50 - 125) * 0.04)
-    assert s["freq_hz_est"] == pytest.approx(5000, rel=1e-6)
-    assert s["duty_pct_est"] == pytest.approx(50, abs=1)
+    c = r["channels"]["CH1"]
+    assert c["points"] == 1200
+    assert c["high"] == pytest.approx((200 - 125) * 0.04)
+    assert c["low"] == pytest.approx((50 - 125) * 0.04)
+    assert c["freq_hz"] == pytest.approx(5000, rel=1e-6)
+    assert c["duty_pct"] == pytest.approx(50, abs=1)
+    assert (tmp_path / r["file"].split("/")[-1]).exists() or r["file"].endswith(".csv")
     # Following text query still works after a binary block (trailing newline consumed).
     assert scope.idn()["model"] == "DS1104Z"
 

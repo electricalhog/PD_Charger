@@ -173,7 +173,22 @@ def cmd_doctor(cfg, a):
 
 # ------------------------------------------------------------------ scope
 
+def _thresholds(specs: list[str] | None) -> dict:
+    """['1.65'] -> {'*': 1.65}; ['CH2=1.2'] -> {'CH2': 1.2}; resolved per channel by analysis."""
+    out: dict = {}
+    for sp in specs or []:
+        if "=" in sp:
+            ch, v = sp.split("=", 1)
+            out[ch.strip().upper()] = float(v)
+        else:
+            out["*"] = float(sp)
+    return out
+
+
 def cmd_scope(cfg, a):
+    if a.op == "analyze":
+        from . import analysis
+        return analysis.analyze(a.file, _thresholds(a.threshold), a.delay)
     from .scope import Scope
     with Scope(cfg) as s:
         op = a.op
@@ -199,7 +214,7 @@ def cmd_scope(cfg, a):
         if op == "wait":
             return s.wait_trigger(a.timeout, arm=not a.no_arm)
         if op == "capture":
-            return s.capture(a.sources, "raw" if a.raw else "normal", a.points, a.threshold)
+            return s.capture(a.sources, "raw" if a.raw else "normal", a.points, _thresholds(a.threshold), a.delay)
         if op == "screenshot":
             return s.screenshot()
         if op == "scpi":
@@ -293,7 +308,14 @@ def build_parser() -> argparse.ArgumentParser:
     g = sc.add_parser("wait", help="arm single and wait for trigger"); g.add_argument("--timeout", type=float, default=10); g.add_argument("--no-arm", action="store_true")
     g = sc.add_parser("capture", help="download waveform(s) to CSV + summary"); g.add_argument("sources", nargs="+")
     g.add_argument("--raw", action="store_true", help="full memory depth (stops scope)"); g.add_argument("--points", type=int)
-    g.add_argument("--threshold", type=float, help="edge threshold in volts (default: 50%% of min..max per channel)")
+    g.add_argument("--threshold", action="append", metavar="[CHn=]V",
+                   help="edge threshold in volts, global or per channel (default: midpoint of low/high levels)")
+    g.add_argument("--delay", action="append", metavar="CHa:edge,CHb:edge",
+                   help="edge-to-edge delay stats over all periods, e.g. CH2:fall,CH3:rise (repeatable)")
+    g = sc.add_parser("analyze", help="re-analyse a saved capture CSV offline (no scope needed)")
+    g.add_argument("file")
+    g.add_argument("--threshold", action="append", metavar="[CHn=]V")
+    g.add_argument("--delay", action="append", metavar="CHa:edge,CHb:edge")
     g = sc.add_parser("scpi", help="raw SCPI; queries end with ?"); g.add_argument("command")
 
     # logic analyzer

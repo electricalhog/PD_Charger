@@ -333,7 +333,7 @@ class Scope:
             self.write(f":ACQuire:AVERages {averages}")
         if mdepth:
             self.write(":RUN")  # MDEPth can only be changed while running
-            self.write(f":ACQuire:MDEPth {mdepth.upper()}")
+            self.write(f":ACQuire:MDEPth {_mdepth(mdepth)}")
         return {"ok": True, "errors": self.errors(), "acquire": self.state()["acquire"]}
 
     def action(self, what: str) -> dict:
@@ -385,15 +385,20 @@ class Scope:
         return {k: float(v) for k, v in zip(keys, p)}
 
     def capture(self, sources: list[str], mode: str = "normal", points: int | None = None,
-                threshold: float | None = None) -> dict:
-        """Download waveforms. 'normal' = 1200 screen points (works while running);
-        'raw' = acquisition memory (scope is stopped first)."""
+                thresholds: dict[str, float | None] | None = None, delays: list[str] | None = None) -> dict:
+        """Download waveforms to CSV and analyse the samples.
+
+        'normal' = the 1200 screen points (interpolated at fast timebases; works while running).
+        'raw'    = acquisition memory at the real sample rate (scope is stopped first); use this
+                   for statistics over many periods (e.g. dead-time on every switching cycle).
+        """
         mode = mode.lower()
         if mode == "raw":
             self.write(":STOP")
         self.write(f":WAVeform:MODE {'RAW' if mode == 'raw' else 'NORMal'}")
         self.write(":WAVeform:FORMat BYTE")
-        cols, summaries = {}, {}
+        cols, warnings, pre = {}, [], None
+        t_dl = time.monotonic()
         for src in sources:
             self.write(f":WAVeform:SOURce {_src(src)}")
             pre = self._preamble()
@@ -401,10 +406,9 @@ class Scope:
             if points:
                 total = min(total, points)
             data = bytearray()
-            chunk = 250000
             start = 1
             while start <= total:
-                stop = min(start + chunk - 1, total)
+                stop = min(start + 250000 - 1, total)
                 if mode == "raw":
                     self.write(f":WAVeform:STARt {start}")
                     self.write(f":WAVeform:STOP {stop}")
@@ -413,18 +417,11 @@ class Scope:
                 if mode != "raw":
                     break
                 start = stop + 1
-            is_digital = src.upper().startswith("D")
-            if is_digital:
-                volts = list(data)
-            else:
-                volts = [(b - pre["yorig"] - pre["yref"]) * pre["yinc"] for b in data]
-            cols[src.upper()] = volts
-            summaries[src.upper()] = {**_summary(volts, pre["xinc"]), "points": len(volts),
-                                      "sample_interval_s": pre["xinc"], "t0_s": pre["xorig"],
-                                      **_edges(volts, pre["xinc"], pre["xorig"], threshold)}
-            clipped = sum(1 for b in data if b in (0, 255)) if not is_digital else 0
-            if clipped > len(data) * 0.01:
-                summaries[src.upper()]["warning"] = f"{clipped} samples at ADC rail: signal clipped, adjust scale/offset"
+            cols[src.upper()] = [(b - pre["yorig"] - pre["yref"]) * pre["yinc"] for b in data]
+            clipped = sum(1 for b in data if b in (0, 255))
+            if clipped > len(data) * 0.001:
+                warnings.append(f"{src.upper()}: {clipped} samples at the ADC rail (clipped): "
+                                "adjust scale/offset, levels and edges near the rail are wrong")
         n = min(len(v) for v in cols.values()) if cols else 0
         xinc, xorig = pre["xinc"], pre["xorig"]
         f = out_file(self.cfg, "scope_" + "_".join(s.lower() for s in cols), "csv")
@@ -432,8 +429,15 @@ class Scope:
             w = csv.writer(fh)
             w.writerow(["t_s", *cols.keys()])
             for i in range(n):
-                w.writerow([f"{xorig + i * xinc:.9e}", *(f"{cols[k][i]:.5g}" for k in cols)])
-        return {"ok": True, "mode": mode, "file": rel(f), "summary": summaries}
+                w.writerow([f"{xorig + i * xinc:.12e}", *(f"{cols[k][i]:.5g}" for k in cols)])
+        from . import analysis
+        result = analysis.analyze(f, thresholds, delays)
+        result.update(mode=mode, file=rel(f), sample_rate_sa_s=1 / xinc if xinc else None,
+                      download_s=round(time.monotonic() - t_dl, 2),
+                      note="times are relative to the trigger; edges interpolated at threshold_v")
+        if warnings:
+            result["warnings"] = warnings
+        return result
 
     def screenshot(self) -> dict:
         self.io.write(":DISPlay:DATA? ON,OFF,PNG")
@@ -450,6 +454,15 @@ class Scope:
         return {"ok": True, "command": cmd, "errors": self.errors()}
 
 
+def _mdepth(x: str) -> str:
+    """'600k' / '1.2M' / 'auto' -> '600000' / '1200000' / 'AUTO'. Valid values depend on
+    enabled channels: 1 ch 12k..24M, 2 ch 6k..12M, 3-4 ch 3k..6M (x10 steps)."""
+    m = re.fullmatch(r"\s*([\d.]+)\s*([kKmM]?)\s*", x)
+    if not m:
+        return x.upper()
+    return str(int(round(float(m[1]) * {"": 1, "k": 1e3, "m": 1e6}[m[2].lower()])))
+
+
 def _src(s: str) -> str:
     s = s.upper()
     if re.fullmatch(r"(CH|CHAN|CHANNEL)?[1-4]", s):
@@ -459,66 +472,3 @@ def _src(s: str) -> str:
     if s in ("MATH",):
         return s
     raise ToolError(f"bad source '{s}', use CH1..CH4 (or MATH, D0..D15 on MSO)")
-
-
-def _edges(v: list[float], dt: float, t0: float, threshold: float | None, limit: int = 20) -> dict:
-    """Threshold-crossing times (linear interpolation) with 10 % hysteresis.
-
-    threshold defaults to the 50 % level between min and max. Times are
-    relative to the trigger (seconds), so edge-to-edge delays between
-    channels (e.g. dead-time) are differences of these values.
-    """
-    if not v:
-        return {}
-    vmin, vmax = min(v), max(v)
-    if vmax - vmin < 1e-6:
-        return {"edges": {"threshold_v": None, "rising_s": [], "falling_s": []}}
-    th = (vmin + vmax) / 2 if threshold is None else threshold
-    hyst = (vmax - vmin) * 0.1
-    rising, falling, state = [], [], None
-    for i in range(1, len(v)):
-        if state is not True and v[i] > th + hyst:
-            if state is False or (state is None and v[0] < th):
-                j = i
-                while j > 0 and v[j - 1] > th:  # walk back to the actual crossing
-                    j -= 1
-                a, b = v[j - 1], v[j]
-                rising.append(t0 + (j - 1 + (th - a) / (b - a if b != a else 1)) * dt)
-            state = True
-        elif state is not False and v[i] < th - hyst:
-            if state is True or (state is None and v[0] > th):
-                j = i
-                while j > 0 and v[j - 1] < th:
-                    j -= 1
-                a, b = v[j - 1], v[j]
-                falling.append(t0 + (j - 1 + (th - a) / (b - a if b != a else 1)) * dt)
-            state = False
-    return {"edges": {"threshold_v": round(th, 4), "rising_s": rising[:limit], "falling_s": falling[:limit]}}
-
-
-def _summary(v: list[float], dt: float) -> dict:
-    if not v:
-        return {}
-    n = len(v)
-    vmin, vmax = min(v), max(v)
-    mean = sum(v) / n
-    rms = math.sqrt(sum(x * x for x in v) / n)
-    # Frequency / duty from mid-level crossings with 10% hysteresis.
-    mid, hyst = (vmax + vmin) / 2, (vmax - vmin) * 0.1
-    state, rising = None, []
-    for i, x in enumerate(v):
-        if state is not True and x > mid + hyst:
-            if state is False:
-                rising.append(i)
-            state = True
-        elif state is not False and x < mid - hyst:
-            state = False
-    out = {"min": vmin, "max": vmax, "pk_pk": vmax - vmin, "mean": mean, "rms": rms}
-    if len(rising) >= 2 and vmax - vmin > 1e-6:
-        period = (rising[-1] - rising[0]) / (len(rising) - 1) * dt
-        out["freq_hz_est"] = 1 / period if period else None
-        span = slice(rising[0], rising[-1])
-        seg = v[span]
-        out["duty_pct_est"] = 100 * sum(1 for x in seg if x > mid) / len(seg) if seg else None
-        out["periods_seen"] = len(rising) - 1
-    return out

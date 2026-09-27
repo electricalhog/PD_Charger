@@ -10,7 +10,7 @@ from bringup import usercode
 from bringup.config import REPO_ROOT, ToolError
 from bringup.cubemx import _parse_script_output
 from bringup.ioc import Ioc
-from bringup.scope import _summary
+from bringup import analysis
 
 REAL_IOC = REPO_ROOT / "STM32CubeIDE/final/final.ioc"
 REAL_MAIN = REPO_ROOT / "STM32CubeIDE/final/Core/Src/main.c"
@@ -140,10 +140,38 @@ def test_cubemx_script_output_parsing():
     assert [x["status"] for x in r] == ["OK", "KO"]
 
 
-def test_scope_summary_square_wave():
+def test_analysis_square_wave():
     dt = 1e-6
+    t = [i * dt for i in range(1000)]
     v = [3.3 if (i // 25) % 4 == 0 else 0.0 for i in range(1000)]  # 100 us period, 25% duty
-    s = _summary(v, dt)
-    assert math.isclose(s["freq_hz_est"], 10_000, rel_tol=1e-6)
-    assert math.isclose(s["duty_pct_est"], 25, abs_tol=0.5)
-    assert s["pk_pk"] == pytest.approx(3.3)
+    r = analysis.channel_report(v, t)
+    assert math.isclose(r["freq_hz"], 10_000, rel_tol=1e-6)
+    assert math.isclose(r["duty_pct"], 25, abs_tol=0.5)
+    assert r["high"] == pytest.approx(3.3) and r["low"] == pytest.approx(0.0)
+
+
+def test_analysis_dead_time_stats(tmp_path):
+    """Complementary pair with 12 ns / 17 ns dead-times, 1 ns samples, finite edges."""
+    per, dt = 1000e-9, 1e-9
+    t = [i * dt for i in range(5000)]
+
+    def ramp(x, t0, tr=8e-9):  # 0..3.3 V linear edge starting at t0
+        return 3.3 * min(max((x - t0) / tr, 0.0), 1.0)
+    hi, lo = [], []
+    for x in t:
+        p = x % per
+        # HI: rises at 0, falls at 600 ns. LO: rises 12 ns after HI falls, falls 17 ns before HI rises.
+        hi.append(ramp(p, 0) - ramp(p, 600e-9))
+        lo.append(ramp(p, 612e-9) - ramp(p, per - 17e-9))
+    f = tmp_path / "c.csv"
+    f.write_text("t_s,CH2,CH3\n" + "".join(f"{a:.12e},{b:.5g},{c:.5g}\n" for a, b, c in zip(t, hi, lo)))
+    r = analysis.analyze(f, {"*": 1.65}, ["CH2:fall,CH3:rise", "CH3:fall,CH2:rise"])
+    d1, d2 = r["delays"]
+    assert d1["count"] >= 4 and d1["mean_s"] == pytest.approx(12e-9, abs=0.2e-9)
+    assert d2["count"] >= 4 and d2["mean_s"] == pytest.approx(17e-9, abs=0.2e-9)
+    assert r["channels"]["CH2"]["freq_hz"] == pytest.approx(1e6, rel=1e-6)
+
+
+def test_parse_delay_rejects_garbage():
+    with pytest.raises(ToolError):
+        analysis.parse_delay("CH2-fall")
