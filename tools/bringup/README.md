@@ -53,7 +53,8 @@ serial = "002F00343234510836303532"   # only needed with several ST-LINKs attach
 | Area | Verified on this machine |
 |---|---|
 | ioc, usercode, build, sym, layout, cubemx (dry run) | yes, against `STM32CubeIDE/final` |
-| flash, probe, mem | CLI syntax checked against STM32CubeProgrammer 2.20 help; **not yet run on a board** |
+| flash, probe, mem | yes, on the NUCLEO-G474RE (flash + verify, live reads by symbol) |
+| regulator status / clear-fault / stop | offline tests only so far; needs firmware from this branch |
 | scope | written against the DS1000Z programming guide; **not yet run on the scope** |
 | la | **not yet run**: sigrok-cli isn't installed |
 

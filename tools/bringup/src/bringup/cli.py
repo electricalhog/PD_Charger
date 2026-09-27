@@ -14,7 +14,7 @@ import traceback
 from pathlib import Path
 
 from . import build as build_mod
-from . import cubemx, logic, probe, serialmon, usercode
+from . import cubemx, logic, probe, regulator, serialmon, usercode
 from .config import REPO_ROOT, ToolError, cubemx_exe, gdb_exe, load_config, paths, programmer_exe, rel, run
 from .ioc import Ioc, diff_ioc
 
@@ -261,6 +261,14 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--save", action="store_true")
     g = m.add_parser("write"); g.add_argument("target"); g.add_argument("value"); g.add_argument("--type", default="u32")
 
+    # regulator / input protection
+    rg = sub.add_parser("regulator", help="state, ADM1270 input protection, fault recovery").add_subparsers(dest="op", required=True)
+    rg.add_parser("status", help="state, fault source, protection lines, HRTIM fault/output state, diagnosis")
+    g = rg.add_parser("clear-fault", help="firmware re-arms the ADM1270 (cool-down + ENABLE toggle), verifies VS, releases FAULT")
+    g.add_argument("--timeout", type=float, default=3.0)
+    g.add_argument("--force", action="store_true", help="retry even though the last attempt hit a repeat over-current")
+    g = rg.add_parser("stop", help="controlled stop: outputs off, input/output path off"); g.add_argument("--timeout", type=float, default=3.0)
+
     # scope
     sc = sub.add_parser("scope", help="Rigol DS1054Z").add_subparsers(dest="op", required=True)
     for n in ("idn", "state", "run", "stop", "single", "force", "autoscale", "clear", "reset", "screenshot"):
@@ -332,6 +340,10 @@ def dispatch(cfg: dict, a) -> dict:
         if a.op == "read":
             return probe.mem_read(cfg, a.target, a.size, a.type, a.count, a.save)
         return probe.mem_write(cfg, a.target, a.value, a.type)
+    if c == "regulator":
+        if a.op == "status":
+            return regulator.status(cfg)
+        return regulator.command(cfg, a.op, a.timeout, getattr(a, "force", False))
     if c == "scope":
         return cmd_scope(cfg, a)
     if c == "la":

@@ -27,6 +27,25 @@ or duty can short a half-bridge.
   complementary outputs never both high).
 - Never `--force` a CubeMX apply without the user's OK.
 - If a measurement is surprising, stop and report; don't iterate blindly on hardware.
+- A FAULT is information, not an obstacle. Before `bu regulator clear-fault`,
+  run `bu regulator status`, work out **why** it tripped, and fix the cause
+  (config, code, setpoint) first. Never loop clear-fault → start → trip.
+  An `INPUT_OVERCURRENT` result means stop and tell the user.
+
+### What the hardware protects on its own (ADM1270 on the input path)
+The analog input protection acts regardless of what the firmware does:
+
+| Condition | ADM1270 response |
+|---|---|
+| Input current > 24.5 A for 2 ms, or > 50 A (~2 µs) | FET off, **latched**; `IS_GOOD` low → HRTIM FLT2 → firmware FAULT |
+| Charging into VS near 0 V | current folds back to ~5 A |
+| VIN > 57.7 V | FET off while OV persists; `VS_GOOD` low → FLT1 |
+| VS < 4.46 V (falling) / > 4.60 V (rising) | `VS_GOOD` (PWRGD) low / high |
+
+The HRTIM hardware forces all gate outputs off on either line within
+nanoseconds, independent of the CPU. It does **not** protect against
+shoot-through inside the bridge below the current limit, bad dead-time, or
+output-side over-voltage: those still depend on correct firmware.
 
 ## The loop
 
@@ -103,6 +122,18 @@ bu mem write some_var 1.5 --type f32                # ASK FIRST (see safety)
 ```
 Types: u8 i8 u16 i16 u32 i32 f32 u64 i64 f64. Telemetry on this board is the
 `debug_log` ring buffer in RAM (LPUART1 carries the binary UCPD tracer, not text).
+
+### 5b. Regulator state and fault recovery
+```
+bu regulator status        # state, fault source, VS_GOOD/IS_GOOD/INPUT_EN, HRTIM flags/IRQ/outputs, ADC, diagnosis
+bu regulator clear-fault   # firmware: 150 ms ADM1270 cool-down -> INPUT_EN toggle -> verify VS_GOOD/IS_GOOD
+                           #   -> input path off, FAULT -> IDLE. Result OK / INPUT_NOT_GOOD / INPUT_OVERCURRENT
+bu regulator stop          # outputs off, input/output path off (keeps a latched FAULT)
+```
+`clear-fault` does **not** restart switching. After an `INPUT_OVERCURRENT`
+result the tool refuses to retry without `--force`: only use that after the
+user has confirmed the hardware is OK. With no power board attached (or VIN
+off) the fault lines float and the firmware sits in FAULT; that's expected.
 
 ### 6. Measure: Rigol DS1054Z
 ```

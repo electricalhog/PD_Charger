@@ -161,26 +161,41 @@ def layout(cfg: dict, expr: str) -> dict:
 
 # ------------------------------------------------------------------ memory
 
-def _read_bytes(cfg: dict, addr: int, size: int) -> bytes:
+def read_regions(cfg: dict, regions: list[tuple[int, int]]) -> list[bytes]:
+    """Read several (address, size) regions in ONE probe session (hot-plug, core keeps running)."""
     if _backend(cfg) == "openocd":
         with tempfile.TemporaryDirectory() as td:
-            f = Path(td) / "dump.bin"
-            cp = run([*_openocd_base(cfg), "-c", f"init; dump_image {f} {addr:#x} {size}; exit"], timeout=60)
-            if cp.returncode or not f.exists():
+            files = [Path(td) / f"r{i}.bin" for i in range(len(regions))]
+            cmds = "; ".join(f"dump_image {f} {a:#x} {n}" for f, (a, n) in zip(files, regions))
+            cp = run([*_openocd_base(cfg), "-c", f"init; {cmds}; exit"], timeout=60)
+            if cp.returncode or not all(f.exists() for f in files):
                 raise ToolError("openocd memory read failed", output_tail=tail(cp.stdout + cp.stderr))
-            return f.read_bytes()
-    aligned = addr & ~3
-    n = ((addr + size + 3) & ~3) - aligned
-    out, rc = _prun(cfg, [*_connect(cfg, "HOTPLUG"), "-r32", f"{aligned:#010x}", str(n)], timeout=60)
+            return [f.read_bytes() for f in files]
+    args, spans = [*_connect(cfg, "HOTPLUG")], []
+    for addr, size in regions:
+        aligned = addr & ~3
+        n = ((addr + size + 3) & ~3) - aligned
+        args += ["-r32", f"{aligned:#010x}", str(n)]
+        spans.append((aligned, n, addr - aligned, size))
+    out, rc = _prun(cfg, args, timeout=60)
     _check(out, rc, "memory read")
-    data = bytearray()
-    for m in re.finditer(r"^\s*0x[0-9A-Fa-f]{8}\s*:\s*((?:[0-9A-Fa-f]{8}[ \t]*)+)$", out, re.M):
-        for word in m.group(1).split():
-            data += struct.pack("<I", int(word, 16))
-    if len(data) < n:
-        raise ToolError("could not parse memory dump", output_tail=tail(out, 20))
-    start = addr - aligned
-    return bytes(data[start:start + size])
+    words: dict[int, int] = {}
+    for m in re.finditer(r"^\s*0x([0-9A-Fa-f]{8})\s*:\s*((?:[0-9A-Fa-f]{8}[ \t]*)+)$", out, re.M):
+        base = int(m.group(1), 16)
+        for i, w in enumerate(m.group(2).split()):
+            words[base + 4 * i] = int(w, 16)
+    result = []
+    for aligned, n, start, size in spans:
+        try:
+            data = b"".join(struct.pack("<I", words[aligned + 4 * i]) for i in range(n // 4))
+        except KeyError:
+            raise ToolError("could not parse memory dump", output_tail=tail(out, 20)) from None
+        result.append(data[start:start + size])
+    return result
+
+
+def _read_bytes(cfg: dict, addr: int, size: int) -> bytes:
+    return read_regions(cfg, [(addr, size)])[0]
 
 
 def mem_read(cfg: dict, target: str, size: int | None = None, dtype: str = "u32", count: int | None = None,
