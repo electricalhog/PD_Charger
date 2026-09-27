@@ -139,6 +139,8 @@ volatile bool regulator_integrator_reset_requested = false;
  * =========================================================================*/
 
 RegulatorFaultSource regulator_last_fault_source    = REGULATOR_FAULT_NONE;
+volatile uint32_t    regulator_fault_tick_ms         = 0u;
+RegulatorDebugMailbox regulator_debug                = {0};
 volatile uint16_t    regulator_pid_output_dac_counts = 0u;
 volatile int32_t     regulator_pid_error_mv          = 0;
 
@@ -178,7 +180,9 @@ static void hrtim_configure_compare_registers(void);
 static void hrtim_enable_period_and_fault_interrupts(void);
 static void hrtim_fault_irq_disarm(void);
 static void hrtim_fault_irq_rearm(void);
-static bool hw_fault_inputs_asserted(void);
+static bool vs_good(void);
+static bool is_good(void);
+static bool input_path_power_up(RegulatorFaultSource *failure);
 static void hrtim_start_timers(void);
 static void hrtim_apply_buck_mode_static_leg(void);
 static void hrtim_apply_boost_mode_static_leg(void);
@@ -243,7 +247,8 @@ void regulator_init(void)
      * debugger watch on pid_kp/pid_ki/pid_kd (live-writeable) (§8.7). */
     pid_init(&pid_state, &pid_config);
 
-    /* --- Step 9: Enable HRTIM period (Timer A REP) and fault interrupts --- */
+    /* --- Step 9: Enable HRTIM period (Timer A REP) interrupt; route the
+     *  fault IRQ in the NVIC but leave FLT1/FLT2 disarmed until RUNNING --- */
     hrtim_enable_period_and_fault_interrupts();
 
     /* --- Step 10: Start HRTIM counters (outputs stay disabled) --- */
@@ -264,10 +269,10 @@ void regulator_init(void)
     HAL_GPIO_WritePin(PIN_OUTPUT_EN_PORT, PIN_OUTPUT_EN_PIN, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(PIN_OUTPUT_DIS_PORT,PIN_OUTPUT_DIS_PIN,GPIO_PIN_SET);
 
-    /* --- Step 14: Check for pre-existing hardware fault ---
-     * The fault IRQ was armed in step 9, so a fault already asserted at boot
-     * has fired by now and latched FAULT (with the IRQ disarmed).  Do not
-     * overwrite that with IDLE; regulator_clear_fault() is the only exit.   */
+    /* --- Step 14: Enter IDLE ---
+     * The input path is off, so VS_GOOD (FLT1) is low here by design; the
+     * fault IRQ stays disarmed until regulator_start() has VS up.  Never
+     * overwrite a latched FAULT: regulator_clear_fault() is the only exit.  */
     if (regulator_state != REGULATOR_STATE_FAULT)
     {
         regulator_state = REGULATOR_STATE_IDLE;
@@ -293,11 +298,6 @@ void regulator_start(void)
         return;
     }
 
-    /* Guard: no active hardware fault */
-    if (hw_fault_inputs_asserted())
-    {
-        return;
-    }
 
     /* --- Enable input path FIRST so VS_MON sees the real supply voltage ---
      * INPUT_EN (and OUTPUT_EN) must be asserted before ADC2 can measure a
@@ -305,6 +305,16 @@ void regulator_start(void)
      * and for at least one ADC2 conversion to complete before reading back.
      * Called here in task context so HAL_Delay() is safe.                  */
     power_path_enable();
+
+    /* Wait for the ADM1270 to bring VS up (VS_GOOD) with IS_GOOD high.
+     * Until then FLT1 is legitimately asserted, so the fault IRQ stays
+     * disarmed; failing here latches FAULT (input path dropped).           */
+    RegulatorFaultSource input_failure;
+    if (!input_path_power_up(&input_failure))
+    {
+        enter_fault(input_failure);
+        return;
+    }
     HAL_Delay(2u);
 
     /* Re-sample V_in with INPUT_EN now asserted. */
@@ -362,6 +372,10 @@ void regulator_start(void)
 
     /* Power path already enabled above; no second call needed. */
 
+    /* VS is up and both fault lines are healthy: clear the stale flags set
+     * while INPUT_EN was low and arm the fault IRQ before switching.        */
+    hrtim_fault_irq_rearm();
+
     /* --- Enable HRTIM switching outputs for the active leg (§5.5) --- */
     if (regulator_mode == REGULATOR_MODE_BUCK)
     {
@@ -400,6 +414,10 @@ void regulator_start(void)
 
 void regulator_stop(void)
 {
+    /* Dropping INPUT_EN below makes VS_GOOD (FLT1) fall; that is a normal
+     * shutdown, not a fault, so disarm the fault IRQ first.                 */
+    hrtim_fault_irq_disarm();
+
     /* Disable all HRTIM switching outputs immediately (§11.3) */
     hrtim_disable_all_outputs();
 
@@ -419,37 +437,53 @@ void regulator_stop(void)
     /* Reset PID integrator for clean restart */
     pid_reset_integrator(&pid_state);
 
-    regulator_state = REGULATOR_STATE_IDLE;
+    /* A FAULT stays latched: only regulator_clear_fault() re-arms the
+     * ADM1270 and releases it.                                              */
+    if (regulator_state != REGULATOR_STATE_FAULT)
+    {
+        regulator_state = REGULATOR_STATE_IDLE;
+    }
 }
 
 /* =========================================================================
  * regulator_clear_fault
  * =========================================================================*/
 
-void regulator_clear_fault(void)
+RegulatorClearResult regulator_clear_fault(void)
 {
     if (regulator_state != REGULATOR_STATE_FAULT)
     {
-        return;
+        return REGULATOR_CLEAR_NOT_IN_FAULT;
     }
 
-    /* Verify hardware fault inputs are deasserted (§4.4).
-     * FLT1 (VS_GOOD) and FLT2 (IS_GOOD) are active-low; a GPIO read HIGH
-     * means the fault has cleared.
-     *
-     * TODO(hardware): Verify GPIO read direction and polarity against
-     * schematic during bring-up.  The HRTIM fault latches must also be
-     * cleared via the HRTIM_ICR register before re-enabling outputs.
-     */
-    if (hw_fault_inputs_asserted())
+    /* enter_fault() dropped INPUT_EN.  The ADM1270 (latch-off mode) ignores
+     * ENABLE until its TIMER_OFF off-time has elapsed, so hold it low for
+     * the full cool-down measured from the fault.                          */
+    power_path_disable();
+    uint32_t elapsed = HAL_GetTick() - regulator_fault_tick_ms;
+    if (elapsed < ADM1270_COOLDOWN_MS)
     {
-        /* Hardware fault is still asserted — cannot clear */
-        return;
+        HAL_Delay(ADM1270_COOLDOWN_MS - elapsed);
     }
 
-    /* Clear stale fault flags and re-arm the fault IRQ (disarmed on entry
-     * by regulator_hrtim_fault_isr to prevent an interrupt storm).         */
-    hrtim_fault_irq_rearm();
+    /* ENABLE low → high re-arms the ADM1270.  Bring VS up with the HRTIM
+     * outputs and output path still off to prove the input is healthy,
+     * then return to the IDLE power-path state (input off).                */
+    RegulatorFaultSource failure;
+    bool input_ok = input_path_power_up(&failure);
+    power_path_disable();
+
+    if (!input_ok)
+    {
+        regulator_last_fault_source = failure;
+        regulator_fault_tick_ms     = HAL_GetTick();
+        return (failure == REGULATOR_FAULT_HW_FLT2) ? REGULATOR_CLEAR_INPUT_OVERCURRENT
+                                                    : REGULATOR_CLEAR_INPUT_NOT_GOOD;
+    }
+
+    /* Clear flags latched while the input was off; the fault IRQ itself is
+     * re-armed by regulator_start() once VS is up.                         */
+    HRTIM1->sCommonRegs.ICR = HRTIM_ICR_FLT1C | HRTIM_ICR_FLT2C;
 
     /* Reset regulator state */
     pid_reset_integrator(&pid_state);
@@ -459,6 +493,40 @@ void regulator_clear_fault(void)
     regulator_fault                      = false;
 
     regulator_state = REGULATOR_STATE_IDLE;
+    return REGULATOR_CLEAR_OK;
+}
+
+/* =========================================================================
+ * regulator_debug_poll
+ * =========================================================================*/
+
+void regulator_debug_poll(void)
+{
+    uint32_t cmd = regulator_debug.request;
+    if (cmd == REGULATOR_DEBUG_CMD_NONE)
+    {
+        return;
+    }
+
+    uint32_t result;
+    switch (cmd)
+    {
+        case REGULATOR_DEBUG_CMD_CLEAR_FAULT:
+            result = (uint32_t)regulator_clear_fault();
+            break;
+        case REGULATOR_DEBUG_CMD_STOP:
+            regulator_stop();
+            result = 0u;
+            break;
+        default:
+            result = REGULATOR_DEBUG_RESULT_UNKNOWN_CMD;
+            break;
+    }
+
+    regulator_debug.result   = result;
+    regulator_debug.last_cmd = cmd;
+    regulator_debug.done_count++;
+    regulator_debug.request  = REGULATOR_DEBUG_CMD_NONE;
 }
 
 /* =========================================================================
@@ -555,15 +623,12 @@ void regulator_hrtim_fault_isr(void)
         source |= REGULATOR_FAULT_HW_FLT2;
     }
 
-    enter_fault(source);
-
-    /* Disarm the fault IRQ until regulator_clear_fault().  The fault inputs
-     * are level-sensitive: while a line stays asserted the flag re-sets as
-     * soon as it is cleared, and this priority-1 ISR would re-enter forever,
-     * starving every lower-priority interrupt (SysTick/HAL tick, TIM7, UCPD).
+    /* enter_fault() disarms this IRQ: the fault inputs are level-sensitive,
+     * so while a line stays asserted clearing the flag would re-fire this
+     * priority-1 ISR forever, starving every lower-priority interrupt.
      * Protection is unaffected: the HRTIM hardware keeps forcing the outputs
      * to their fault state independently of this interrupt.                 */
-    hrtim_fault_irq_disarm();
+    enter_fault(source);
 }
 
 /**
@@ -858,9 +923,9 @@ static void hrtim_enable_period_and_fault_interrupts(void)
     HAL_NVIC_SetPriority(HRTIM1_TIMA_IRQn, NVIC_PRIORITY_HRTIM, 0u);
     HAL_NVIC_EnableIRQ(HRTIM1_TIMA_IRQn);
 
-    /* Enable HRTIM fault interrupt */
-    __HAL_HRTIM_ENABLE_IT(&hhrtim1, HRTIM_IT_FLT1);
-    __HAL_HRTIM_ENABLE_IT(&hhrtim1, HRTIM_IT_FLT2);
+    /* Route the HRTIM fault interrupt.  FLT1/FLT2 sources stay disarmed
+     * here: VS_GOOD is low whenever INPUT_EN is off, so they are armed by
+     * regulator_start() only once VS is up (hrtim_fault_irq_rearm).         */
     HAL_NVIC_SetPriority(HRTIM1_FLT_IRQn, NVIC_PRIORITY_HRTIM, 0u);
     HAL_NVIC_EnableIRQ(HRTIM1_FLT_IRQn);
 }
@@ -893,14 +958,49 @@ static void hrtim_fault_irq_rearm(void)
 }
 
 /**
- * hw_fault_inputs_asserted — True if FLT1 (VS_GOOD) or FLT2 (IS_GOOD) is low.
- *
- * Both are active-low (Polarity_FaultLine = LOW in the IOC).
+ * vs_good / is_good — Read the ADM1270 PWRGD / ~FAULT lines (high = good).
  */
-static bool hw_fault_inputs_asserted(void)
+static bool vs_good(void)
 {
-    return (HAL_GPIO_ReadPin(PIN_VS_GOOD_PORT, PIN_VS_GOOD_PIN) == GPIO_PIN_RESET) ||
-           (HAL_GPIO_ReadPin(PIN_IS_GOOD_PORT, PIN_IS_GOOD_PIN) == GPIO_PIN_RESET);
+    return HAL_GPIO_ReadPin(PIN_VS_GOOD_PORT, PIN_VS_GOOD_PIN) == GPIO_PIN_SET;
+}
+
+static bool is_good(void)
+{
+    return HAL_GPIO_ReadPin(PIN_IS_GOOD_PORT, PIN_IS_GOOD_PIN) == GPIO_PIN_SET;
+}
+
+/**
+ * input_path_power_up — Assert INPUT_EN and wait for the ADM1270 to bring
+ * VS up.  Task context only (polls with HAL_Delay).
+ *
+ * @param failure  Set to REGULATOR_FAULT_HW_FLT2 if the ADM1270 tripped on
+ *                 over-current, else REGULATOR_FAULT_HW_FLT1 if VS_GOOD
+ *                 never rose.  Untouched on success.
+ * @return true when VS_GOOD and IS_GOOD are both high.  INPUT_EN is left
+ *         asserted either way; the caller decides what to do with it.
+ */
+static bool input_path_power_up(RegulatorFaultSource *failure)
+{
+    HAL_GPIO_WritePin(PIN_INPUT_EN_PORT, PIN_INPUT_EN_PIN, GPIO_PIN_SET);
+
+    uint32_t t0 = HAL_GetTick();
+    while (!vs_good() && is_good() && (HAL_GetTick() - t0) < INPUT_PGOOD_TIMEOUT_MS)
+    {
+        HAL_Delay(1u);
+    }
+
+    if (!is_good())
+    {
+        *failure = REGULATOR_FAULT_HW_FLT2;
+        return false;
+    }
+    if (!vs_good())
+    {
+        *failure = REGULATOR_FAULT_HW_FLT1;
+        return false;
+    }
+    return true;
 }
 
 /**
@@ -1068,8 +1168,13 @@ static RegulatorMode determine_mode_from_voltages(uint32_t v_in_mv,
  */
 static void enter_fault(RegulatorFaultSource source)
 {
+    /* Disarm the fault IRQ first: dropping INPUT_EN below makes VS_GOOD fall,
+     * and a stuck fault line must not re-enter the ISR (see fault ISR).    */
+    hrtim_fault_irq_disarm();
+
     /* Record fault source FIRST before disabling outputs */
     regulator_last_fault_source = source;
+    regulator_fault_tick_ms     = HAL_GetTick();
 
     /* Disable switching outputs (belt-and-suspenders: hardware fault logic
      * already forces them to INACTIVE, but also do it in software)          */
@@ -1081,6 +1186,11 @@ static void enter_fault(RegulatorFaultSource source)
     /* Stop timers */
     TIM6->CR1 &= ~TIM_CR1_CEN;   /* stop TIM6 (slope comp) */
     TIM7->CR1 &= ~TIM_CR1_CEN;   /* stop TIM7 (PID)        */
+
+    /* Drop the input and output paths.  INPUT_EN low is also the first half
+     * of the ENABLE toggle the ADM1270 needs to re-arm after a current trip,
+     * and starts its cool-down (see regulator_clear_fault).                */
+    power_path_disable();
 
     /* Update shared state for PD stack */
     regulator_fault  = true;

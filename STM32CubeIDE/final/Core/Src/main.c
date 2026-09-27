@@ -1105,13 +1105,13 @@ void StartDefaultTask(void const * argument)
   regulator_set_target_voltage(DEFAULT_TASK_TEST_VOLTAGE_MV);
   regulator_start();
 
-  /* Infinite loop: yield to the RTOS scheduler.  The debug buffer is filled
-   * at 20 kHz by the TIM7 PID ISR; no task-level action is needed. */
+  /* Infinite loop: service debugger commands (regulator_debug mailbox,
+   * used by tools/bringup to clear faults / stop).  The debug buffer is
+   * filled at 20 kHz by the TIM7 PID ISR. */
   for(;;)
   {
-    osDelay(1000);
-    /* Start a fresh capture window every second for real-time monitoring. */
-    // debug_log_clear();
+    osDelay(10);
+    regulator_debug_poll();
   }
   /* USER CODE END 5 */
 }
