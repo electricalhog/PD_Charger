@@ -8,7 +8,12 @@ output. Agent-facing usage and safety rules live in
 ```bash
 tools/bringup/bu doctor            # what's installed / connected
 tools/bringup/bu --help            # all commands
+tools/bringup/bu schema            # machine-readable catalogue (for MCP wrappers)
 ```
+
+**Integrating with another agent / MCP server:** see [TOOLS.md](TOOLS.md) for the
+command catalogue with effect classes, external programs, file types,
+permissions, and measured data sizes and timings.
 
 `bu` runs through `uv`, which creates `tools/bringup/.venv` on first use
 (pyserial, pyvisa, pyvisa-py, pyusb).
@@ -54,8 +59,9 @@ serial = "002F00343234510836303532"   # only needed with several ST-LINKs attach
 |---|---|
 | ioc, usercode, build, sym, layout, cubemx (dry run) | yes, against `STM32CubeIDE/final` |
 | flash, probe, mem | yes, on the NUCLEO-G474RE (flash + verify, live reads by symbol) |
-| regulator status / stop / bench-pwm | status + stop on the Nucleo; clear-fault and bench-pwm need the firmware start issue fixed (see below) |
+| regulator status / clear-fault / stop / bench-pwm | yes, on the Nucleo (bench-pwm validated on the scope: 199.995 kHz, dead-time 11.79/12.40 ns vs 11.76 ns) |
 | scope | yes, DS1104Z over USB: state/config, measure, capture + edge timing, screenshot, single-shot trigger across a core reset |
 | la | **not yet run**: sigrok-cli isn't installed |
+| serial capture, OpenOCD backend, scope over LAN | **not yet run** |
 
 Offline tests: `cd tools/bringup && uv run pytest`.

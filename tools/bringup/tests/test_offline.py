@@ -175,3 +175,14 @@ def test_analysis_dead_time_stats(tmp_path):
 def test_parse_delay_rejects_garbage():
     with pytest.raises(ToolError):
         analysis.parse_delay("CH2-fall")
+
+
+def test_schema_covers_every_command_with_an_effect():
+    from bringup.cli import EFFECTS, _schema, build_parser
+    sch = _schema(build_parser())
+    names = {c["command"] for c in sch["commands"]}
+    assert {"ioc set", "flash", "mem write", "scope capture", "regulator clear-fault"} <= names
+    # every leaf command is classified explicitly (scope run/stop/... fall back to actuate)
+    unclassified = {n for n in names if n not in EFFECTS and not n.startswith("scope ")}
+    assert not unclassified, unclassified
+    assert all(c["effect"] in ("read", "write", "actuate") for c in sch["commands"])

@@ -227,6 +227,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="bu", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
 
+    sub.add_parser("schema", help="machine-readable catalogue of all commands/args (for MCP tool generation)")
     d = sub.add_parser("doctor", help="check toolchain, probe, scope, analyzer")
     d.add_argument("--offline", action="store_true", help="skip hardware checks")
 
@@ -339,8 +340,71 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+# Side-effect class per command, for MCP tool annotations / confirmation policy.
+#   read      : reads files/hardware state only
+#   write     : modifies files in the repo (sources, .ioc) - reversible with git
+#   actuate   : changes live hardware state (flash, reset, memory, gate outputs, scope settings)
+EFFECTS = {
+    "doctor": "read", "schema": "read",
+    "ioc get": "read", "ioc search": "read", "ioc ips": "read", "ioc pins": "read", "ioc diff": "read",
+    "ioc set": "write", "ioc delete": "write",
+    "usercode scan": "read", "usercode list": "read", "usercode get": "read", "usercode set": "write",
+    "cubemx generate": "write", "cubemx script": "write", "build": "write",
+    "probe list": "read", "probe reset": "actuate", "flash": "actuate",
+    "sym": "read", "layout": "read", "mem read": "read", "mem write": "actuate",
+    "regulator status": "read", "regulator clear-fault": "actuate", "regulator stop": "actuate",
+    "regulator bench-pwm": "actuate",
+    "scope analyze": "read", "scope idn": "read", "scope state": "read", "scope measure": "read",
+    "scope delay": "read", "scope screenshot": "read", "scope capture": "actuate",
+    "la scan": "read", "la decoders": "read", "la decode": "read", "la edges": "read", "la capture": "read",
+    "serial list": "read", "serial capture": "read",
+}
+
+
+def _schema(parser: argparse.ArgumentParser) -> dict:
+    """Machine-readable command catalogue (for generating MCP tool definitions)."""
+    def args_of(p):
+        out = []
+        for act in p._actions:
+            if isinstance(act, (argparse._HelpAction, argparse._SubParsersAction)):
+                continue
+            kind = ("flag" if isinstance(act, (argparse._StoreTrueAction, argparse._StoreFalseAction))
+                    else "list" if isinstance(act, argparse._AppendAction) or act.nargs in ("+", "*") else "value")
+            out.append({
+                "name": act.dest, "flags": act.option_strings or None, "positional": not act.option_strings,
+                "required": bool(act.required) if act.option_strings else act.nargs not in ("?", "*"),
+                "kind": kind, "type": getattr(act.type, "__name__", None) if act.type else "str",
+                "choices": list(act.choices) if act.choices else None,
+                "default": act.default if act.default not in (None, False, argparse.SUPPRESS) else None,
+                "help": act.help,
+            })
+        return out
+
+    cmds = []
+
+    def walk(p, prefix):
+        subs = [a for a in p._actions if isinstance(a, argparse._SubParsersAction)]
+        if not subs:
+            name = " ".join(prefix)
+            cmds.append({"command": name, "argv_prefix": prefix, "effect": EFFECTS.get(name, "actuate"),
+                         "help": p.description or None, "args": args_of(p)})
+            return
+        helps = {ca.dest: ca.help for ca in subs[0]._choices_actions}
+        for n, sp in subs[0].choices.items():
+            sp.description = sp.description or helps.get(n)
+            walk(sp, [*prefix, n])
+
+    walk(parser, [])
+    return {"ok": True, "invoke": "tools/bringup/bu <argv_prefix...> <args...>  (prints one JSON object; exit 1 if ok=false)",
+            "effects": {"read": "no state change", "write": "modifies repo files (git-reversible)",
+                        "actuate": "changes live hardware/instrument state"},
+            "commands": cmds}
+
+
 def dispatch(cfg: dict, a) -> dict:
     c = a.cmd
+    if c == "schema":
+        return _schema(build_parser())
     if c == "doctor":
         return cmd_doctor(cfg, a)
     if c == "ioc":
