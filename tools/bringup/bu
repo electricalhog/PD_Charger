@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Agent-facing bring-up CLI. Usage: tools/bringup/bu <command> ... (prints JSON)
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec uv run --quiet --project "$here" bringup "$@"

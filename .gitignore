@@ -7,3 +7,10 @@
 #*.elf
 #*.hex
 #*.bin
+
+# Agentic bring-up tools (tools/bringup)
+/bringup_out/
+/tools/bringup/bringup.local.toml
+/tools/bringup/.venv/
+__pycache__/
+.pytest_cache/

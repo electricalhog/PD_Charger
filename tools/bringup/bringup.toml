@@ -1,0 +1,42 @@
+# Default bring-up tool configuration (committed).
+# Put machine-specific overrides (scope IP, probe serial, ...) in
+# bringup.local.toml next to this file; it is gitignored and deep-merged on top.
+# Every path is relative to the repository root unless absolute.
+
+[project]
+dir = "STM32CubeIDE/final"
+ioc = "final.ioc"
+build_system = "cmake"          # "cmake" (CubeMX-generated, canonical) or "make"
+cmake_preset = "Debug"
+elf_cmake = "build/Debug/final.elf"
+elf_make = "build/final.elf"
+
+[cubemx]
+path = ""                       # empty = autodetect
+timeout_s = 600
+
+[probe]
+backend = "cubeprog"            # "cubeprog" (STM32_Programmer_CLI) or "openocd"
+programmer = ""                 # empty = autodetect STM32_Programmer_CLI
+serial = ""                     # ST-LINK serial number; empty = first probe found
+openocd_target = "target/stm32g4x.cfg"
+
+[scope]
+# Rigol DS1054Z. Examples:
+#   "tcp://192.168.1.50:5555"                         (LAN, no VISA needed)
+#   "TCPIP0::192.168.1.50::5555::SOCKET"             (LAN via pyvisa)
+#   "USB0::0x1AB1::0x04CE::DS1ZA000000000::INSTR"    (USB via pyvisa-py; needs udev rule)
+#   "usb"                                            (first Rigol USBTMC device found)
+resource = ""
+timeout_s = 10
+
+[logic]
+sigrok_cli = "sigrok-cli"
+driver = "fx2lafw"              # generic 8ch/24MHz Saleae-clone; change for your analyzer
+
+[serial]
+port = "auto"                   # "auto" = first ST-LINK VCP (VID 0x0483)
+baud = 115200
+
+[output]
+dir = "bringup_out"             # captures, screenshots, logs, diffs land here

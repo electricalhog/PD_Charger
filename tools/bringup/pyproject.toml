@@ -1,0 +1,24 @@
+[project]
+name = "bringup"
+version = "0.1.0"
+description = "Agent-facing CLI for closed-loop STM32 hardware bring-up (CubeMX, build, flash, scope, logic analyzer)"
+requires-python = ">=3.11"
+dependencies = [
+    "pyserial>=3.5",
+    "pyvisa>=1.14",
+    "pyvisa-py>=0.7",
+    "pyusb>=1.2",
+]
+
+[project.scripts]
+bringup = "bringup.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bringup"]

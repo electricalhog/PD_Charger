@@ -1,0 +1,3 @@
+# Rigol DS1000Z series (DS1054Z) USBTMC access without root.
+# Install: sudo cp 99-bringup.rules /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger
+SUBSYSTEM=="usb", ATTR{idVendor}=="1ab1", ATTR{idProduct}=="04ce", MODE="0660", GROUP="plugdev", TAG+="uaccess"
