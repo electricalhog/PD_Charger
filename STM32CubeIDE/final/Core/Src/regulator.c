@@ -978,6 +978,14 @@ static void hrtim_configure_compare_registers(void)
      * Timer A is the active leg in BUCK; Timer B is the active leg in BOOST.
      * Both CMP1xR values are written so the blanking is correct regardless
      * of which timer is active at any given time.                           */
+    /* Period from regulator_config.h (HRTIM_SWITCHING_FREQ_HZ).  The IOC/MX
+     * init leaves the CubeMX default 0xFFDF (83 kHz at MUL32), which also made
+     * the CMP2 backstop (computed for this period) a 35 % limit instead of
+     * MAX_DUTY_CYCLE_PCT.  Timers are not started yet, so the active
+     * register takes the value directly.                                    */
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].PERxR = HRTIM_PERIOD_COUNTS;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].PERxR = HRTIM_PERIOD_COUNTS;
+
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP1xR = HRTIM_BLANKING_TICKS_BUCK;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP1xR = HRTIM_BLANKING_TICKS_BOOST;
 

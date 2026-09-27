@@ -399,6 +399,26 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <
  * =========================================================================*/
 
 /**
+ * SLOPE_COMP_ENABLED — Run the TIM6 staircase ramp (§7.5 option 1).
+ *
+ * SHELVED (2026-09-27, bench bring-up): the 2 MHz TIM6 ISR at NVIC priority 0
+ * leaves ~85 CPU cycles per interrupt at 170 MHz, and ISR entry/exit plus
+ * the body consume essentially all of them.  Once regulator_start() started
+ * TIM6 the CPU never returned to thread level: regulator_start() did not
+ * complete (outputs enabled, state stuck at IDLE, TIM7 PID never started)
+ * and FreeRTOS tasks stopped running.  The §7.5 estimate of 12–36 % CPU did
+ * not hold.
+ *
+ * With 0: TIM6 is never started; DAC3 CH1 holds the PID peak for the whole
+ * period (reloaded each period by the HRTIM Timer A ISR), i.e. plain peak
+ * current mode with NO slope compensation.  Subharmonic oscillation is
+ * expected above ~50 % duty (§7.1) — keep duty < 50 % until a CPU-free ramp
+ * (DAC3 hardware sawtooth reset by the HRTIM period, §7.5 option 3) or a
+ * DMA-driven ramp (option 2) replaces this.
+ */
+#define SLOPE_COMP_ENABLED 0u
+
+/**
  * TIM6_RATE_HZ — Slope compensation timer interrupt rate.
  * Units  : Hz
  * Value  : 2 MHz (10 ticks per switching period at 200 kHz; 4 at 500 kHz)
