@@ -70,8 +70,8 @@ def list_probes(cfg: dict) -> dict:
         if m := re.match(r"\s*ST-Link Probe (\d+)\s*:", line):
             cur = {"index": int(m.group(1))}
             probes.append(cur)
-        elif cur is not None and (m := re.match(r"\s*([\w .]+?)\s*:\s*(.+)$", line)):
-            cur[m.group(1).strip().lower().replace(" ", "_")] = m.group(2).strip()
+        elif cur is not None and (m := re.match(r"\s*([^:]+?)\s*:\s*(.+)$", line)):
+            cur[re.sub(r"\W+", "_", m.group(1).strip().lower())] = m.group(2).strip()
     return {"ok": True, "count": len(probes), "probes": probes}
 
 
