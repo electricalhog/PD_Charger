@@ -264,8 +264,42 @@ typedef enum
 {
     REGULATOR_DEBUG_CMD_NONE        = 0u,
     REGULATOR_DEBUG_CMD_CLEAR_FAULT = 1u, /**< result = RegulatorClearResult */
-    REGULATOR_DEBUG_CMD_STOP        = 2u  /**< result = 0                    */
+    REGULATOR_DEBUG_CMD_STOP        = 2u, /**< result = 0                    */
+    REGULATOR_DEBUG_CMD_BENCH_PWM_ON  = 3u, /**< result = RegulatorBenchResult */
+    REGULATOR_DEBUG_CMD_BENCH_PWM_OFF = 4u  /**< result = RegulatorBenchResult */
 } RegulatorDebugCmd;
+
+/**
+ * RegulatorBenchResult — outcome of regulator_bench_pwm().
+ */
+typedef enum
+{
+    REGULATOR_BENCH_OK              = 0u,
+    REGULATOR_BENCH_NOT_IDLE        = 1u, /**< only allowed from IDLE              */
+    REGULATOR_BENCH_INPUT_PATH_ON   = 2u, /**< INPUT_EN must be low (no power)     */
+    REGULATOR_BENCH_FAULT_LINE_LOW  = 3u  /**< VS_GOOD/IS_GOOD low: HRTIM would
+                                               hold the outputs off               */
+} RegulatorBenchResult;
+
+/**
+ * regulator_bench_pwm — Open-loop gate-signal test for bench validation
+ * without a power stage (Nucleo + scope/analyzer).
+ *
+ * On: from IDLE with INPUT_EN low and both fault lines high, removes the
+ * comparator event (EEV4) from the Timer A/B set/reset sources and enables
+ * TA1/TA2/TB1/TB2 in the buck-mode configuration: TA1 is set at the period
+ * and reset by the CMP2 max-duty backstop, with the configured dead-time;
+ * TB1 is the static leg (CMP3 bootstrap refresh).  The HRTIM fault IRQ is
+ * armed, so a fault line dropping latches FAULT as in RUNNING.
+ * Off (or stop/fault): outputs off, set/reset sources restored.
+ *
+ * The PID and power path are never touched.  regulator_start() refuses
+ * while bench PWM is active.
+ */
+RegulatorBenchResult regulator_bench_pwm(bool on);
+
+/** True while bench PWM is running (read by tools/bringup). */
+extern volatile bool regulator_bench_pwm_active;
 
 #define REGULATOR_DEBUG_RESULT_UNKNOWN_CMD 0xFFFFFFFFu
 

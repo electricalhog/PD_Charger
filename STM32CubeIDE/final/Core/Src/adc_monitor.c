@@ -97,18 +97,19 @@ void adc_monitor_init(void)
 
 void adc_monitor_start_adc1_dma(void)
 {
-    /* Start ADC1 in DMA circular mode.
-     * The MX_ADC1_Init() configures 4 channels; ContinuousConvMode =
-     * DISABLE and DMAContinuousRequests = DISABLE.  We restart the DMA on
-     * each conversion complete in HAL_ADC_ConvCpltCallback.
+    /* Start ADC1 once, free-running: ContinuousConvMode + DMAContinuous
+     * Requests + circular DMA (set in the IOC) keep adc1_dma_buffer holding
+     * the latest scan with no CPU involvement.
      *
-     * TODO(hardware): For production, consider setting ContinuousConvMode
-     * and DMAContinuousRequests = ENABLE in a post-init re-call of
-     * HAL_ADC_Init() to avoid re-triggering overhead in the callback.
-     */
+     * HAL_ADC_Start_DMA enables the DMA half/full-transfer and ADC overrun
+     * interrupts; at this conversion rate they would fire back to back and
+     * starve FreeRTOS (DMA1_Channel5 is above SysTick), so turn them off.
+     * Consumers call adc_monitor_scale_adc1_buffer() when they need values. */
     HAL_ADC_Start_DMA(&hadc1,
                       (uint32_t *)(void *)adc1_dma_buffer,
                       ADC1_DMA_BUFFER_LENGTH);
+    __HAL_DMA_DISABLE_IT(hadc1.DMA_Handle, DMA_IT_TC | DMA_IT_HT);
+    __HAL_ADC_DISABLE_IT(&hadc1, ADC_IT_OVR);
 }
 
 void adc_monitor_trigger_vin(void)
@@ -146,24 +147,14 @@ void adc_monitor_scale_adc1_buffer(void)
 /**
  * HAL_ADC_ConvCpltCallback — DMA transfer-complete callback for ADC1.
  *
- * Called by HAL from DMA1_Channel5_IRQHandler when the ADC1 scan DMA
- * buffer is fully written.  Scales the raw counts and restarts DMA.
- *
- * NOTE: This overrides the weak HAL definition.  It must not call any
- * FreeRTOS API (ISR priority 2 is below FreeRTOS mask 5).
- * Actually, DMA1_Channel5 is configured at priority 5 in MX_DMA_Init
- * (RTOS-managed).  Therefore FromISR variants could be used here if needed,
- * but we deliberately avoid any FreeRTOS dependency in the regulator path.
+ * Normally not called: adc_monitor_start_adc1_dma() disables the DMA
+ * interrupts (ADC1 free-runs into a circular buffer).  Kept so that, if the
+ * interrupt is ever re-enabled, it only scales and never restarts DMA.
  */
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
     if (hadc->Instance == ADC1)
     {
         adc_monitor_scale_adc1_buffer();
-
-        /* Restart DMA for the next ADC1 scan cycle */
-        HAL_ADC_Start_DMA(&hadc1,
-                          (uint32_t *)(void *)adc1_dma_buffer,
-                          ADC1_DMA_BUFFER_LENGTH);
     }
 }

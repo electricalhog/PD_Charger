@@ -141,6 +141,10 @@ volatile bool regulator_integrator_reset_requested = false;
 RegulatorFaultSource regulator_last_fault_source    = REGULATOR_FAULT_NONE;
 volatile uint32_t    regulator_fault_tick_ms         = 0u;
 RegulatorDebugMailbox regulator_debug                = {0};
+volatile bool        regulator_bench_pwm_active      = false;
+
+/* Timer A/B set/reset sources saved while bench PWM strips EEV4 from them. */
+static uint32_t bench_saved_set_rst[4];
 volatile uint16_t    regulator_pid_output_dac_counts = 0u;
 volatile int32_t     regulator_pid_error_mv          = 0;
 
@@ -183,6 +187,7 @@ static void hrtim_fault_irq_rearm(void);
 static bool vs_good(void);
 static bool is_good(void);
 static bool input_path_power_up(RegulatorFaultSource *failure);
+static void bench_pwm_restore(void);
 static void hrtim_start_timers(void);
 static void hrtim_apply_buck_mode_static_leg(void);
 static void hrtim_apply_boost_mode_static_leg(void);
@@ -285,8 +290,8 @@ void regulator_init(void)
 
 void regulator_start(void)
 {
-    /* Guard: only start from IDLE */
-    if (regulator_state != REGULATOR_STATE_IDLE)
+    /* Guard: only start from IDLE, and not while bench PWM owns the outputs */
+    if (regulator_state != REGULATOR_STATE_IDLE || regulator_bench_pwm_active)
     {
         return;
     }
@@ -397,6 +402,7 @@ void regulator_start(void)
     }
 
     /* --- Initialise slope compensation and start TIM6 --- */
+    adc_monitor_scale_adc1_buffer();
     uint32_t v_out_mv = (uint32_t)adc_measurements.v_out_mv;
     slope_comp_update_step(v_out_mv, v_in_mv,
                             (SlopeCompMode)regulator_mode);
@@ -420,6 +426,7 @@ void regulator_stop(void)
 
     /* Disable all HRTIM switching outputs immediately (§11.3) */
     hrtim_disable_all_outputs();
+    bench_pwm_restore();
 
     /* Stop slope compensation and zero DAC */
     slope_comp_stop();
@@ -518,6 +525,12 @@ void regulator_debug_poll(void)
             regulator_stop();
             result = 0u;
             break;
+        case REGULATOR_DEBUG_CMD_BENCH_PWM_ON:
+            result = (uint32_t)regulator_bench_pwm(true);
+            break;
+        case REGULATOR_DEBUG_CMD_BENCH_PWM_OFF:
+            result = (uint32_t)regulator_bench_pwm(false);
+            break;
         default:
             result = REGULATOR_DEBUG_RESULT_UNKNOWN_CMD;
             break;
@@ -527,6 +540,79 @@ void regulator_debug_poll(void)
     regulator_debug.last_cmd = cmd;
     regulator_debug.done_count++;
     regulator_debug.request  = REGULATOR_DEBUG_CMD_NONE;
+}
+
+/* =========================================================================
+ * regulator_bench_pwm
+ * =========================================================================*/
+
+RegulatorBenchResult regulator_bench_pwm(bool on)
+{
+    if (!on)
+    {
+        if (regulator_bench_pwm_active)
+        {
+            hrtim_fault_irq_disarm();
+            hrtim_disable_all_outputs();
+            bench_pwm_restore();
+        }
+        return REGULATOR_BENCH_OK;
+    }
+
+    if (regulator_bench_pwm_active)
+    {
+        return REGULATOR_BENCH_OK;
+    }
+    if (regulator_state != REGULATOR_STATE_IDLE)
+    {
+        return REGULATOR_BENCH_NOT_IDLE;
+    }
+    if (HAL_GPIO_ReadPin(PIN_INPUT_EN_PORT, PIN_INPUT_EN_PIN) == GPIO_PIN_SET)
+    {
+        return REGULATOR_BENCH_INPUT_PATH_ON;
+    }
+    if (!vs_good() || !is_good())
+    {
+        return REGULATOR_BENCH_FAULT_LINE_LOW;
+    }
+
+    HRTIM_Timerx_TypeDef *ta = &HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A];
+    HRTIM_Timerx_TypeDef *tb = &HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B];
+
+    /* Buck-mode leg configuration, then drop the comparator event so the
+     * waveform depends only on PER/CMP2/CMP3 and the dead-time.            */
+    hrtim_apply_buck_mode_static_leg();
+    bench_saved_set_rst[0] = ta->SETx1R;
+    bench_saved_set_rst[1] = ta->RSTx1R;
+    bench_saved_set_rst[2] = tb->SETx1R;
+    bench_saved_set_rst[3] = tb->RSTx1R;
+    ta->SETx1R &= ~HRTIM_SET1R_EXTVNT4;
+    ta->RSTx1R &= ~HRTIM_RST1R_EXTVNT4;
+    tb->SETx1R &= ~HRTIM_SET1R_EXTVNT4;
+    tb->RSTx1R &= ~HRTIM_RST1R_EXTVNT4;
+    regulator_bench_pwm_active = true;
+
+    hrtim_fault_irq_rearm();
+    HAL_HRTIM_WaveformOutputStart(&hhrtim1, HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2 |
+                                            HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2);
+    return REGULATOR_BENCH_OK;
+}
+
+/**
+ * bench_pwm_restore — Put back the set/reset sources saved by bench PWM.
+ * Register writes only: safe from the fault ISR.  Outputs must already be off.
+ */
+static void bench_pwm_restore(void)
+{
+    if (!regulator_bench_pwm_active)
+    {
+        return;
+    }
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].SETx1R = bench_saved_set_rst[0];
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].RSTx1R = bench_saved_set_rst[1];
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx1R = bench_saved_set_rst[2];
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].RSTx1R = bench_saved_set_rst[3];
+    regulator_bench_pwm_active = false;
 }
 
 /* =========================================================================
@@ -657,6 +743,7 @@ void regulator_pid_tim7_isr(void)
 
     /* --- 1. Trigger and read ADC conversions --- */
     adc_monitor_trigger_vin();
+    adc_monitor_scale_adc1_buffer();   /* latest free-running ADC1 scan */
 
     uint32_t v_out_mv  = adc_measurements.v_out_mv;
     uint32_t i_l_ma    = adc_measurements.i_inductor_ma;
@@ -1179,6 +1266,7 @@ static void enter_fault(RegulatorFaultSource source)
     /* Disable switching outputs (belt-and-suspenders: hardware fault logic
      * already forces them to INACTIVE, but also do it in software)          */
     hrtim_disable_all_outputs();
+    bench_pwm_restore();
 
     /* Zero DAC — comparator threshold = 0 → additional safety (§4.4) */
     DAC3->DHR12R1 = 0u;
