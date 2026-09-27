@@ -14,6 +14,7 @@ USER CODE section was lost. The report separates:
 from __future__ import annotations
 
 import difflib
+import fnmatch
 import hashlib
 import os
 import shutil
@@ -86,7 +87,8 @@ def _read_text(p: Path) -> str | None:
         return None
 
 
-def generate(cfg: dict, apply: bool = False, force: bool = False, diff_lines: int = 200) -> dict:
+def generate(cfg: dict, apply: bool = False, force: bool = False, diff_lines: int = 200,
+             only: list[str] | None = None) -> dict:
     P = paths(cfg)
     ioc = Ioc(P.ioc)
     warnings = []
@@ -143,21 +145,33 @@ def generate(cfg: dict, apply: bool = False, force: bool = False, diff_lines: in
                     g["truncated"] = True
 
         applied = False
+        applied_files: list[str] = []
         if apply:
-            if lost and not force:
-                warnings.append("not applied: USER CODE would be lost (use --force to override)")
+            candidates = added + modified
+            if only:
+                applied_files = [f for f in candidates if any(fnmatch.fnmatch(f, pat) for pat in only)]
+                unmatched = [pat for pat in only if not any(fnmatch.fnmatch(f, pat) for f in candidates)]
+                if unmatched:
+                    warnings.append(f"--only patterns matched no generated change: {unmatched}")
             else:
-                for f in added + modified:
+                applied_files = candidates
+            lost_here = [x for x in lost if x["file"] in applied_files]
+            if lost_here and not force:
+                warnings.append("not applied: USER CODE would be lost (use --force to override)")
+                applied_files = []
+            else:
+                for f in applied_files:
                     dst = P.project_dir / f
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(work / f, dst)
-                applied = True
+                applied = bool(applied_files)
 
         return {
             "ok": not lost,
             "applied": applied,
             "dry_run": not apply,
             "generator": gen,
+            "applied_files": applied_files,
             "files_added": added,
             "files_modified": modified,
             "files_removed_by_cubemx": removed,

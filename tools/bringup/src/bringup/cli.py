@@ -240,6 +240,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--apply", action="store_true", help="copy generated files into the project")
     g.add_argument("--force", action="store_true", help="apply even if USER CODE would be lost")
     g.add_argument("--diff-lines", type=int, default=200)
+    g.add_argument("--only", action="append", metavar="GLOB",
+                   help="with --apply: only copy generated files matching this project-relative glob (repeatable)")
     g = cx.add_parser("script", help="run raw CubeMX script commands"); g.add_argument("commands", nargs="+")
 
     # build
@@ -268,6 +270,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--timeout", type=float, default=3.0)
     g.add_argument("--force", action="store_true", help="retry even though the last attempt hit a repeat over-current")
     g = rg.add_parser("stop", help="controlled stop: outputs off, input/output path off"); g.add_argument("--timeout", type=float, default=3.0)
+    g = rg.add_parser("bench-pwm", help="open-loop gate-signal test (IDLE, input path off): TA1/TA2/TB1/TB2 at PER/CMP2/CMP3 + dead-time")
+    g.add_argument("action", choices=["on", "off"]); g.add_argument("--timeout", type=float, default=3.0)
 
     # scope
     sc = sub.add_parser("scope", help="Rigol DS1054Z").add_subparsers(dest="op", required=True)
@@ -322,7 +326,7 @@ def dispatch(cfg: dict, a) -> dict:
         return cmd_usercode(cfg, a)
     if c == "cubemx":
         if a.op == "generate":
-            return cubemx.generate(cfg, apply=a.apply, force=a.force, diff_lines=a.diff_lines)
+            return cubemx.generate(cfg, apply=a.apply, force=a.force, diff_lines=a.diff_lines, only=a.only)
         return cubemx.run_script(cfg, a.commands)
     if c == "build":
         return build_mod.build(cfg, clean=a.clean, reconfigure=a.reconfigure, jobs=a.jobs)
@@ -343,7 +347,8 @@ def dispatch(cfg: dict, a) -> dict:
     if c == "regulator":
         if a.op == "status":
             return regulator.status(cfg)
-        return regulator.command(cfg, a.op, a.timeout, getattr(a, "force", False))
+        name = f"bench-pwm-{a.action}" if a.op == "bench-pwm" else a.op
+        return regulator.command(cfg, name, a.timeout, getattr(a, "force", False))
     if c == "scope":
         return cmd_scope(cfg, a)
     if c == "la":

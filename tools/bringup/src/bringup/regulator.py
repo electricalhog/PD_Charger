@@ -51,7 +51,13 @@ FAULT_BITS = {
     0x10: ("SW_VIN_RANGE", "V_in out of range for the selected mode"),
     0x20: ("SW_BACKSTOP", "too many consecutive cycle-by-cycle backstop events"),
 }
-CMD = {"clear-fault": 1, "stop": 2}
+CMD = {"clear-fault": 1, "stop": 2, "bench-pwm-on": 3, "bench-pwm-off": 4}
+BENCH_RESULTS = {
+    0: ("OK", ""),
+    1: ("NOT_IDLE", "bench PWM is only allowed from IDLE (stop the regulator / clear the fault first)"),
+    2: ("INPUT_PATH_ON", "INPUT_EN is high: bench PWM refuses while the input path could power the stage"),
+    3: ("FAULT_LINE_LOW", "VS_GOOD or IS_GOOD is low, so the HRTIM hardware would hold the outputs off"),
+}
 CLEAR_RESULTS = {
     0: ("OK", "FAULT released, state IDLE with the input path off. Starting again is a separate step."),
     1: ("NOT_IN_FAULT", "nothing to clear"),
@@ -69,7 +75,7 @@ HRTIM_ISR = 0x40016B88  # HRTIM1 common block (0x40016B80) + 0x08; ICR, IER, OEN
 COOLDOWN_FW_MS = 150
 
 _VARS = ["regulator_state", "regulator_last_fault_source", "regulator_fault_tick_ms", "regulator_debug", "uwTick",
-         "adc_measurements"]
+         "adc_measurements", "regulator_bench_pwm_active"]
 
 
 def _u(data: bytes) -> int:
@@ -112,6 +118,7 @@ def decode(raw: dict) -> dict:
             "irq_armed_FLT1": bool(ier & 1), "irq_armed_FLT2": bool(ier & 2),
             "outputs_enabled": [n for i, n in enumerate(["TA1", "TA2", "TB1", "TB2"]) if oenr & (1 << i)],
         },
+        "bench_pwm": bool(_u(raw["regulator_bench_pwm_active"])) if "regulator_bench_pwm_active" in raw else None,
         "mailbox": {"request": mbox[0], "result": mbox[1], "done_count": mbox[2], "last_cmd": mbox[3]},
         "uptime_ms": tick,
     }
@@ -151,6 +158,8 @@ def diagnose(s: dict) -> list[str]:
             d.append("WARNING: RUNNING with the HRTIM fault IRQ not armed (firmware bug)")
         if not L["INPUT_EN_PC7"]:
             d.append("WARNING: RUNNING with INPUT_EN off")
+    elif h["outputs_enabled"] and s.get("bench_pwm") and not L["INPUT_EN_PC7"]:
+        d.append(f"bench PWM active on {h['outputs_enabled']} (open-loop, input path off)")
     elif h["outputs_enabled"]:
         d.append(f"DANGER: HRTIM outputs {h['outputs_enabled']} enabled while state is {state}")
     if state in ("IDLE", "INIT") and not d:
@@ -195,4 +204,7 @@ def command(cfg: dict, name: str, timeout: float = 3.0, force: bool = False) -> 
     elif name == "clear-fault":
         code, text = CLEAR_RESULTS.get(res, (str(res), "unknown result"))
         out.update(ok=code in ("OK", "NOT_IN_FAULT"), result=code, explanation=text)
+    elif name.startswith("bench-pwm"):
+        code, text = BENCH_RESULTS.get(res, (str(res), "unknown result"))
+        out.update(ok=code == "OK", result=code, **({"explanation": text} if text else {}))
     return out
