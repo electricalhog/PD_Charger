@@ -135,6 +135,11 @@ bu regulator clear-fault   # firmware: 150 ms ADM1270 cool-down -> INPUT_EN togg
                            #   -> input path off, FAULT -> IDLE. Result OK / INPUT_NOT_GOOD / INPUT_OVERCURRENT
 bu regulator stop          # outputs off, input/output path off (keeps a latched FAULT)
 ```
+`bu regulator bench-pwm on|off` runs the gate signals open-loop for scope
+work with no power stage (IDLE, input path off, fault lines high): TA1 = CMP2
+backstop, TB1 = static leg, configured dead-time. Validated 2026-09-27:
+199.995 kHz, TA1 84.755 % (4.2379 us), dead-time 11.79/12.40 ns vs 11.76 ns.
+
 `clear-fault` does **not** restart switching. After an `INPUT_OVERCURRENT`
 result the tool refuses to retry without `--force`: only use that after the
 user has confirmed the hardware is OK. With no power board attached (or VIN
@@ -151,9 +156,12 @@ bu scope capture CH2 CH3 --raw --threshold 1.65 --delay CH2:fall,CH3:rise --dela
 bu scope analyze bringup_out/<file>.csv --threshold CH2=1.2 --delay CH2:fall,CH3:rise
 ```
 - `--raw` downloads acquisition memory at the real sample rate (scope is
-  stopped): e.g. 2 channels, `acquire --mdepth 600k`, 100 us/div = 600k points
-  at 500 MSa/s = ~100 switching periods in ~4 s. Without `--raw` you get the
+  stopped): e.g. 2 channels, `acquire --mdepth auto`, 100 us/div = 600k points
+  at 500 MSa/s = ~240 periods at 200 kHz in ~4.6 s. Without `--raw` you get the
   1200 screen points (interpolated at fast timebases).
+- **Check `sample_rate_sa_s` in the result.** An explicit `--mdepth 600k` made
+  the scope drop to 250 MSa/s at the same timebase while `auto` gave 500 MSa/s;
+  at 4 ns/sample dead-time std was 1.8 ns vs 0.07 ns at 2 ns/sample.
 - `--delay A:edge,B:edge` pairs every A edge with the next B edge before
   the following A edge and returns count/mean/min/max/std. Dead-time on
   every cycle is a single command.
