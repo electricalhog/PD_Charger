@@ -176,6 +176,9 @@ static volatile uint8_t consecutive_backstop_count = 0u;
 static void hrtim_configure_fault_levels_and_enable(void);
 static void hrtim_configure_compare_registers(void);
 static void hrtim_enable_period_and_fault_interrupts(void);
+static void hrtim_fault_irq_disarm(void);
+static void hrtim_fault_irq_rearm(void);
+static bool hw_fault_inputs_asserted(void);
 static void hrtim_start_timers(void);
 static void hrtim_apply_buck_mode_static_leg(void);
 static void hrtim_apply_boost_mode_static_leg(void);
@@ -261,10 +264,14 @@ void regulator_init(void)
     HAL_GPIO_WritePin(PIN_OUTPUT_EN_PORT, PIN_OUTPUT_EN_PIN, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(PIN_OUTPUT_DIS_PORT,PIN_OUTPUT_DIS_PIN,GPIO_PIN_SET);
 
-    /* --- Step 14: Check for pre-existing hardware fault --- */
-    /* HRTIM fault status register — if any fault is pending, stay in INIT.
-     * The ISR will transition to FAULT on the first interrupt.             */
-    regulator_state = REGULATOR_STATE_IDLE;
+    /* --- Step 14: Check for pre-existing hardware fault ---
+     * The fault IRQ was armed in step 9, so a fault already asserted at boot
+     * has fired by now and latched FAULT (with the IRQ disarmed).  Do not
+     * overwrite that with IDLE; regulator_clear_fault() is the only exit.   */
+    if (regulator_state != REGULATOR_STATE_FAULT)
+    {
+        regulator_state = REGULATOR_STATE_IDLE;
+    }
 }
 
 /* =========================================================================
@@ -287,10 +294,10 @@ void regulator_start(void)
     }
 
     /* Guard: no active hardware fault */
-    /* TODO(hardware): read HRTIM fault status register to verify FLT1/FLT2
-     * are deasserted before enabling outputs.  Example:
-     *   if (HRTIM1->sCommonRegs.ISR & (HRTIM_ISR_FLT1 | HRTIM_ISR_FLT2)) { return; }
-     */
+    if (hw_fault_inputs_asserted())
+    {
+        return;
+    }
 
     /* --- Enable input path FIRST so VS_MON sees the real supply voltage ---
      * INPUT_EN (and OUTPUT_EN) must be asserted before ADC2 can measure a
@@ -434,17 +441,15 @@ void regulator_clear_fault(void)
      * schematic during bring-up.  The HRTIM fault latches must also be
      * cleared via the HRTIM_ICR register before re-enabling outputs.
      */
-    GPIO_PinState vs_good = HAL_GPIO_ReadPin(PIN_VS_GOOD_PORT, PIN_VS_GOOD_PIN);
-    GPIO_PinState is_good = HAL_GPIO_ReadPin(PIN_IS_GOOD_PORT, PIN_IS_GOOD_PIN);
-
-    if (vs_good == GPIO_PIN_RESET || is_good == GPIO_PIN_RESET)
+    if (hw_fault_inputs_asserted())
     {
         /* Hardware fault is still asserted — cannot clear */
         return;
     }
 
-    /* Clear HRTIM fault interrupt flags */
-    HRTIM1->sCommonRegs.ICR = HRTIM_ICR_FLT1C | HRTIM_ICR_FLT2C;
+    /* Clear stale fault flags and re-arm the fault IRQ (disarmed on entry
+     * by regulator_hrtim_fault_isr to prevent an interrupt storm).         */
+    hrtim_fault_irq_rearm();
 
     /* Reset regulator state */
     pid_reset_integrator(&pid_state);
@@ -552,8 +557,13 @@ void regulator_hrtim_fault_isr(void)
 
     enter_fault(source);
 
-    /* Clear HRTIM fault flags */
-    HRTIM1->sCommonRegs.ICR = (hrtim_isr & (HRTIM_ICR_FLT1C | HRTIM_ICR_FLT2C));
+    /* Disarm the fault IRQ until regulator_clear_fault().  The fault inputs
+     * are level-sensitive: while a line stays asserted the flag re-sets as
+     * soon as it is cleared, and this priority-1 ISR would re-enter forever,
+     * starving every lower-priority interrupt (SysTick/HAL tick, TIM7, UCPD).
+     * Protection is unaffected: the HRTIM hardware keeps forcing the outputs
+     * to their fault state independently of this interrupt.                 */
+    hrtim_fault_irq_disarm();
 }
 
 /**
@@ -853,6 +863,44 @@ static void hrtim_enable_period_and_fault_interrupts(void)
     __HAL_HRTIM_ENABLE_IT(&hhrtim1, HRTIM_IT_FLT2);
     HAL_NVIC_SetPriority(HRTIM1_FLT_IRQn, NVIC_PRIORITY_HRTIM, 0u);
     HAL_NVIC_EnableIRQ(HRTIM1_FLT_IRQn);
+}
+
+/**
+ * hrtim_fault_irq_disarm — Mask FLT1/FLT2 interrupts and drop any pending one.
+ *
+ * Called from the fault ISR.  Leaves the fault flags set in HRTIM ISR so the
+ * cause stays visible to a debugger until the fault is cleared.
+ */
+static void hrtim_fault_irq_disarm(void)
+{
+    __HAL_HRTIM_DISABLE_IT(&hhrtim1, HRTIM_IT_FLT1);
+    __HAL_HRTIM_DISABLE_IT(&hhrtim1, HRTIM_IT_FLT2);
+    NVIC_ClearPendingIRQ(HRTIM1_FLT_IRQn);
+}
+
+/**
+ * hrtim_fault_irq_rearm — Clear fault flags, then unmask FLT1/FLT2 interrupts.
+ *
+ * Flags are cleared first so a stale flag cannot fire immediately.  If a line
+ * re-asserts afterwards the ISR runs once more and disarms again.
+ */
+static void hrtim_fault_irq_rearm(void)
+{
+    HRTIM1->sCommonRegs.ICR = HRTIM_ICR_FLT1C | HRTIM_ICR_FLT2C;
+    NVIC_ClearPendingIRQ(HRTIM1_FLT_IRQn);
+    __HAL_HRTIM_ENABLE_IT(&hhrtim1, HRTIM_IT_FLT1);
+    __HAL_HRTIM_ENABLE_IT(&hhrtim1, HRTIM_IT_FLT2);
+}
+
+/**
+ * hw_fault_inputs_asserted — True if FLT1 (VS_GOOD) or FLT2 (IS_GOOD) is low.
+ *
+ * Both are active-low (Polarity_FaultLine = LOW in the IOC).
+ */
+static bool hw_fault_inputs_asserted(void)
+{
+    return (HAL_GPIO_ReadPin(PIN_VS_GOOD_PORT, PIN_VS_GOOD_PIN) == GPIO_PIN_RESET) ||
+           (HAL_GPIO_ReadPin(PIN_IS_GOOD_PORT, PIN_IS_GOOD_PIN) == GPIO_PIN_RESET);
 }
 
 /**

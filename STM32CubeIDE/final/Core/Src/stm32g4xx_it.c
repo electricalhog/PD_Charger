@@ -352,7 +352,7 @@ void HRTIM1_TIMA_IRQHandler(void)
 void HRTIM1_FLT_IRQHandler(void)
 {
   regulator_hrtim_fault_isr();
-  /* Flag clearing is performed inside regulator_hrtim_fault_isr() */
+  /* The ISR latches FAULT and disarms this IRQ; regulator_clear_fault() re-arms it */
 }
 
 /* USER CODE END 1 */
