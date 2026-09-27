@@ -43,9 +43,12 @@ class _Socket:
     def write(self, cmd: str) -> None:
         self.s.sendall(cmd.encode() + b"\n")
 
+    def _recv(self, n: int) -> bytes:
+        return self.s.recv(n)
+
     def _read_exact(self, n: int) -> bytes:
         while len(self.buf) < n:
-            chunk = self.s.recv(max(65536, n - len(self.buf)))
+            chunk = self._recv(max(65536, n - len(self.buf)))
             if not chunk:
                 raise ToolError("scope closed the connection")
             self.buf += chunk
@@ -56,7 +59,7 @@ class _Socket:
         # Skips blank lines, which also swallows the newline that trails a binary block.
         while True:
             while b"\n" not in self.buf:
-                chunk = self.s.recv(65536)
+                chunk = self._recv(65536)
                 if not chunk:
                     raise ToolError("scope closed the connection")
                 self.buf += chunk
@@ -67,8 +70,7 @@ class _Socket:
     def read_block(self) -> bytes:
         """IEEE 488.2 definite-length block: #<n><len><data>."""
         while b"#" not in self.buf:
-            self.buf = b""
-            self.buf += self.s.recv(65536)
+            self.buf = self._recv(65536)
         self.buf = self.buf[self.buf.index(b"#"):]
         ndigits = int(self._read_exact(2)[1:2])
         length = int(self._read_exact(ndigits))
@@ -76,6 +78,51 @@ class _Socket:
 
     def close(self) -> None:
         self.s.close()
+
+
+class _UsbtmcDev(_Socket):
+    """Linux kernel usbtmc driver (/dev/usbtmcN): plain read/write, kernel does the USBTMC framing."""
+
+    def __init__(self, path: str, timeout: float):
+        import os
+        self.os = os
+        try:
+            self.fd = os.open(path, os.O_RDWR)
+        except OSError as e:
+            raise ToolError(f"cannot open {path}: {e}",
+                            hint="install tools/bringup/udev/99-bringup.rules (needs sudo), then replug the scope") from e
+        self.buf = b""
+        self.timeout = timeout
+
+    def write(self, cmd: str) -> None:
+        self.os.write(self.fd, cmd.encode() + b"\n")
+
+    def _recv(self, n: int) -> bytes:
+        try:
+            chunk = self.os.read(self.fd, n)
+        except TimeoutError as e:  # kernel returns ETIMEDOUT (default 5 s)
+            raise ToolError("scope read timed out") from e
+        if not chunk:
+            raise ToolError("usbtmc read returned no data")
+        return chunk
+
+    def close(self) -> None:
+        self.os.close(self.fd)
+
+
+def _find_rigol_usbtmc() -> str | None:
+    """/dev/usbtmcN whose USB parent is a Rigol (vendor 1ab1)."""
+    import glob
+    from pathlib import Path
+    for dev in sorted(glob.glob("/dev/usbtmc*")):
+        sys_dev = Path("/sys/class/usbmisc") / Path(dev).name / "device"
+        for parent in [sys_dev.resolve(), *sys_dev.resolve().parents]:
+            vid = parent / "idVendor"
+            if vid.exists():
+                if vid.read_text().strip() == "1ab1":
+                    return dev
+                break
+    return None
 
 
 class _Visa:
@@ -125,6 +172,10 @@ class Scope:
                             example='resource = "tcp://192.168.1.50:5555"')
         if m := re.fullmatch(r"tcp://([^:/]+)(?::(\d+))?/?", res):
             self.io = _Socket(m.group(1), int(m.group(2) or 5555), timeout)
+        elif res.startswith("/dev/usbtmc"):
+            self.io = _UsbtmcDev(res, timeout)
+        elif res == "usb" and (dev := _find_rigol_usbtmc()):
+            self.io = _UsbtmcDev(dev, timeout)  # kernel driver owns the device; don't fight it with pyusb
         else:
             self.io = _Visa(res, timeout)
         self.cfg = cfg

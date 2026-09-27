@@ -1,3 +1,5 @@
-# Rigol DS1000Z series (DS1054Z) USBTMC access without root.
+# Rigol DS1000Z series (DS1054Z) access without root: raw USB (pyvisa-py)
+# and the kernel usbtmc driver node (/dev/usbtmcN, used by `resource = "usb"`).
 # Install: sudo cp 99-bringup.rules /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger
 SUBSYSTEM=="usb", ATTR{idVendor}=="1ab1", ATTR{idProduct}=="04ce", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+KERNEL=="usbtmc[0-9]*", SUBSYSTEMS=="usb", ATTRS{idVendor}=="1ab1", MODE="0660", GROUP="plugdev", TAG+="uaccess"
