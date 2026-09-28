@@ -186,6 +186,63 @@ def diagnose(s: dict) -> list[str]:
     return d
 
 
+DEBUG_RECORD = struct.Struct("<IIIIHBBi")   # v_out, v_in, i_l, i_out, dac, state, mode, error (debug_log.h)
+DEBUG_RECORDS = 512
+
+
+def debug_log_stats(cfg: dict) -> dict:
+    """Summary of the firmware's 512-cycle debug_log ring (25.6 ms at 20 kHz)."""
+    addr, size = probe.symbols(cfg)["debug_log"]
+    (raw,) = probe.read_regions(cfg, [(addr, DEBUG_RECORD.size * DEBUG_RECORDS)])
+    recs = [DEBUG_RECORD.unpack_from(raw, i * DEBUG_RECORD.size) for i in range(DEBUG_RECORDS)]
+    vo = [r[0] for r in recs]
+    io = [r[3] for r in recs]
+    mean = sum(vo) / len(vo)
+    return {"vout_mv": round(mean), "vout_sd_mv": round((sum((v - mean) ** 2 for v in vo) / len(vo)) ** 0.5),
+            "vout_min_mv": min(vo), "vout_max_mv": max(vo), "iout_ma": round(sum(io) / len(io)),
+            "dac_mean": round(sum(r[4] for r in recs) / len(recs)),
+            "modes": sorted({MODES.get(r[6], r[6]) for r in recs})}
+
+
+def sweep(cfg: dict, targets_mv: list[int], dwell_s: float = 1.0, settle_timeout_s: float = 5.0,
+          scope_source: str | None = None) -> dict:
+    """set-voltage through a list of targets; after the slew and a dwell, record control telemetry,
+    debug_log statistics and (optionally) the scope's VAVG/VPP on one channel. Stops at the first fault."""
+    sc = None
+    if scope_source:
+        from .scope import Scope
+        sc = Scope(cfg)
+    rows = []
+    for mv in targets_mv:
+        res = command(cfg, "set-voltage", mv=mv)
+        if not res.get("ok"):
+            return {"ok": False, "error": f"set-voltage {mv} failed", "detail": res, "rows": rows}
+        t0 = time.monotonic()
+        while True:
+            s = decode(read_raw(cfg))
+            if s["state"] != "RUNNING" or s.get("control", {}).get("commanded_mv") == mv \
+                    or time.monotonic() - t0 > settle_timeout_s:
+                break
+            time.sleep(0.2)
+        time.sleep(dwell_s)
+        s = decode(read_raw(cfg))
+        row = {"target_mv": mv, "state": s["state"], **s.get("control", {})}
+        if s["state"] != "RUNNING":
+            row["fault_source"] = s["fault_source"]
+            syms = probe.symbols(cfg)
+            if "regulator_fault_snapshot" in syms:
+                (snap,) = probe.read_regions(cfg, [syms["regulator_fault_snapshot"]])
+                row["fault_snapshot"] = list(struct.unpack_from("<6I", snap))
+            rows.append(row)
+            return {"ok": False, "error": f"regulator left RUNNING at {mv} mV", "rows": rows}
+        row.update(debug_log_stats(cfg))
+        if sc:
+            m = sc.measure([scope_source], ["VAVG", "VPP"])["measurements"]
+            row.update({f"scope_{k.lower()}": v for k, v in next(iter(m.values())).items()})
+        rows.append(row)
+    return {"ok": True, "rows": rows}
+
+
 def status(cfg: dict) -> dict:
     return {"ok": True, **decode(read_raw(cfg)), "protection": PROTECTION}
 
@@ -210,7 +267,8 @@ def command(cfg: dict, name: str, timeout: float = 3.0, force: bool = False, mv:
         if size < 20:
             raise ToolError(f"firmware mailbox has no arg field: '{name}' needs a newer build", mailbox_size=size)
         probe.mem_write(cfg, f"{addr + 16:#x}", str(int(mv)), "u32")
-    probe.mem_write(cfg, f"{addr:#x}", str(CMD[name]), "u32")
+    # The firmware may service the request from an ISR before the programmer reads it back.
+    probe.mem_write(cfg, f"{addr:#x}", str(CMD[name]), "u32", volatile_target=True)
     t0 = time.monotonic()
     while True:
         after = decode(read_raw(cfg))

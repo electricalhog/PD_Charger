@@ -64,7 +64,7 @@ def test_command_clear_fault_roundtrip(monkeypatch):
     monkeypatch.setattr(regulator, "read_raw", lambda cfg: state["raw"])
     monkeypatch.setattr(probe, "symbols", lambda cfg: {"regulator_debug": (0x20006818, 16)})
 
-    def fake_write(cfg, target, value, dtype):
+    def fake_write(cfg, target, value, dtype, **kw):
         assert (target, dtype) == ("0x20006818", "u32")
         state["written"] = int(value)
         state["raw"] = _raw(state=1, src=0, mbox=(0, 0, 8, int(value)))
@@ -98,7 +98,7 @@ def test_set_voltage_writes_arg_then_request(monkeypatch):
     monkeypatch.setattr(regulator, "read_raw", lambda cfg: state["raw"])
     monkeypatch.setattr(probe, "symbols", lambda cfg: {"regulator_debug": (0x20006818, 20)})
 
-    def fake_write(cfg, target, value, dtype):
+    def fake_write(cfg, target, value, dtype, **kw):
         state["writes"].append((target, int(value)))
         if target == "0x20006818":
             state["raw"] = _raw(state=2, mbox=(0, 0, 4, int(value)))

@@ -290,6 +290,11 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("action", choices=["on", "off"]); g.add_argument("--timeout", type=float, default=3.0)
     g = rg.add_parser("set-voltage", help="new target (mV) while running or idle; the firmware slews to it")
     g.add_argument("mv", type=int); g.add_argument("--timeout", type=float, default=3.0)
+    g = rg.add_parser("sweep", help="set-voltage through MV,MV,...; per point: control telemetry, debug_log stats, "
+                                    "optional scope VAVG/VPP; stops at the first fault")
+    g.add_argument("targets", help="comma list of mV, e.g. 24000,20000,12000")
+    g.add_argument("--dwell", type=float, default=1.0, help="seconds after the slew before sampling")
+    g.add_argument("--scope", metavar="CHn", help="also measure VAVG/VPP on this channel")
     g = rg.add_parser("start", help="set the target (mV) and start from IDLE (after stop or clear-fault)")
     g.add_argument("mv", type=int); g.add_argument("--timeout", type=float, default=5.0)
 
@@ -357,7 +362,7 @@ EFFECTS = {
     "probe list": "read", "probe reset": "actuate", "flash": "actuate",
     "sym": "read", "layout": "read", "mem read": "read", "mem write": "actuate",
     "regulator status": "read", "regulator clear-fault": "actuate", "regulator stop": "actuate",
-    "regulator bench-pwm": "actuate", "regulator set-voltage": "actuate", "regulator start": "actuate",
+    "regulator bench-pwm": "actuate", "regulator set-voltage": "actuate", "regulator sweep": "actuate", "regulator start": "actuate",
     "scope analyze": "read", "scope idn": "read", "scope state": "read", "scope measure": "read",
     "scope delay": "read", "scope screenshot": "read", "scope capture": "actuate",
     "la scan": "read", "la decoders": "read", "la decode": "read", "la edges": "read", "la capture": "read",
@@ -438,6 +443,8 @@ def dispatch(cfg: dict, a) -> dict:
     if c == "regulator":
         if a.op == "status":
             return regulator.status(cfg)
+        if a.op == "sweep":
+            return regulator.sweep(cfg, [int(x) for x in a.targets.split(",")], a.dwell, scope_source=a.scope)
         name = f"bench-pwm-{a.action}" if a.op == "bench-pwm" else a.op
         return regulator.command(cfg, name, a.timeout, getattr(a, "force", False), getattr(a, "mv", None))
     if c == "scope":

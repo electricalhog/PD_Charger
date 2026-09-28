@@ -224,7 +224,9 @@ def mem_read(cfg: dict, target: str, size: int | None = None, dtype: str = "u32"
     return result
 
 
-def mem_write(cfg: dict, target: str, value: str, dtype: str = "u32") -> dict:
+def mem_write(cfg: dict, target: str, value: str, dtype: str = "u32", volatile_target: bool = False) -> dict:
+    """volatile_target: the firmware consumes the word at once (a mailbox request cleared by an ISR),
+    so a failed read-back verify means nothing; the caller confirms by the effect."""
     addr, _, label = resolve(cfg, target)
     if dtype not in _FMT:
         raise ToolError(f"unknown type {dtype}", types=list(_FMT))
@@ -247,6 +249,9 @@ def mem_write(cfg: dict, target: str, value: str, dtype: str = "u32") -> dict:
         else:
             args = [a for i, b in enumerate(payload) for a in ("-w8", f"{addr + i:#010x}", f"{b:#x}")]
         out, rc = _prun(cfg, [*_connect(cfg, "HOTPLUG"), *args], timeout=30)
+        if volatile_target and "Failed to download data" in out and "No debug probe" not in out:
+            return {"ok": True, "target": label, "address": f"{addr:#010x}", "type": dtype, "written": v,
+                    "verified": False, "note": "consumed by the firmware before the programmer's read-back"}
         if _is_peripheral(addr) and "Failed to download data" in out and "No debug probe" not in out:
             # STM32_Programmer_CLI verifies each write by reading it back. Write-only or
             # self-clearing peripheral registers (HRTIM OENR/ODISR, xxICR flag clears, ...)
