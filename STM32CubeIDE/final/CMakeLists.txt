@@ -57,6 +57,16 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined symbols
 )
 
+# Control-loop sources at -O2 in every build type (they keep -g3 in Debug).
+# At -O0 the PID ISR took 67 us of its 50 us period in boost and the Timer A
+# period ISR 2 us of 5 us, starving every lower-priority interrupt and task
+# (bench, 2026-09-28 evening, DWT counts in regulator_cyc_*).
+set_source_files_properties(
+    Core/Src/regulator.c Core/Src/adc_monitor.c Core/Src/pid_controller.c
+    Core/Src/slope_comp.c Core/Src/debug_log.c Core/Src/stm32g4xx_it.c
+    DIRECTORY ${CMAKE_SOURCE_DIR}
+    PROPERTIES COMPILE_OPTIONS "-O2")
+
 # Remove wrong libob.a library dependency when using cpp files
 list(REMOVE_ITEM CMAKE_C_IMPLICIT_LINK_LIBRARIES ob)
 

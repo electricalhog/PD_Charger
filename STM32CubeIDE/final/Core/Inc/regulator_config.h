@@ -438,6 +438,80 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
 #define OUTPUT_CONNECT_MARGIN_MV 1000u
 
 /**
+ * DCM_MAX_PEAK_MA — Peak inductor current the on-time law may command
+ *          (SYNC_RECT_ENABLED 0).  The PID output is clamped to it too, so the
+ *          integrator cannot wind past it.
+ * Units  : mA
+ * Value  : 2500u (2026-09-28 evening)
+ * Purpose: DCM_MAX_ON_TIME_NS alone capped the pulse at 600 ns whatever the
+ *          operating point.  That is 2.4 A at 5 V out from 24 V, but only
+ *          1.2 A at 13.6 V, where charge per pulse was down to the 330 ohm
+ *          load's need and buck stalled (boost start into the load, SW_UVP).
+ *          Near V_in a fixed peak current delivers more charge per pulse, so
+ *          the peak is the limit that keeps authority up there; 2.5 A keeps
+ *          the low-V_out behaviour of runs 21 to 29.
+ */
+#define DCM_MAX_PEAK_MA 2500u
+
+/**
+ * DCM_MAX_PEAK_MA_BB — The same limit in buck-boost.  A buck-boost pulse
+ *          delivers only L * I_pk^2 / 2 (2.9 W at 2.5 A and 200 kHz, before
+ *          two diode drops): at 2.5 A the output held 18.3 V against a 24 to
+ *          26 V target with the PID railed (2026-09-28 evening, 330 ohm).
+ *          4 A is 7.5 W ideal, well under L1's 21 A saturation.
+ * Units  : mA
+ */
+#define DCM_MAX_PEAK_MA_BB 4000u
+
+/**
+ * DCM_ON_TIME_CEIL_NS — Longest computed on-time (PID ISR step 6b).  The
+ *          CMP2 value written at start and on a mode change is still
+ *          DCM_MAX_ON_TIME_NS until the first PID cycle.
+ * DCM_WINDOW_MARGIN_NS — Slack left at the end of the period so the inductor
+ *          current reaches zero before the next pulse (discontinuous mode).
+ * Units  : ns
+ */
+#define DCM_ON_TIME_CEIL_NS  4000u
+#define DCM_WINDOW_MARGIN_NS 300u
+
+/** DCM_DIODE_DROP_MV — body-diode drop in the freewheel path, for the DCM
+ *  on-time bound (PID ISR step 6b).  Units: mV. */
+#define DCM_DIODE_DROP_MV 700u
+
+/**
+ * SETPOINT_SLEW_MV_PER_CYCLE — How fast the regulated setpoint follows a new
+ *          target while running (PID ISR step 4a).
+ * Units  : mV per PID cycle (20 kHz): 1 is 20 V/s
+ * Purpose: A step down (28 V to 20 V) put V_out over the relative OVP of the
+ *          new target at once: the output only falls as fast as the load
+ *          discharges it.  OVP/UVP are checked against the slewed value.
+ *          At 20 V/s a 330 ohm load keeps up down to about 1 V at 25 uF.
+ */
+#define SETPOINT_SLEW_MV_PER_CYCLE 1u
+
+/**
+ * BUCK_BOOST_ENABLED — Use REGULATOR_MODE_BUCK_BOOST for setpoints near V_in.
+ *          Q1 (TA1) and Q4 (TB2) pulse together for t_on = I_pk * L / V_in,
+ *          then L1 freewheels from ground through Q2's and into the output
+ *          through Q3's body diodes, so each pulse delivers L * I_pk^2 / 2
+ *          at any V_out/V_in (discontinuous, non-synchronous).
+ * BB_BELOW_VIN_MV / BB_ABOVE_VIN_MV — Band around V_in (filtered) where it is
+ *          selected; BB_HYSTERESIS_MV on each edge.
+ * Units  : boolean; mV
+ */
+#define BUCK_BOOST_ENABLED 1u
+#define BB_BELOW_VIN_MV   2000u
+#define BB_ABOVE_VIN_MV   3000u
+#define BB_HYSTERESIS_MV   500u
+
+/**
+ * VIN_FILTER_SHIFT — V_in low-pass for mode selection: filtered += (sample -
+ *          filtered) >> shift per PID cycle.  5 is a 1.6 ms time constant;
+ *          single V_in samples read up to 4 V off (run 36).
+ */
+#define VIN_FILTER_SHIFT 5u
+
+/**
  * DCM_REFRESH_DEADTIME_NS — Gap between the low-side refresh pulse and the
  * high-side charge pulse on the same leg while SYNC_RECT_ENABLED is 0.
  * Units  : ns

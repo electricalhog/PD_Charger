@@ -70,7 +70,7 @@ typedef enum
 {
     REGULATOR_MODE_BUCK      = 0, /**< V_in > V_out: Timer A switches, Timer B static */
     REGULATOR_MODE_BOOST     = 1, /**< V_in < V_out: Timer B switches, Timer A static */
-    REGULATOR_MODE_BUCK_BOOST = 2 /**< V_in ≈ V_out: four-switch interleaved (future) */
+    REGULATOR_MODE_BUCK_BOOST = 2 /**< V_in ≈ V_out: Q1 and Q4 pulse together (BUCK_BOOST_ENABLED) */
 } RegulatorMode;
 
 /**
@@ -267,7 +267,9 @@ typedef enum
     REGULATOR_DEBUG_CMD_CLEAR_FAULT = 1u, /**< result = RegulatorClearResult */
     REGULATOR_DEBUG_CMD_STOP        = 2u, /**< result = 0                    */
     REGULATOR_DEBUG_CMD_BENCH_PWM_ON  = 3u, /**< result = RegulatorBenchResult */
-    REGULATOR_DEBUG_CMD_BENCH_PWM_OFF = 4u  /**< result = RegulatorBenchResult */
+    REGULATOR_DEBUG_CMD_BENCH_PWM_OFF = 4u, /**< result = RegulatorBenchResult */
+    REGULATOR_DEBUG_CMD_SET_VOLTAGE = 5u, /**< arg = mV; result = RegulatorSetResult */
+    REGULATOR_DEBUG_CMD_START       = 6u  /**< arg = mV; result = RegulatorSetResult */
 } RegulatorDebugCmd;
 
 /**
@@ -304,12 +306,25 @@ extern volatile bool regulator_bench_pwm_active;
 
 #define REGULATOR_DEBUG_RESULT_UNKNOWN_CMD 0xFFFFFFFFu
 
+/**
+ * RegulatorSetResult — outcome of the SET_VOLTAGE and START mailbox commands.
+ * While running, a new target is followed at SETPOINT_SLEW_MV_PER_CYCLE.
+ */
+typedef enum
+{
+    REGULATOR_SET_OK           = 0u,
+    REGULATOR_SET_OUT_OF_RANGE = 1u, /**< outside SETPOINT_MIN_MV..SETPOINT_MAX_MV */
+    REGULATOR_SET_NOT_IDLE     = 2u, /**< START only from IDLE                     */
+    REGULATOR_SET_START_FAILED = 3u  /**< START left the regulator not RUNNING    */
+} RegulatorSetResult;
+
 typedef struct
 {
     volatile uint32_t request;     /**< RegulatorDebugCmd; 0 = idle       */
     volatile uint32_t result;      /**< result of the last command        */
     volatile uint32_t done_count;  /**< incremented after each command    */
     volatile uint32_t last_cmd;    /**< last command executed             */
+    volatile uint32_t arg;         /**< argument, written before request  */
 } RegulatorDebugMailbox;
 
 extern RegulatorDebugMailbox regulator_debug;

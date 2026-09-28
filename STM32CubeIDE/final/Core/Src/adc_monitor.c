@@ -118,8 +118,16 @@ void adc_monitor_trigger_vin(void)
 {
     /* Start a single software-triggered ADC2 conversion.
      * Non-blocking: conversion runs asynchronously.  Read the result with
-     * adc_monitor_read_vin_result() after the estimated conversion time.   */
-    HAL_ADC_Start(&hadc2);
+     * adc_monitor_read_vin_result() after the estimated conversion time.
+     * Register-level once ADC2 is enabled: HAL_ADC_Start at -O0 cost
+     * several microseconds of the PID ISR (2026-09-28 evening).           */
+    if ((ADC2->CR & ADC_CR_ADEN) == 0u)
+    {
+        HAL_ADC_Start(&hadc2);   /* first call enables the ADC */
+        return;
+    }
+    ADC2->ISR = ADC_ISR_EOC | ADC_ISR_EOS | ADC_ISR_OVR;   /* write-1-to-clear */
+    ADC2->CR |= ADC_CR_ADSTART;
 }
 
 void adc_monitor_read_vin_result(void)
@@ -127,10 +135,18 @@ void adc_monitor_read_vin_result(void)
     /* Poll for conversion complete (with a short timeout).
      * At 42.5 MHz ADC clock, 2.5 + 12.5 = 15 cycles ≈ 354 ns.
      * We wait up to 1 ms; in practice the conversion is done in < 1 µs.    */
-    if (HAL_ADC_PollForConversion(&hadc2, 1u) == HAL_OK)
+    /* A bounded spin, not HAL_ADC_PollForConversion: its 1 ms timeout reads
+     * HAL_GetTick(), which cannot advance inside this ISR (the HAL timebase
+     * interrupt is lower priority).  A missed conversion keeps the last
+     * V_in.                                                               */
+    for (uint32_t spin = 0u; spin < 2000u; spin++)
     {
-        uint16_t raw = (uint16_t)HAL_ADC_GetValue(&hadc2);
-        adc_measurements.v_in_mv = scale_voltage_mv(raw, VS_MON_FULL_SCALE_MV);
+        if (ADC2->ISR & ADC_ISR_EOC)
+        {
+            uint16_t raw = (uint16_t)ADC2->DR;   /* clears EOC */
+            adc_measurements.v_in_mv = scale_voltage_mv(raw, VS_MON_FULL_SCALE_MV);
+            break;
+        }
     }
 }
 
