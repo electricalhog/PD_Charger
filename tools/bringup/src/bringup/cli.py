@@ -288,6 +288,10 @@ def build_parser() -> argparse.ArgumentParser:
     g = rg.add_parser("stop", help="controlled stop: outputs off, input/output path off"); g.add_argument("--timeout", type=float, default=3.0)
     g = rg.add_parser("bench-pwm", help="open-loop gate-signal test (IDLE, input path off): TA1/TA2/TB1/TB2 at PER/CMP2/CMP3 + dead-time")
     g.add_argument("action", choices=["on", "off"]); g.add_argument("--timeout", type=float, default=3.0)
+    g = rg.add_parser("set-voltage", help="new target (mV) while running or idle; the firmware slews to it")
+    g.add_argument("mv", type=int); g.add_argument("--timeout", type=float, default=3.0)
+    g = rg.add_parser("start", help="set the target (mV) and start from IDLE (after stop or clear-fault)")
+    g.add_argument("mv", type=int); g.add_argument("--timeout", type=float, default=5.0)
 
     # scope
     sc = sub.add_parser("scope", help="Rigol DS1054Z").add_subparsers(dest="op", required=True)
@@ -353,7 +357,7 @@ EFFECTS = {
     "probe list": "read", "probe reset": "actuate", "flash": "actuate",
     "sym": "read", "layout": "read", "mem read": "read", "mem write": "actuate",
     "regulator status": "read", "regulator clear-fault": "actuate", "regulator stop": "actuate",
-    "regulator bench-pwm": "actuate",
+    "regulator bench-pwm": "actuate", "regulator set-voltage": "actuate", "regulator start": "actuate",
     "scope analyze": "read", "scope idn": "read", "scope state": "read", "scope measure": "read",
     "scope delay": "read", "scope screenshot": "read", "scope capture": "actuate",
     "la scan": "read", "la decoders": "read", "la decode": "read", "la edges": "read", "la capture": "read",
@@ -435,7 +439,7 @@ def dispatch(cfg: dict, a) -> dict:
         if a.op == "status":
             return regulator.status(cfg)
         name = f"bench-pwm-{a.action}" if a.op == "bench-pwm" else a.op
-        return regulator.command(cfg, name, a.timeout, getattr(a, "force", False))
+        return regulator.command(cfg, name, a.timeout, getattr(a, "force", False), getattr(a, "mv", None))
     if c == "scope":
         return cmd_scope(cfg, a)
     if c == "la":

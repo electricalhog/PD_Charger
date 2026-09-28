@@ -51,7 +51,15 @@ FAULT_BITS = {
     0x10: ("SW_VIN_RANGE", "V_in out of range for the selected mode"),
     0x20: ("SW_BACKSTOP", "too many consecutive cycle-by-cycle backstop events"),
 }
-CMD = {"clear-fault": 1, "stop": 2, "bench-pwm-on": 3, "bench-pwm-off": 4}
+CMD = {"clear-fault": 1, "stop": 2, "bench-pwm-on": 3, "bench-pwm-off": 4, "set-voltage": 5, "start": 6}
+ARG_CMDS = ("set-voltage", "start")   # take a millivolt argument in regulator_debug.arg
+MODES = {0: "BUCK", 1: "BOOST", 2: "BUCK_BOOST"}
+SET_RESULTS = {
+    0: ("OK", ""),
+    1: ("OUT_OF_RANGE", "outside the firmware's SETPOINT_MIN_MV..SETPOINT_MAX_MV"),
+    2: ("NOT_IDLE", "start only from IDLE: stop the regulator or clear the fault first"),
+    3: ("START_FAILED", "regulator_start() did not reach RUNNING: see status (fault source, input lines)"),
+}
 BENCH_RESULTS = {
     0: ("OK", ""),
     1: ("NOT_IDLE", "bench PWM is only allowed from IDLE (stop the regulator / clear the fault first)"),
@@ -76,6 +84,10 @@ COOLDOWN_FW_MS = 150
 
 _VARS = ["regulator_state", "regulator_last_fault_source", "regulator_fault_tick_ms", "regulator_debug", "uwTick",
          "adc_measurements", "regulator_bench_pwm_active"]
+# Optional control telemetry: read when the firmware has the symbol.
+_CONTROL = {"regulator_mode": "mode", "target_voltage_mv": "target_mv", "regulator_commanded_mv": "commanded_mv",
+            "regulator_vin_filt_mv": "vin_filtered_mv", "regulator_on_time_ns": "on_time_ns",
+            "regulator_pulses_skipped": "pulses_skipped"}
 
 
 def _u(data: bytes) -> int:
@@ -88,7 +100,7 @@ def read_raw(cfg: dict) -> dict:
     if "regulator_debug" in missing:
         raise ToolError("firmware has no regulator_debug mailbox; flash a build from the agentic-bringup-tools branch",
                         missing=missing)
-    names = [v for v in _VARS if v in syms]
+    names = [v for v in list(_VARS) + list(_CONTROL) if v in syms]
     regions = [syms[v] for v in names] + [(GPIOA_IDR, 4), (GPIOC_ODR, 4), (HRTIM_ISR, 16)]
     data = probe.read_regions(cfg, regions)
     raw = dict(zip(names, data[:len(names)]))
@@ -97,7 +109,7 @@ def read_raw(cfg: dict) -> dict:
 
 
 def decode(raw: dict) -> dict:
-    mbox = struct.unpack("<4I", raw["regulator_debug"])
+    mbox = struct.unpack_from("<4I", raw["regulator_debug"])   # newer firmware appends arg
     idr, odr = _u(raw["gpioa_idr"]), _u(raw["gpioc_odr"])
     isr, _icr, ier, oenr = struct.unpack("<4I", raw["hrtim"])
     tick = _u(raw["uwTick"])
@@ -122,6 +134,13 @@ def decode(raw: dict) -> dict:
         "mailbox": {"request": mbox[0], "result": mbox[1], "done_count": mbox[2], "last_cmd": mbox[3]},
         "uptime_ms": tick,
     }
+    ctl = {}
+    for sym, key in _CONTROL.items():
+        if sym in raw:
+            v = _u(raw[sym])
+            ctl[key] = MODES.get(v, v) if key == "mode" else v
+    if ctl:
+        s["control"] = ctl
     if "adc_measurements" in raw:
         v_out, v_in, i_l, i_out, i_in = struct.unpack("<5I", raw["adc_measurements"])
         s["adc"] = {"v_in_mv": v_in, "v_out_mv": v_out, "i_inductor_ma": i_l, "i_out_ma": i_out, "i_in_ma": i_in,
@@ -171,7 +190,7 @@ def status(cfg: dict) -> dict:
     return {"ok": True, **decode(read_raw(cfg)), "protection": PROTECTION}
 
 
-def command(cfg: dict, name: str, timeout: float = 3.0, force: bool = False) -> dict:
+def command(cfg: dict, name: str, timeout: float = 3.0, force: bool = False, mv: int | None = None) -> dict:
     before = decode(read_raw(cfg))
     mb = before["mailbox"]
     if mb["request"]:
@@ -184,7 +203,13 @@ def command(cfg: dict, name: str, timeout: float = 3.0, force: bool = False) -> 
             raise ToolError("previous clear-fault hit a repeat ADM1270 over-current; refusing to re-energize VS again "
                             "without --force (a short on VS would be hit every attempt)", status=before)
 
-    addr = probe.symbols(cfg)["regulator_debug"][0]
+    addr, size = probe.symbols(cfg)["regulator_debug"]
+    if name in ARG_CMDS:
+        if mv is None:
+            raise ToolError(f"'{name}' needs a voltage in mV")
+        if size < 20:
+            raise ToolError(f"firmware mailbox has no arg field: '{name}' needs a newer build", mailbox_size=size)
+        probe.mem_write(cfg, f"{addr + 16:#x}", str(int(mv)), "u32")
     probe.mem_write(cfg, f"{addr:#x}", str(CMD[name]), "u32")
     t0 = time.monotonic()
     while True:
@@ -204,6 +229,11 @@ def command(cfg: dict, name: str, timeout: float = 3.0, force: bool = False) -> 
     elif name == "clear-fault":
         code, text = CLEAR_RESULTS.get(res, (str(res), "unknown result"))
         out.update(ok=code in ("OK", "NOT_IN_FAULT"), result=code, explanation=text)
+    elif name in ARG_CMDS:
+        code, text = SET_RESULTS.get(res, (str(res), "unknown result"))
+        out.update(ok=code == "OK", result=code, mv=mv, **({"explanation": text} if text else {}))
+        if code == "OK" and name == "set-voltage":
+            out["note"] = "the firmware slews to the new target (SETPOINT_SLEW_MV_PER_CYCLE); poll status for commanded_mv"
     elif name.startswith("bench-pwm"):
         code, text = BENCH_RESULTS.get(res, (str(res), "unknown result"))
         out.update(ok=code == "OK", result=code, **({"explanation": text} if text else {}))
