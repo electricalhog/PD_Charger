@@ -177,6 +177,13 @@ volatile uint16_t regulator_skip_raw_threshold = 0xFFFFu;
  * pulse credit misses are slow (run 31's refresh pumping, about 6 mV per
  * period).  A wider run restarts from its latest sample.                 */
 #define VOUT_RISE_PERSIST_SPREAD_RAW 15u
+/* ...or if the run only rises, by at most this much per period (52 is 1 V).
+ * A spread limit alone blocked a real boost overshoot the same evening: two
+ * low samples pulled the estimate down, pulses resumed, and V_out climbed
+ * 24.1 29.1 29.9 30.5 30.9 31.5 V in 0.4 to 0.8 V steps while the estimate
+ * crept on pulse credit (SW_OVP at 31.4 V estimate).  Glitch runs go up and
+ * come back down.                                                        */
+#define VOUT_RISE_STEP_MAX_RAW 52u
 volatile uint16_t regulator_vout_est_raw = 0u;
 /** Raw counts the estimate may still rise by, earned by enabled pulses. */
 static volatile uint8_t vout_rise_budget_raw = 0u;
@@ -185,6 +192,8 @@ static volatile uint8_t vout_rise_budget_raw = 0u;
 static volatile uint8_t  vout_above_periods = 0u;
 static volatile uint16_t vout_above_min_raw = 0u;
 static volatile uint16_t vout_above_max_raw = 0u;
+static volatile uint16_t vout_above_last_raw = 0u;
+static volatile bool     vout_above_rising   = true;
 
 /* Boost precharge (2026-09-28, runs 32 and 33).  Starting boost directly
  * turns Q1, the input leg's static switch, fully on into an empty output:
@@ -1067,15 +1076,25 @@ void regulator_hrtim_tima_period_isr(void)
             {
                 vout_above_min_raw = raw;
                 vout_above_max_raw = raw;
+                vout_above_rising  = true;
             }
+            else if (raw < vout_above_last_raw ||
+                     (uint16_t)(raw - vout_above_last_raw) > VOUT_RISE_STEP_MAX_RAW)
+            {
+                vout_above_rising = false;
+            }
+            vout_above_last_raw = raw;
             if (raw < vout_above_min_raw) { vout_above_min_raw = raw; }
             if (raw > vout_above_max_raw) { vout_above_max_raw = raw; }
             vout_above_periods++;
-            if ((uint16_t)(vout_above_max_raw - vout_above_min_raw) > VOUT_RISE_PERSIST_SPREAD_RAW)
+            if (!vout_above_rising &&
+                (uint16_t)(vout_above_max_raw - vout_above_min_raw) > VOUT_RISE_PERSIST_SPREAD_RAW)
             {
-                /* not one level: a glitch run; count again from here */
+                /* neither one level nor a steady rise: a glitch run; count
+                 * again from here */
                 vout_above_min_raw = raw;
                 vout_above_max_raw = raw;
+                vout_above_rising  = true;
                 vout_above_periods = 1u;
             }
             if (vout_above_periods >= VOUT_RISE_PERSIST_PERIODS)
