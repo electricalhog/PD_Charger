@@ -6,8 +6,9 @@
  * ADC2: Single software-triggered conversion (VS_MON / V_in), triggered
  *       from the TIM7 PID ISR.
  *
- * Scaling formulas (§14.2, Appendix D):
- *   V_mV  = ADC_raw × 60000 / 4096  ≈ 14.65 mV/count
+ * Scaling formulas (§14.2, Appendix D), voltages with the per-channel
+ * bench-calibrated full scales in regulator_config.h:
+ *   V_mV  = ADC_raw × VD_MON_FULL_SCALE_MV (or VS_MON_...) / 4096
  *   I_mA (IL, IS) = ADC_raw × 13200 / 4096  ≈ 3.22 mA/count
  *   I_mA (ID)     = ADC_raw × 5500  / 4096  ≈ 1.34 mA/count
  */
@@ -35,15 +36,16 @@ volatile uint16_t adc1_dma_buffer[ADC1_DMA_BUFFER_LENGTH] = {0u};
 /**
  * scale_voltage_mv — Scale a 12-bit ADC count to millivolts.
  *
- * @param  raw  ADC count [0, 4095]
+ * @param  raw            ADC count [0, 4095]
+ * @param  full_scale_mv  the channel's calibrated full scale
+ *                        (VD_MON_FULL_SCALE_MV or VS_MON_FULL_SCALE_MV)
  * @return voltage in millivolts
  *
- * Derive: V_mV = raw × 60000 / 4096  (§14.2, Appendix D)
- *   Full-scale: 3.3 V ADC, 100k/5.82k divider → 60 V physical.
+ * Derive: V_mV = raw × full_scale_mv / 4096  (§14.2, Appendix D)
  */
-static inline uint32_t scale_voltage_mv(uint16_t raw)
+static inline uint32_t scale_voltage_mv(uint16_t raw, uint32_t full_scale_mv)
 {
-    return ((uint32_t)raw * ADC_VOLTAGE_FULL_SCALE_MV) / ADC_FULL_SCALE_COUNTS;
+    return ((uint32_t)raw * full_scale_mv) / ADC_FULL_SCALE_COUNTS;
 }
 
 /**
@@ -128,13 +130,14 @@ void adc_monitor_read_vin_result(void)
     if (HAL_ADC_PollForConversion(&hadc2, 1u) == HAL_OK)
     {
         uint16_t raw = (uint16_t)HAL_ADC_GetValue(&hadc2);
-        adc_measurements.v_in_mv = scale_voltage_mv(raw);
+        adc_measurements.v_in_mv = scale_voltage_mv(raw, VS_MON_FULL_SCALE_MV);
     }
 }
 
 void adc_monitor_scale_adc1_buffer(void)
 {
-    adc_measurements.v_out_mv      = scale_voltage_mv(adc1_dma_buffer[ADC1_DMA_INDEX_VD_MON]);
+    adc_measurements.v_out_mv      = scale_voltage_mv(adc1_dma_buffer[ADC1_DMA_INDEX_VD_MON],
+                                                      VD_MON_FULL_SCALE_MV);
     adc_measurements.i_inductor_ma = scale_current_il_ma(adc1_dma_buffer[ADC1_DMA_INDEX_IL_MON]);
     adc_measurements.i_out_ma      = scale_current_id_ma(adc1_dma_buffer[ADC1_DMA_INDEX_ID_MON]);
     adc_measurements.i_in_ma       = scale_current_il_ma(adc1_dma_buffer[ADC1_DMA_INDEX_IS_MON]);

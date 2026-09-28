@@ -405,6 +405,23 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
 #define SYNC_RECT_ENABLED 0u
 
 /**
+ * OUTPUT_SWITCH_ENABLED — Whether regulator_start() asserts OUTPUT_EN.
+ * Units  : boolean (0u or 1u)
+ * Value  : 0u (bench, 2026-09-28)
+ * Purpose: With 1u the power path drives OUTPUT_EN high with INPUT_EN, so
+ *          the Q5/Q6 output switch (through the R27/Q9 buffer Dan added
+ *          2026-09-28) connects VBUS, and with it the 2 W 33 ohm bench load.
+ *          With 0u OUTPUT_EN stays low for the whole run: the regulator runs
+ *          into VOUTa alone (the scope is before the output FETs, Dan
+ *          2026-09-27) and the load is out of circuit.  Set to 0u for the
+ *          boost runs, where 28 V into 33 ohm would be 24 W.  OUTPUT_DIS is
+ *          driven the same in either case.
+ * Adjust : 1u for buck runs that want the bench load; back to 1u for real
+ *          operation once the output switch is characterised.
+ */
+#define OUTPUT_SWITCH_ENABLED 0u
+
+/**
  * DCM_REFRESH_DEADTIME_NS — Gap between the low-side refresh pulse and the
  * high-side charge pulse on the same leg while SYNC_RECT_ENABLED is 0.
  * Units  : ns
@@ -428,17 +445,71 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
 /**
  * DCM_MAX_ON_TIME_NS — Charge-pulse length cap while SYNC_RECT_ENABLED is 0.
  * Units  : ns
- * Purpose: Run 6 (2026-09-27, 24 V in, no load) followed the soft-start
- *          ramp to 5 V, but its pulses were 1.1 to 1.5 us long (about 6 A
- *          peak) while the DAC asked for 0.7 A: the comparator path did not
- *          end the pulse where the threshold said, and one burst of four
- *          such pulses took V_out from 5.3 V to 7.2 V (SW_OVP).  Until
- *          IL_MON has been looked at on a scope, the CMP2 backstop is the
- *          on-time limit: 400 ns is about 1.6 A peak at 24 V in and 5 V out,
- *          6 uJ per pulse, 30 mV per pulse on 40 uF at 5 V.  The comparator
- *          may still end a pulse earlier.
+ * Purpose: The CMP2 backstop is the only on-time limit that has been seen
+ *          to act; the peak-current comparator has not yet been observed
+ *          ending a pulse (IL_MON has not been on a scope channel).  It
+ *          therefore sets the converter's authority.  Run 21 (2026-09-28,
+ *          24 V in, 33 ohm load, 5 V target) ran 406 ns pulses every
+ *          period with 8 percent skipped, the PID output saturated at
+ *          PID_OUTPUT_MAX, and V_out held at 4.79 V on the scope: 400 ns
+ *          delivers about 0.8 uC per pulse into the output (145 mA at
+ *          200 kHz), not the 1.25 uC the ideal ramp predicts, and could not
+ *          reach 5 V.  Charge per pulse scales about as the square of the
+ *          on-time, so 600 ns is about 1.8 uC (360 mA at 5 V) at about
+ *          2.5 A peak in L1 (IHLP-6767 4.7 uH) and Q1.  Run 6 (2026-09-27,
+ *          no load) had seen 1.1 to 1.5 us pulses at 6 A peak overshoot
+ *          the setpoint; those ran before the Q1 bootstrap starvation
+ *          (see SYNC_RECT_ENABLED) was understood, so they say nothing
+ *          about the comparator.
  */
-#define DCM_MAX_ON_TIME_NS 400u
+#define DCM_MAX_ON_TIME_NS 600u
+
+/**
+ * DCM_MIN_ON_TIME_NS — Shortest charge pulse the firmware will command while
+ *                      SYNC_RECT_ENABLED is 0.
+ * Units  : ns
+ * Purpose: The PID ISR sets Timer A CMP2 (the TA1 reset) each PID period
+ *          from its peak-current command through t_on = I_pk * L /
+ *          (V_in - V_out) (regulator.c, "Predicted on-time").  Below the
+ *          blanking window (HRTIM_BLANKING_NS_BUCK) the comparator could not
+ *          act anyway, and a shorter pulse than the gate drivers resolve
+ *          is not a smaller pulse, so the command floors here and pulse
+ *          skipping handles anything lighter.  Why the on-time is computed
+ *          at all: runs 22 and 26 (2026-09-28, 24 V in, 33 ohm load) ran
+ *          every pulse to the CMP2 backstop with DAC thresholds of 3 V and
+ *          280 mV alike, while run 25 with a 21 mV threshold trimmed pulses
+ *          to almost nothing.  The comparator path therefore works only for
+ *          thresholds below roughly 150 mV (0.6 A); IL_MON has not been on a
+ *          scope channel, so whether the INA281 output is slow, filtered or
+ *          clipped before PA1 is open.
+ */
+#define DCM_MIN_ON_TIME_NS 100u
+
+/**
+ * PULSE_SKIP_ABOVE_MV — How far above the setpoint pulse skipping engages
+ *                       while SYNC_RECT_ENABLED is 0.
+ * Units  : mV above the effective (soft-start) setpoint
+ * Purpose: In DCM the smallest pulse the modulator can make still moves
+ *          V_out, so at no load the only way down is to make no pulse; the
+ *          Timer A period ISR skips pulses while the V_out estimate is above
+ *          setpoint + this (SKIP_HYSTERESIS_RAW below it to
+ *          resume).  Skipping is the guard for that case only.  The PID owns
+ *          the setpoint through the peak-current DAC.  With the skip band
+ *          at the setpoint itself (runs 7 to 22) the estimate hovered just
+ *          under the setpoint, the PID saw a small positive error for ever
+ *          and railed at PID_OUTPUT_MAX, every pulse ran to the CMP2
+ *          backstop, and the converter was a burst-mode hysteretic loop
+ *          (run 22, 2026-09-28, 33 ohm load: 0.6 V ripple at 5 V, 57
+ *          percent of periods skipped).  200 mV is about two full buck
+ *          pulses at 5 V.  It was 4 percent until run 37 (2026-09-28, boost
+ *          24 V to 28 V, no load): there 4 percent is 1.12 V, a boost pulse
+ *          moves V_out only a few mV, and V_out sat at the skip threshold,
+ *          29.1 V, with the PID at its floor.  The band is set by what one
+ *          pulse does, which does not scale with the setpoint, so it is in
+ *          mV.  Must stay under the relative OVP margin at SETPOINT_MIN_MV
+ *          (asserted after OVP_RELATIVE_PCT).
+ */
+#define PULSE_SKIP_ABOVE_MV 200u
 
 /**
  * MAX_DUTY_CYCLE_PCT — Maximum allowed charge-phase duty cycle.
@@ -690,6 +761,8 @@ _Static_assert(PID_OUTPUT_MAX > PID_OUTPUT_MIN && PID_OUTPUT_MAX <= 4095,
  * Range  : [105, 150]
  */
 #define OVP_RELATIVE_PCT 110u
+_Static_assert(PULSE_SKIP_ABOVE_MV * 100u < SETPOINT_MIN_MV * (OVP_RELATIVE_PCT - 100u),
+               "pulse skipping must engage below the relative OVP");
 
 /**
  * UVP_RELATIVE_PCT — Relative output undervoltage threshold (% of setpoint).
@@ -726,6 +799,28 @@ _Static_assert(PID_OUTPUT_MAX > PID_OUTPUT_MIN && PID_OUTPUT_MAX <= 4095,
  * TODO(hardware): Verify during bring-up.
  */
 #define BOOST_VIN_MARGIN_MV 500u
+
+/**
+ * BOOST_PRECHARGE_BELOW_VIN_MV — How far under V_in the buck leg precharges
+ * the output before a boost start hands over to boost (regulator.c,
+ * boost_precharge).
+ * Units  : millivolts
+ * Value  : 2000 mV (2026-09-28, after runs 32 and 33 rang to 36 to 38 V at a
+ *          28 V target from an empty output)
+ * Purpose: Q1 turning fully on steps V_in minus V_out across L1 and C_out;
+ *          the undamped ring reaches up to twice that step above V_out and
+ *          Q3's reverse conduction holds the peak.  2 V under 24 V in is at
+ *          most about 26 V, under a 28 V target.
+ */
+#define BOOST_PRECHARGE_BELOW_VIN_MV 2000u
+
+/**
+ * BOOST_PRECHARGE_DONE_MARGIN_MV — How close V_out must be to the precharge
+ * cap before the hand-over to boost.
+ * Units  : millivolts
+ * Value  : 500 mV
+ */
+#define BOOST_PRECHARGE_DONE_MARGIN_MV 500u
 
 /**
  * MAX_CONSECUTIVE_BACKSTOPS_DEFAULT — Default consecutive-backstop fault
@@ -766,15 +861,24 @@ _Static_assert(PID_OUTPUT_MAX > PID_OUTPUT_MIN && PID_OUTPUT_MAX <= 4095,
 #define VREF_MV 3300u
 
 /**
- * ADC_VOLTAGE_FULL_SCALE_MV — Full-scale physical voltage for VD_MON / VS_MON.
+ * VD_MON_FULL_SCALE_MV / VS_MON_FULL_SCALE_MV — Full-scale physical voltage
+ * for the two voltage channels, one constant each, calibrated on the bench.
  * Units  : millivolts
- * Derive : Divider ratio = R_low / (R_high + R_low)
- *          = 5820 / (100000 + 5820) = 5820 / 105820 = 0.05500.
- *          ADC full-scale = 3.3 V → full-scale physical voltage =
- *          3.3 V / 0.05500 = 60.0 V.  (§3.4, Appendix D)
- *          Scaling: V_mV = ADC_raw × 60000 / 4096 ≈ 14.65 mV/count.
+ * Derive : Nominal, from the divider: R_low / (R_high + R_low)
+ *          = 5820 / (100000 + 5820) = 0.05500; 3.3 V / 0.05500 = 60.0 V, so
+ *          V_mV = raw × 60000 / 4096 ≈ 14.65 mV/count (§3.4, Appendix D).
+ *          Measured 2026-09-28 07:2x against the DS1104Z (10x probes) with
+ *          the regulator running buck at maximum pulse into 33 ohm: VD_MON
+ *          averaged 3794 mV over 512 PID samples while CH4 on TP2 averaged
+ *          4.955 V (ratio 1.306; the same ratio, 1.27 to 1.31, at 5.0 V in
+ *          run 14 and at 7.2 V idle), and VS_MON averaged 25278 mV while CH1
+ *          on TP1 averaged 23.95 V (ratio 0.947).  Dan, 2026-09-28 07:36:
+ *          the oscilloscope is right, the ADC needs calibration.  Gain only;
+ *          no offset was resolvable from those points.  The cause of the
+ *          30 percent VD_MON error is not known.
  */
-#define ADC_VOLTAGE_FULL_SCALE_MV 60000u
+#define VD_MON_FULL_SCALE_MV 78400u   /* 60000 × 1.306 */
+#define VS_MON_FULL_SCALE_MV 56800u   /* 60000 × 0.947 */
 
 /**
  * ADC_IL_FULL_SCALE_MA — Full-scale physical current for IL_MON / IS_MON.

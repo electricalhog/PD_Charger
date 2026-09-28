@@ -41,7 +41,7 @@
 /** Default task test voltage (millivolts).
  *  The default task bypasses PD negotiation and regulates to this voltage
  *  directly, enabling standalone regulation testing. */
-#define DEFAULT_TASK_TEST_VOLTAGE_MV  5000u   /* 2026-09-27 first closed-loop run: Dan chose 5 V (24 V in, about 21 percent duty) */
+#define DEFAULT_TASK_TEST_VOLTAGE_MV  28000u  /* 2026-09-28 first boost run: 24 V in, output switch off (OUTPUT_SWITCH_ENABLED 0). Buck runs 1 to 29 used 5000u. */
 
 /* USER CODE END PD */
 

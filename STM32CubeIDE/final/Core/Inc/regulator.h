@@ -158,6 +158,7 @@ extern volatile uint32_t regulator_fault_tick_ms;
  * Telemetry: updated by TIM7 ISR.
  */
 extern volatile uint16_t regulator_pid_output_dac_counts;
+extern volatile uint16_t regulator_on_time_ns;
 
 /**
  * regulator_pid_error_mv — latest PID error (setpoint − V_out) in mV.
