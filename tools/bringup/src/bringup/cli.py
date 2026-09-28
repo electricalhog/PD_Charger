@@ -14,7 +14,7 @@ import traceback
 from pathlib import Path
 
 from . import build as build_mod
-from . import cubemx, logic, probe, regulator, serialmon, usercode
+from . import cubemx, logic, probe, profile, regulator, serialmon, usercode
 from .config import REPO_ROOT, ToolError, cubemx_exe, gdb_exe, load_config, paths, programmer_exe, rel, run
 from .ioc import Ioc, diff_ioc
 
@@ -279,6 +279,10 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--save", action="store_true")
     g = m.add_parser("write"); g.add_argument("target"); g.add_argument("value"); g.add_argument("--type", default="u32")
 
+    g = sub.add_parser("profile", help="statistical CPU profile over SWD (DWT PC sampling): time per ISR/task and function")
+    g.add_argument("--samples", type=int, default=1000); g.add_argument("--top", type=int, default=25)
+    g.add_argument("--lines", type=int, default=0, help="also the N hottest PCs with source lines (addr2line)")
+
     # regulator / input protection
     rg = sub.add_parser("regulator", help="state, ADM1270 input protection, fault recovery").add_subparsers(dest="op", required=True)
     rg.add_parser("status", help="state, fault source, protection lines, HRTIM fault/output state, diagnosis")
@@ -361,7 +365,7 @@ EFFECTS = {
     "cubemx generate": "write", "cubemx script": "write", "build": "write",
     "probe list": "read", "probe reset": "actuate", "flash": "actuate",
     "sym": "read", "layout": "read", "mem read": "read", "mem write": "actuate",
-    "regulator status": "read", "regulator clear-fault": "actuate", "regulator stop": "actuate",
+    "profile": "read", "regulator status": "read", "regulator clear-fault": "actuate", "regulator stop": "actuate",
     "regulator bench-pwm": "actuate", "regulator set-voltage": "actuate", "regulator sweep": "actuate", "regulator start": "actuate",
     "scope analyze": "read", "scope idn": "read", "scope state": "read", "scope measure": "read",
     "scope delay": "read", "scope screenshot": "read", "scope capture": "actuate",
@@ -440,6 +444,8 @@ def dispatch(cfg: dict, a) -> dict:
         if a.op == "read":
             return probe.mem_read(cfg, a.target, a.size, a.type, a.count, a.save)
         return probe.mem_write(cfg, a.target, a.value, a.type)
+    if c == "profile":
+        return profile.profile(cfg, a.samples, a.top, a.lines)
     if c == "regulator":
         if a.op == "status":
             return regulator.status(cfg)

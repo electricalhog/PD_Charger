@@ -137,6 +137,13 @@ bu regulator stop          # outputs off, input/output path off (keeps a latched
 bu regulator set-voltage MV  # new target; the firmware slews to it (status: control.commanded_mv)
 bu regulator start MV        # set the target and start from IDLE (after stop / clear-fault)
 ```
+`bu profile --samples 2000 --lines 30` is a statistical CPU profile taken over
+SWD while the core runs (DWT PC sampling): time per ISR/task and per function.
+Contexts and functions are independent statistics (separate reads), so never
+read a function as belonging to the context printed next to it. Use it before
+adding work to an ISR: the 200 kHz Timer A ISR and the 20 kHz PID ISR share
+one core with FreeRTOS and the USBPD stack.
+
 `set-voltage` and `start` need firmware with the 20-byte `regulator_debug`
 mailbox (an `arg` word after `last_cmd`); older builds get a clear refusal.
 `status` adds a `control` block (mode, target, commanded, filtered V_in,
