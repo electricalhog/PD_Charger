@@ -90,3 +90,28 @@ def test_read_regions_single_session(monkeypatch):
     got = probe.read_regions({}, [(0x20006809, 1), (0x2000680C, 4), (0x48000010, 4)])
     assert len(calls) == 1 and calls[0].count("-r32") == 3
     assert got == [b"\x00", struct.pack("<I", 1000), struct.pack("<I", 0x9000)]
+
+
+def test_set_voltage_writes_arg_then_request(monkeypatch):
+    """Newer firmware: 20-byte mailbox, arg at +16 written before the request."""
+    state = {"raw": _raw(state=2, mbox=(0, 0, 3, 0)), "writes": []}
+    monkeypatch.setattr(regulator, "read_raw", lambda cfg: state["raw"])
+    monkeypatch.setattr(probe, "symbols", lambda cfg: {"regulator_debug": (0x20006818, 20)})
+
+    def fake_write(cfg, target, value, dtype):
+        state["writes"].append((target, int(value)))
+        if target == "0x20006818":
+            state["raw"] = _raw(state=2, mbox=(0, 0, 4, int(value)))
+
+    monkeypatch.setattr(probe, "mem_write", fake_write)
+    monkeypatch.setattr(regulator.time, "sleep", lambda s: None)
+    out = regulator.command({}, "set-voltage", mv=24000)
+    assert state["writes"] == [("0x20006828", 24000), ("0x20006818", 5)]
+    assert out["ok"] and out["result"] == "OK" and out["mv"] == 24000
+
+
+def test_set_voltage_refuses_old_mailbox(monkeypatch):
+    monkeypatch.setattr(regulator, "read_raw", lambda cfg: _raw(state=2))
+    monkeypatch.setattr(probe, "symbols", lambda cfg: {"regulator_debug": (0x20006818, 16)})
+    with pytest.raises(ToolError, match="no arg field"):
+        regulator.command({}, "set-voltage", mv=24000)

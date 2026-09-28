@@ -134,7 +134,13 @@ bu regulator status        # state, fault source, VS_GOOD/IS_GOOD/INPUT_EN, HRTI
 bu regulator clear-fault   # firmware: 150 ms ADM1270 cool-down -> INPUT_EN toggle -> verify VS_GOOD/IS_GOOD
                            #   -> input path off, FAULT -> IDLE. Result OK / INPUT_NOT_GOOD / INPUT_OVERCURRENT
 bu regulator stop          # outputs off, input/output path off (keeps a latched FAULT)
+bu regulator set-voltage MV  # new target; the firmware slews to it (status: control.commanded_mv)
+bu regulator start MV        # set the target and start from IDLE (after stop / clear-fault)
 ```
+`set-voltage` and `start` need firmware with the 20-byte `regulator_debug`
+mailbox (an `arg` word after `last_cmd`); older builds get a clear refusal.
+`status` adds a `control` block (mode, target, commanded, filtered V_in,
+on-time, pulse skipping) when the firmware has those symbols.
 `bu regulator bench-pwm on|off` runs the gate signals open-loop for scope
 work with no power stage (IDLE, input path off, fault lines high): TA1 = CMP2
 backstop, TB1 = static leg, configured dead-time. Validated 2026-09-27:

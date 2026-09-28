@@ -25,7 +25,7 @@ tools/bringup/bu <command> [<subcommand>] [args...]
 
 ### Wrapping as an MCP server
 
-`bu schema` lists all 54 commands with arguments (name, flag, positional,
+`bu schema` lists all 56 commands with arguments (name, flag, positional,
 required, kind `flag|value|list`, type, choices, default, help) and an
 **effect class** you can map to MCP tool annotations and a confirmation policy:
 
@@ -79,6 +79,8 @@ Times and JSON sizes are measured (typical). "Artifact" = file written to `bring
 | `regulator clear-fault [--force]` | actuate | firmware: ADM1270 cool-down → INPUT_EN toggle → verify → FAULT→IDLE | 0.1–0.5 s | 1.5 kB | – |
 | `regulator stop` | actuate | outputs off, power path off | 0.2 s | 1.5 kB | – |
 | `regulator bench-pwm on\|off` | actuate | open-loop gate test (IDLE, input path off, fault lines high) | 0.2 s | 1.5 kB | – |
+| `regulator set-voltage MV` | actuate | new regulation target through the mailbox (`arg` word); firmware slews to it | 0.3 s | 1.5 kB | – |
+| `regulator start MV` | actuate | set target and start from IDLE | 0.3–1 s | 1.5 kB | – |
 | `scope idn` / `scope state` | read | identity / full channel+timebase+trigger+acquire state | 0.1 s / 1.2 s | < 1 kB / 1 kB | – |
 | `scope chan N …`, `timebase`, `trigger`, `acquire` | actuate | configure; returns SCPI error queue + new state | 0.3–1.5 s | < 1 kB | – |
 | `scope run\|stop\|single\|force\|clear\|autoscale\|reset` | actuate | acquisition control | 0.1–3 s | < 1 kB | – |
@@ -169,7 +171,7 @@ No root access is needed at runtime; the only sudo step is installing the scope'
 ### Agent / MCP policy
 - **`actuate` commands change real hardware.** With the power stage attached,
   `flash`, `mem write` (setpoints, gains, HRTIM registers), `regulator
-  clear-fault|bench-pwm` and `probe reset` need a human in the loop (see the
+  clear-fault|bench-pwm|set-voltage|start` and `probe reset` need a human in the loop (see the
   skill's safety rules). On a bare Nucleo they are harmless.
 - `mem write` to write-only/self-clearing peripheral registers returns
   `ok: true, verified: false` (the programmer's read-back check can't pass);
