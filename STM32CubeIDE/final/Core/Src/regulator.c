@@ -380,17 +380,19 @@ volatile uint16_t regulator_on_time_ns = 0u;
 static uint32_t trip_delay_comp_counts(uint32_t v_in_mv, uint32_t v_out_mv,
                                        RegulatorMode mode)
 {
-    uint64_t dv_mv;
+    /* 32-bit: dv <= 65 V * 200 ns fits easily, and a 64-bit divide
+     * (__udivmoddi4) in the PID ISR was 6 % of the CPU (bu profile).     */
+    uint32_t dv_mv;
     if (mode == REGULATOR_MODE_BUCK)
     {
-        dv_mv = (v_in_mv > v_out_mv) ? (uint64_t)(v_in_mv - v_out_mv) : 0u;
+        dv_mv = (v_in_mv > v_out_mv) ? (v_in_mv - v_out_mv) : 0u;
     }
     else
     {
-        dv_mv = (uint64_t)v_in_mv;
+        dv_mv = v_in_mv;
     }
-    uint64_t overshoot_ma = dv_mv * (uint64_t)PEAK_TRIP_DELAY_NS / (uint64_t)INDUCTOR_VALUE_NH;
-    return (uint32_t)(overshoot_ma * (uint64_t)DAC_COUNTS_PER_AMP / 1000u);
+    uint32_t overshoot_ma = dv_mv * PEAK_TRIP_DELAY_NS / INDUCTOR_VALUE_NH;
+    return overshoot_ma * DAC_COUNTS_PER_AMP / 1000u;
 }
 
 uint8_t max_consecutive_backstops          = (uint8_t)MAX_CONSECUTIVE_BACKSTOPS_DEFAULT;
@@ -1056,7 +1058,9 @@ void regulator_hrtim_tima_period_isr(void)
 
     /* Reload DAC3 CH1 with current PID peak value.
      * Must happen before the blanking window expires (§7.6).              */
-    slope_comp_reload_dac_peak();
+#if SLOPE_COMP_ENABLED
+    slope_comp_reload_dac_peak();   /* the ramp restarts from the peak each period */
+#endif
 
     /* Glitch-free V_out for this period; see regulator_vout_est_raw.  The
      * estimate follows the sample, but rises only by the credit the pulses
@@ -1428,7 +1432,13 @@ void regulator_pid_tim7_isr(void)
 
     /* --- 6. Update slope compensation peak and step --- */
     slope_comp_set_peak(dac_counts);
+#if SLOPE_COMP_ENABLED
     slope_comp_update_step(v_out_mv, v_in_mv, (SlopeCompMode)regulator_mode);
+#else
+    /* No ramp: the DAC holds the peak until the next PID cycle, so it is
+     * written here rather than in the 200 kHz period ISR.                */
+    slope_comp_reload_dac_peak();
+#endif
 
     /* --- 6b. Predicted on-time (buck, SYNC_RECT_ENABLED 0) ---
      * The peak-current comparator ends a pulse only when the DAC threshold
@@ -1477,7 +1487,7 @@ void regulator_pid_tim7_isr(void)
         const uint32_t window_ns = (uint32_t)(1000000000ull / HRTIM_SWITCHING_FREQ_HZ)
                                    - (BOOTSTRAP_REFRESH_NS + DCM_REFRESH_DEADTIME_NS)
                                    - DCM_WINDOW_MARGIN_NS;
-        uint32_t t_dcm_ns = (uint32_t)(((uint64_t)window_ns * dis_mv) / (chg_mv + dis_mv));
+        uint32_t t_dcm_ns = (window_ns * dis_mv) / (chg_mv + dis_mv);   /* < 5000 * 70000 */
         if (t_on_ns > t_dcm_ns)            { t_on_ns = t_dcm_ns; }
         if (t_on_ns > DCM_ON_TIME_CEIL_NS) { t_on_ns = DCM_ON_TIME_CEIL_NS; }
         if (t_on_ns < DCM_MIN_ON_TIME_NS)  { t_on_ns = DCM_MIN_ON_TIME_NS; }
@@ -1516,8 +1526,8 @@ void regulator_pid_tim7_isr(void)
      * respected.  Raw counts = mV * 4096 / the calibrated VD_MON full
      * scale.                                                               */
     regulator_skip_raw_threshold =
-        (uint16_t)(((uint64_t)(effective_setpoint_mv + PULSE_SKIP_ABOVE_MV)
-                    * ADC_FULL_SCALE_COUNTS) / VD_MON_FULL_SCALE_MV);
+        (uint16_t)(((effective_setpoint_mv + PULSE_SKIP_ABOVE_MV)
+                    * ADC_FULL_SCALE_COUNTS) / VD_MON_FULL_SCALE_MV);   /* < 70000 * 4096 */
 
     /* --- 8. Software safety checks (§10.2) ---
      * Checked against the slewed target (step 4a), not the soft-start ramp: on the
