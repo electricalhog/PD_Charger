@@ -407,7 +407,8 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
 /**
  * OUTPUT_SWITCH_ENABLED — Whether regulator_start() asserts OUTPUT_EN.
  * Units  : boolean (0u or 1u)
- * Value  : 0u (bench, 2026-09-28)
+ * Value  : 1u (bench, 2026-09-28 evening: boost at 28 V into a 330 ohm
+ *          load, 85 mA / 2.4 W; Dan)
  * Purpose: With 1u the power path drives OUTPUT_EN high with INPUT_EN, so
  *          the Q5/Q6 output switch (through the R27/Q9 buffer Dan added
  *          2026-09-28) connects VBUS, and with it the 2 W 33 ohm bench load.
@@ -419,7 +420,22 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
  * Adjust : 1u for buck runs that want the bench load; back to 1u for real
  *          operation once the output switch is characterised.
  */
-#define OUTPUT_SWITCH_ENABLED 0u
+#define OUTPUT_SWITCH_ENABLED 1u
+
+/**
+ * OUTPUT_CONNECT_MARGIN_MV — How close V_out must be to the target before
+ *          the PID ISR asserts OUTPUT_EN (step 4c in regulator.c).
+ * Units  : mV
+ * Value  : 1000u (2026-09-28)
+ * Purpose: With OUTPUT_EN asserted at start, boost 28 V into 330 ohm
+ *          faulted SW_UVP after 5 ms: the buck precharge sat at the 600 ns
+ *          DCM_MAX_ON_TIME_NS cap and V_out stalled at 13.6 V, because
+ *          charge per pulse falls as V_out nears V_in and the load took it
+ *          all.  Connecting the load only once the final mode is regulating
+ *          keeps the start at no load (runs 30 to 38) and makes the load a
+ *          step the loop has to hold.
+ */
+#define OUTPUT_CONNECT_MARGIN_MV 1000u
 
 /**
  * DCM_REFRESH_DEADTIME_NS — Gap between the low-side refresh pulse and the

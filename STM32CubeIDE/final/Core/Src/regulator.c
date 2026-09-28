@@ -409,6 +409,10 @@ static volatile uint32_t softstart_setpoint_mv = 0u;
 /** True while the soft-start ramp is in progress. */
 static volatile bool softstart_active = false;
 
+/* OUTPUT_EN is asserted by the PID ISR (step 4c) once V_out is regulating,
+ * not by power_path_enable(); see OUTPUT_CONNECT_MARGIN_MV.              */
+static volatile bool output_switch_on = false;
+
 /** Increment per PID cycle to reach target in SOFT_START_RAMP_MS (§11.2). */
 static uint32_t softstart_increment_mv = 0u;
 
@@ -1192,6 +1196,17 @@ void regulator_pid_tim7_isr(void)
         }
     }
 
+    /* --- 4c. Connect the output (see OUTPUT_CONNECT_MARGIN_MV) ---
+     * Only in the final mode, after soft-start, with V_out near target.  */
+#if OUTPUT_SWITCH_ENABLED
+    if (!output_switch_on && !boost_precharge && !softstart_active &&
+        v_out_mv + OUTPUT_CONNECT_MARGIN_MV >= target_voltage_mv)
+    {
+        HAL_GPIO_WritePin(PIN_OUTPUT_EN_PORT, PIN_OUTPUT_EN_PIN, GPIO_PIN_SET);
+        output_switch_on = true;
+    }
+#endif
+
     /* --- 5. PID computation ---
      * Floor the peak-current command at half the inductor ripple minus
      * PEAK_FLOOR_NEG_MARGIN_MA, so the average inductor current the loop can
@@ -1775,10 +1790,10 @@ static void hrtim_disable_all_outputs(void)
 static void power_path_enable(void)
 {
     HAL_GPIO_WritePin(PIN_INPUT_EN_PORT,  PIN_INPUT_EN_PIN,  GPIO_PIN_SET);
-    /* OUTPUT_SWITCH_ENABLED (regulator_config.h): the bench load hangs on
-     * VBUS behind the output switch, so the boost runs keep it low.       */
-    HAL_GPIO_WritePin(PIN_OUTPUT_EN_PORT, PIN_OUTPUT_EN_PIN,
-                      OUTPUT_SWITCH_ENABLED ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    /* OUTPUT_EN stays low here: the PID ISR (step 4c) connects VBUS once
+     * V_out is regulating, if OUTPUT_SWITCH_ENABLED (regulator_config.h). */
+    HAL_GPIO_WritePin(PIN_OUTPUT_EN_PORT, PIN_OUTPUT_EN_PIN, GPIO_PIN_RESET);
+    output_switch_on = false;
     HAL_GPIO_WritePin(PIN_OUTPUT_DIS_PORT,PIN_OUTPUT_DIS_PIN,GPIO_PIN_RESET);
 }
 
@@ -1787,6 +1802,7 @@ static void power_path_enable(void)
  */
 static void power_path_disable(void)
 {
+    output_switch_on = false;
     HAL_GPIO_WritePin(PIN_INPUT_EN_PORT,  PIN_INPUT_EN_PIN,  GPIO_PIN_RESET);
     HAL_GPIO_WritePin(PIN_OUTPUT_EN_PORT, PIN_OUTPUT_EN_PIN, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(PIN_OUTPUT_DIS_PORT,PIN_OUTPUT_DIS_PIN,GPIO_PIN_SET); // discharge VBUS
