@@ -25,7 +25,7 @@ tools/bringup/bu <command> [<subcommand>] [args...]
 
 ### Wrapping as an MCP server
 
-`bu schema` lists all 57 commands with arguments (name, flag, positional,
+`bu schema` lists all 58 commands with arguments (name, flag, positional,
 required, kind `flag|value|list`, type, choices, default, help) and an
 **effect class** you can map to MCP tool annotations and a confirmation policy:
 
@@ -81,6 +81,7 @@ Times and JSON sizes are measured (typical). "Artifact" = file written to `bring
 | `regulator bench-pwm on\|off` | actuate | open-loop gate test (IDLE, input path off, fault lines high) | 0.2 s | 1.5 kB | – |
 | `regulator set-voltage MV` | actuate | new regulation target through the mailbox (`arg` word); firmware slews to it | 0.3 s | 1.5 kB | – |
 | `regulator start MV` | actuate | set target and start from IDLE | 0.3–1 s | 1.5 kB | – |
+| `profile [--samples N] [--lines N]` | read | statistical CPU profile over SWD: DWT PC samples → functions (and source lines), SCB_ICSR/pxCurrentTCB → time per ISR/task; no firmware support beyond DEMCR.TRCENA | ~4 s per 1000 samples | ~3 kB | – |
 | `regulator sweep MV,MV,… [--dwell S] [--scope CHn]` | actuate | set-voltage per point, then control telemetry + debug_log stats (+ scope VAVG/VPP); stops at a fault | ~2.5 s/point | ~0.5 kB/point | – |
 | `scope idn` / `scope state` | read | identity / full channel+timebase+trigger+acquire state | 0.1 s / 1.2 s | < 1 kB / 1 kB | – |
 | `scope chan N …`, `timebase`, `trigger`, `acquire` | actuate | configure; returns SCPI error queue + new state | 0.3–1.5 s | < 1 kB | – |
