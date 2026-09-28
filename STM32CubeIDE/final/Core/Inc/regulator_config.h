@@ -311,6 +311,16 @@ _Static_assert(HRTIM_PERIOD_COUNTS >= 5440u && HRTIM_PERIOD_COUNTS <= 54400u,
  * Source time-domain constants for blanking window and bootstrap pulse.
  * Adjust empirically using an oscilloscope on IL_MON and the switching nodes.
  */
+/* 100 ns until run 4 (2026-09-27, 24 V in, no load).  At about 4.7 V out the
+ * modulator fell into minimum pulses (258 ns, i.e. blanking plus the trip
+ * delay) while the commanded threshold was 190 mV: the comparator tripped
+ * at the end of blanking, forced CCM drove the inductor current negative,
+ * and the output collapsed to -1.7 V in 40 us.  SW2 rings +-3 V for a few
+ * hundred ns at each SW1 edge, so the INA281 output is not trusted before
+ * that ring settles.  Run 5 with 300 ns was worse (the longer minimum pulse
+ * put more energy into each cycle the modulator could not end early), and
+ * the 100 us bounce it showed is the L1 / C_out resonance at no load, not
+ * a comparator glitch, so 100 ns is restored.                              */
 #define HRTIM_BLANKING_NS_BUCK   100u  /**< Buck blanking:  100 ns after switching edge */
 #define HRTIM_BLANKING_NS_BOOST  500u  /**< Boost blanking: 500 ns covers bootstrap + ring */
 #define BOOTSTRAP_REFRESH_NS     200u  /**< Bootstrap LOW pulse: 200 ns per gate driver spec */
@@ -365,6 +375,72 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
                "BOOTSTRAP_REFRESH_TICKS must fit within boost blanking window");
 
 /**
+ * SYNC_RECT_ENABLED — Drive the low-side switch of the active leg (Q2 in
+ * buck) as the synchronous rectifier.  Added 2026-09-27 after runs 1 to 5.
+ *
+ * With 1 the leg runs in forced continuous conduction: whenever the high
+ * side is off the low side is on, so at no load the inductor current goes
+ * negative every cycle (V_out / L for the rest of the period: about 5 A at
+ * 5 V out), the output collapses within one PID period, and because the
+ * INA281 current sense is unidirectional the comparator never sees the
+ * negative current and the next charge phase runs to the backstop (runs 1,
+ * 4 and 5: SW_OVP from 10 to 13 V overshoots).
+ *
+ * With 0 the inductor current freewheels through the low-side GaN FET's
+ * reverse conduction and stops at zero (discontinuous conduction), and
+ * regulator.c skips the charge pulses while V_out is above the setpoint.
+ * The low side is still switched, but only for the bootstrap refresh: Q2 is
+ * on for BOOTSTRAP_REFRESH_NS at the start of every period and the charge
+ * pulse starts DCM_REFRESH_DEADTIME_NS after it ends.  Runs 6 to 18
+ * (2026-09-27) left Q2 off entirely; the high-side bootstrap then only
+ * charged while SW1 sat below the 5 V rail, Q1's gate drive starved, the
+ * "pulses" on TP3 were 20 ns needles ringing at 25 MHz, and Q1 conducted
+ * as a resistor of a few hundred ohms (about 60 mA into the 33 ohm bench
+ * load whatever the DAC asked for, and it charged the idle output to 8 V
+ * from Vin with every output disabled).  The cost of 0 is the
+ * reverse-conduction drop (about 2 V for an EPC2302, dissipative at load).
+ * Set to 1 once the converter regulates under a load that keeps the
+ * inductor current positive, or once diode emulation exists.
+ */
+#define SYNC_RECT_ENABLED 0u
+
+/**
+ * DCM_REFRESH_DEADTIME_NS — Gap between the low-side refresh pulse and the
+ * high-side charge pulse on the same leg while SYNC_RECT_ENABLED is 0.
+ * Units  : ns
+ * Purpose: With dead-time insertion off on Timer A (its two outputs are
+ *          programmed separately, see hrtim_configure_compare_registers)
+ *          this is the only thing keeping Q1 and Q2 from overlapping.
+ *          Both edges are HRTIM compare events, so the gap is exact to a
+ *          tick plus driver skew; 50 ns is several times the EPC2302
+ *          switching times.
+ */
+#define DCM_REFRESH_DEADTIME_NS    50u
+#define DCM_REFRESH_DEADTIME_TICKS HRTIM_NS_TO_TICKS(DCM_REFRESH_DEADTIME_NS)
+
+/**
+ * DCM_PULSE_START_TICKS — Timer A CMP4: where the buck charge pulse starts
+ * (the end of the refresh pulse plus the gap).  Timer A CMP1 (blanking end)
+ * and CMP2 (backstop) are offset by the same amount in regulator.c.
+ */
+#define DCM_PULSE_START_TICKS (BOOTSTRAP_REFRESH_TICKS + DCM_REFRESH_DEADTIME_TICKS)
+
+/**
+ * DCM_MAX_ON_TIME_NS — Charge-pulse length cap while SYNC_RECT_ENABLED is 0.
+ * Units  : ns
+ * Purpose: Run 6 (2026-09-27, 24 V in, no load) followed the soft-start
+ *          ramp to 5 V, but its pulses were 1.1 to 1.5 us long (about 6 A
+ *          peak) while the DAC asked for 0.7 A: the comparator path did not
+ *          end the pulse where the threshold said, and one burst of four
+ *          such pulses took V_out from 5.3 V to 7.2 V (SW_OVP).  Until
+ *          IL_MON has been looked at on a scope, the CMP2 backstop is the
+ *          on-time limit: 400 ns is about 1.6 A peak at 24 V in and 5 V out,
+ *          6 uJ per pulse, 30 mV per pulse on 40 uF at 5 V.  The comparator
+ *          may still end a pulse earlier.
+ */
+#define DCM_MAX_ON_TIME_NS 400u
+
+/**
  * MAX_DUTY_CYCLE_PCT — Maximum allowed charge-phase duty cycle.
  * Units  : percent of switching period
  * Derive : 85 % leaves ~750 ns at 200 kHz for the discharge phase and
@@ -373,7 +449,12 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
  *          26112 → 23120 < 26112 ✓  (§10.3)
  * Range  : [50, 96]
  */
-#define MAX_DUTY_CYCLE_PCT 85u
+/* 85 until run 4 (2026-09-27): the current sense is unidirectional, so
+ * once the inductor current is negative the comparator never trips and the
+ * charge phase runs to this backstop; 4.25 us at 4 A/us put 10 V on the
+ * output before the software OVP saw it.  50 (the lowest the assert below
+ * allows) halves that.  Buck at 24 V in needs 21 % for 5 V out.        */
+#define MAX_DUTY_CYCLE_PCT 50u
 
 _Static_assert(MAX_DUTY_CYCLE_PCT >= 50u && MAX_DUTY_CYCLE_PCT <= 96u,
                "MAX_DUTY_CYCLE_PCT out of valid range [50, 96]");
@@ -388,11 +469,19 @@ _Static_assert(MAX_DUTY_CYCLE_PCT >= 50u && MAX_DUTY_CYCLE_PCT <= 96u,
  *          inductor current ramp when COMP1 is inactive.
  * Compare: CMP2xR on both Timer A (buck active) and Timer B (boost active).
  */
+#if SYNC_RECT_ENABLED
 #define MAX_ON_TIME_COUNTS ((HRTIM_PERIOD_COUNTS) * (MAX_DUTY_CYCLE_PCT) / 100u)
+#else
+#define MAX_ON_TIME_COUNTS HRTIM_NS_TO_TICKS(DCM_MAX_ON_TIME_NS)
+#endif
 
 _Static_assert(BOOTSTRAP_REFRESH_TICKS <
                (HRTIM_PERIOD_COUNTS - MAX_ON_TIME_COUNTS),
                "BOOTSTRAP_REFRESH_TICKS must not overlap active switching phase");
+
+_Static_assert(DCM_PULSE_START_TICKS + MAX_ON_TIME_COUNTS + DCM_REFRESH_DEADTIME_TICKS <
+               HRTIM_PERIOD_COUNTS,
+               "DCM charge pulse must end before the next refresh pulse");
 
 /* =========================================================================
  * SECTION 7: SLOPE COMPENSATION TIMER (TIM6) CONSTANTS
@@ -507,6 +596,38 @@ _Static_assert(PID_EXECUTION_RATE_HZ >= 1000u &&
  * Value  : 0  (zero current threshold → regulator effectively idle)
  */
 #define PID_OUTPUT_MIN 0
+
+/**
+ * PEAK_FLOOR_NEG_MARGIN_MA — How far below zero the average inductor current
+ * may be commanded by the per-cycle peak-current floor (added 2026-09-27).
+ * Units  : mA
+ * Purpose: In forced continuous conduction the low-side switch conducts
+ *          whenever the high side is off, so a peak-current setpoint of zero
+ *          drives a large negative average inductor current.  At no load the
+ *          output then collapses within one PID period (bench, run 1: V_out
+ *          366, 0, 1127, 0, 3720, 0 mV on successive cycles).  regulator.c
+ *          floors the PID output each cycle at ripple/2 − this margin, so
+ *          the average inductor current cannot be commanded below −margin.
+ *          0 would forbid any negative current, leaving no way to bleed an
+ *          overshoot at no load; a few hundred mA is a controllable way down
+ *          (300 mA into 40 µF is 0.4 V per PID period).
+ */
+#define PEAK_FLOOR_NEG_MARGIN_MA 300u
+
+/**
+ * PEAK_TRIP_DELAY_NS — Delay from the inductor current reaching the DAC
+ * threshold to the high-side gate actually turning off (added 2026-09-27).
+ * Units  : ns
+ * Purpose: INA281 (1.3 MHz), COMP1, HRTIM and the gate driver act this long
+ *          after the threshold is crossed, and the current keeps rising at
+ *          (V_in − V_out)/L meanwhile, so the real peak is the threshold plus
+ *          di/dt × t_d: about 0.8 A at 24 V in, 5 V out, 4.7 µH.  regulator.c
+ *          lowers the DAC by that amount so the PID output is the peak that
+ *          actually happens.  Bench estimate from run 2 (V_out rose 1.0 V and
+ *          1.5 V per PID period on commands that allowed no net current);
+ *          measure it with a probe on IL_MON and the switch node, and set it.
+ */
+#define PEAK_TRIP_DELAY_NS 200u
 
 /**
  * PID_OUTPUT_MAX — Maximum PID output (DAC counts).
