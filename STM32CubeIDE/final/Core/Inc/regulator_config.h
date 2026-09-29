@@ -169,23 +169,33 @@ extern "C" {
  * =========================================================================*/
 
 /**
- * VS_GOOD — Input voltage good signal (HRTIM FLT1)
- * MCU pin : PA12 / HRTIM1_FLT1
- * Net     : VS_GOOD (input.kicad_sch)
- * Physical: ADM1270ACPZ FAULT output or voltage supervisor on V_in rail
+ * VS_GOOD — Input power-good (HRTIM FLT1)
+ * MCU pin : PA12 / HRTIM1_FLT1  (power board J1.16)
+ * Net     : VS_GOOD = ADM1270 (U5) PWRGD, open-drain, R31 100k to +3V3
+ * Physical: High when the switched input rail VS is above the FB_PG
+ *           threshold: VS > 4.60 V rising / < 4.46 V falling
+ *           (R28 100k + R29 4.3k over R32 29k, 1.0 V ref, 30 mV hyst).
+ *           LOW whenever INPUT_EN is low (VS off), on VIN over-voltage
+ *           (> 57.7 V, OV divider R34/R35), or after an ADM1270 current trip.
  * Dir     : Digital input, active-low (fault asserts when input goes LOW)
  * Effect  : Any assertion forces ALL HRTIM outputs to safe state (all FETs off)
+ * Note    : Only meaningful while the input path is enabled, so the FLT
+ *           interrupts are armed only in RUNNING (see regulator.c).
  */
 #define PIN_VS_GOOD_PORT GPIOA
 #define PIN_VS_GOOD_PIN GPIO_PIN_12
 
 /**
- * IS_GOOD — Input current good signal (HRTIM FLT2)
- * MCU pin : PA15 / HRTIM1_FLT2
- * Net     : IS_GOOD (input.kicad_sch, final.ioc label)
- * Physical: INA293A2 (U6) or ADM1270 overcurrent indicator
+ * IS_GOOD — Input over-current latch (HRTIM FLT2)
+ * MCU pin : PA15 / HRTIM1_FLT2  (power board J1.17)
+ * Net     : IS_GOOD = ADM1270 (U5) ~FAULT, open-drain, R30 100k to +3V3
+ * Physical: Pulled LOW when the ADM1270 shuts its FET off after an SOA
+ *           over-current: > 24.5 A (49 mV across R25 2 mΩ, ISET=VCAP) for
+ *           2 ms (C_TIMER 20 nF), or > 50 A instantly (severe OC, ~2 µs).
+ *           Latch-off mode (~FAULT not tied to ENABLE): stays low until
+ *           TIMER_OFF has recharged (ADM1270_COOLDOWN_MS) AND INPUT_EN is
+ *           toggled low → high.
  * Dir     : Digital input, active-low (fault asserts when input goes LOW)
- * Resolved: Round 3 Q5 (§3.7).
  */
 #define PIN_IS_GOOD_PORT GPIOA
 #define PIN_IS_GOOD_PIN GPIO_PIN_15
@@ -204,6 +214,23 @@ extern "C" {
  */
 #define PIN_INPUT_EN_PORT GPIOC
 #define PIN_INPUT_EN_PIN GPIO_PIN_7
+
+/**
+ * ADM1270_COOLDOWN_MS — Minimum INPUT_EN low time after an ADM1270 current
+ * trip before it can be re-enabled.  TIMER_OFF off-time
+ * t = V_TMROFFH × C_TIMER_OFF / I_TMROFF = 2.0 V × 50 nF / 1 µA = 100 ms
+ * typical; 2.04 V × 55 nF / 0.85 µA ≈ 132 ms worst case (datasheet Rev. A
+ * p.4 limits, ±10 % cap).  Rounded up for margin.
+ */
+#define ADM1270_COOLDOWN_MS 150u
+
+/**
+ * INPUT_PGOOD_TIMEOUT_MS — Maximum wait for VS_GOOD after asserting INPUT_EN.
+ * The ADM1270 soft-starts VS under its (folded-back) current limit; the
+ * FET gate slews at 25 µA, so a few ms is typical.  A timeout means no/low
+ * VIN, VIN over-voltage, or the ADM1270 tripped charging VS (short on VS).
+ */
+#define INPUT_PGOOD_TIMEOUT_MS 50u
 
 /**
  * OUTPUT_EN — Enables output power path
@@ -370,6 +397,26 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <
 /* =========================================================================
  * SECTION 7: SLOPE COMPENSATION TIMER (TIM6) CONSTANTS
  * =========================================================================*/
+
+/**
+ * SLOPE_COMP_ENABLED — Run the TIM6 staircase ramp (§7.5 option 1).
+ *
+ * SHELVED (2026-09-27, bench bring-up): the 2 MHz TIM6 ISR at NVIC priority 0
+ * leaves ~85 CPU cycles per interrupt at 170 MHz, and ISR entry/exit plus
+ * the body consume essentially all of them.  Once regulator_start() started
+ * TIM6 the CPU never returned to thread level: regulator_start() did not
+ * complete (outputs enabled, state stuck at IDLE, TIM7 PID never started)
+ * and FreeRTOS tasks stopped running.  The §7.5 estimate of 12–36 % CPU did
+ * not hold.
+ *
+ * With 0: TIM6 is never started; DAC3 CH1 holds the PID peak for the whole
+ * period (reloaded each period by the HRTIM Timer A ISR), i.e. plain peak
+ * current mode with NO slope compensation.  Subharmonic oscillation is
+ * expected above ~50 % duty (§7.1) — keep duty < 50 % until a CPU-free ramp
+ * (DAC3 hardware sawtooth reset by the HRTIM period, §7.5 option 3) or a
+ * DMA-driven ramp (option 2) replaces this.
+ */
+#define SLOPE_COMP_ENABLED 0u
 
 /**
  * TIM6_RATE_HZ — Slope compensation timer interrupt rate.

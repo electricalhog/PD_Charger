@@ -88,6 +88,19 @@ typedef enum
     REGULATOR_FAULT_SW_BACKSTOP    = 0x20u  /**< Too many consecutive backstop events */
 } RegulatorFaultSource;
 
+/**
+ * RegulatorClearResult — outcome of regulator_clear_fault().
+ */
+typedef enum
+{
+    REGULATOR_CLEAR_OK                = 0u, /**< FAULT released; now IDLE          */
+    REGULATOR_CLEAR_NOT_IN_FAULT      = 1u, /**< Nothing to clear                  */
+    REGULATOR_CLEAR_INPUT_NOT_GOOD    = 2u, /**< VS_GOOD never rose: no/low VIN,
+                                                 VIN over-voltage, or VS shorted   */
+    REGULATOR_CLEAR_INPUT_OVERCURRENT = 3u  /**< IS_GOOD low after re-enable:
+                                                 ADM1270 tripped again             */
+} RegulatorClearResult;
+
 /* =========================================================================
  * Runtime-mutable parameters (§15.2)
  *
@@ -133,6 +146,12 @@ extern volatile bool regulator_integrator_reset_requested;
  * Read from diagnostic interface.  Cleared on regulator_clear_fault().
  */
 extern RegulatorFaultSource regulator_last_fault_source;
+
+/**
+ * regulator_fault_tick_ms — HAL tick at the most recent enter_fault().
+ * Used to enforce the ADM1270 cool-down before re-enabling the input.
+ */
+extern volatile uint32_t regulator_fault_tick_ms;
 
 /**
  * regulator_pid_output_dac_counts — latest PID output in DAC counts.
@@ -198,37 +217,107 @@ void regulator_init(void);
 void regulator_start(void);
 
 /**
- * regulator_stop — Controlled shutdown: RUNNING/FAULT → IDLE.
+ * regulator_stop — Controlled shutdown: RUNNING → IDLE.
  *
  * Actions (§11.3):
- *   1. Disable all HRTIM switching outputs (all FETs off).
- *   2. Set DAC3 CH1 to 0.
- *   3. Stop TIM6 (slope compensation).
- *   4. Stop TIM7 (PID).
- *   5. Transition to IDLE.
+ *   1. Disarm the HRTIM fault IRQ (dropping INPUT_EN makes VS_GOOD fall).
+ *   2. Disable all HRTIM switching outputs (all FETs off).
+ *   3. Set DAC3 CH1 to 0.
+ *   4. Stop TIM6 (slope compensation) and TIM7 (PID).
+ *   5. Disable the input/output power path.
+ *   6. Transition to IDLE — unless FAULT is latched, which only
+ *      regulator_clear_fault() releases.
  *
  * Safe to call from any context.  Non-blocking.
  */
 void regulator_stop(void);
 
 /**
- * regulator_clear_fault — Release the FAULT latch and return to IDLE.
+ * regulator_clear_fault — Re-arm the ADM1270 and release the FAULT latch.
  *
- * Preconditions (§4.4):
- *   - No active hardware fault input (FLT1 and FLT2 must be deasserted).
+ * The input protection (ADM1270, latch-off mode) only re-arms after its
+ * TIMER_OFF cool-down AND an ENABLE high→low→high toggle, and VS_GOOD can
+ * only be verified with the input path on.  Sequence:
+ *   1. Hold INPUT_EN low until ADM1270_COOLDOWN_MS has elapsed since the
+ *      fault (enter_fault already dropped it).
+ *   2. Assert INPUT_EN (outputs still off, OUTPUT_EN off) and wait up to
+ *      INPUT_PGOOD_TIMEOUT_MS for VS_GOOD; check IS_GOOD.
+ *   3. Drop INPUT_EN again (IDLE keeps the input path off).
+ *   4. On success: clear HRTIM fault flags, reset PID, FAULT → IDLE.
+ *      On failure: stay in FAULT with the input path off.
  *
- * Actions:
- *   1. Verify hardware fault inputs are not asserted.
- *   2. Reset PID integrator.
- *   3. Clear fault status.
- *   4. Transition to IDLE.
+ * Does NOT start the regulator — call regulator_start() afterwards.
  *
- * Does NOT automatically start the regulator — an explicit regulator_start()
- * is required after fault clearance.
- *
- * Safe to call from any context.  Non-blocking.
+ * Task context only (blocks for up to ~200 ms).
  */
-void regulator_clear_fault(void);
+RegulatorClearResult regulator_clear_fault(void);
+
+/**
+ * RegulatorDebugMailbox — command channel written by a debugger over SWD
+ * (tools/bringup `bu regulator ...`) and serviced in task context by
+ * regulator_debug_poll().
+ *
+ * Protocol: wait for request == 0, write request; the firmware executes it,
+ * stores result, increments done_count, then zeroes request.
+ */
+typedef enum
+{
+    REGULATOR_DEBUG_CMD_NONE        = 0u,
+    REGULATOR_DEBUG_CMD_CLEAR_FAULT = 1u, /**< result = RegulatorClearResult */
+    REGULATOR_DEBUG_CMD_STOP        = 2u, /**< result = 0                    */
+    REGULATOR_DEBUG_CMD_BENCH_PWM_ON  = 3u, /**< result = RegulatorBenchResult */
+    REGULATOR_DEBUG_CMD_BENCH_PWM_OFF = 4u  /**< result = RegulatorBenchResult */
+} RegulatorDebugCmd;
+
+/**
+ * RegulatorBenchResult — outcome of regulator_bench_pwm().
+ */
+typedef enum
+{
+    REGULATOR_BENCH_OK              = 0u,
+    REGULATOR_BENCH_NOT_IDLE        = 1u, /**< only allowed from IDLE              */
+    REGULATOR_BENCH_INPUT_PATH_ON   = 2u, /**< INPUT_EN must be low (no power)     */
+    REGULATOR_BENCH_FAULT_LINE_LOW  = 3u  /**< VS_GOOD/IS_GOOD low: HRTIM would
+                                               hold the outputs off               */
+} RegulatorBenchResult;
+
+/**
+ * regulator_bench_pwm — Open-loop gate-signal test for bench validation
+ * without a power stage (Nucleo + scope/analyzer).
+ *
+ * On: from IDLE with INPUT_EN low and both fault lines high, removes the
+ * comparator event (EEV4) from the Timer A/B set/reset sources and enables
+ * TA1/TA2/TB1/TB2 in the buck-mode configuration: TA1 is set at the period
+ * and reset by the CMP2 max-duty backstop, with the configured dead-time;
+ * TB1 is the static leg (CMP3 bootstrap refresh).  The HRTIM fault IRQ is
+ * armed, so a fault line dropping latches FAULT as in RUNNING.
+ * Off (or stop/fault): outputs off, set/reset sources restored.
+ *
+ * The PID and power path are never touched.  regulator_start() refuses
+ * while bench PWM is active.
+ */
+RegulatorBenchResult regulator_bench_pwm(bool on);
+
+/** True while bench PWM is running (read by tools/bringup). */
+extern volatile bool regulator_bench_pwm_active;
+
+#define REGULATOR_DEBUG_RESULT_UNKNOWN_CMD 0xFFFFFFFFu
+
+typedef struct
+{
+    volatile uint32_t request;     /**< RegulatorDebugCmd; 0 = idle       */
+    volatile uint32_t result;      /**< result of the last command        */
+    volatile uint32_t done_count;  /**< incremented after each command    */
+    volatile uint32_t last_cmd;    /**< last command executed             */
+} RegulatorDebugMailbox;
+
+extern RegulatorDebugMailbox regulator_debug;
+
+/**
+ * regulator_debug_poll — Service regulator_debug.  Call periodically from a
+ * task (not an ISR); commands may block for up to ~200 ms.
+ */
+void regulator_debug_poll(void);
 
 /**
  * regulator_set_target_voltage — Update the PID voltage setpoint.

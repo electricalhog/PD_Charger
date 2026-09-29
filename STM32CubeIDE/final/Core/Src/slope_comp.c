@@ -9,6 +9,10 @@
  *     the lower-priority TIM7 PID ISR) and stored in a volatile variable.
  *   - slope_comp_step_counts is NEVER recomputed in the ISR (§7.2 requirement).
  *
+ * SHELVED: see SLOPE_COMP_ENABLED in regulator_config.h.  The 2 MHz TIM6 ISR
+ * saturated the CPU on the bench, so with SLOPE_COMP_ENABLED == 0 TIM6 is
+ * never started and the DAC holds the PID peak (no ramp).
+ *
  * DAC reload at period start:
  *   slope_comp_reload_dac_peak() is called from the HRTIM Timer A period ISR
  *   to reset DAC3 CH1 to the current PID output peak before the blanking
@@ -97,8 +101,10 @@ void slope_comp_start(uint32_t initial_peak_counts)
     slope_comp_peak_dac_counts = initial_peak_counts;
     dac3_ch1_write(initial_peak_counts);
 
+#if SLOPE_COMP_ENABLED
     /* Start TIM6 with interrupt enabled */
     HAL_TIM_Base_Start_IT(&htim6);
+#endif
 }
 
 void slope_comp_stop(void)

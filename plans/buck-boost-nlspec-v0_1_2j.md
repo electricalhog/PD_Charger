@@ -701,6 +701,8 @@ The constraint: the DAC value at the instant the comparator fires must be within
 
 **CPU budget (Timer ISR approach):** At 2 MHz, the ISR fires every 500 ns on a 170 MHz core. Estimate 10–30 cycles ≈ 60–180 ns ≈ 12–36% CPU. Acceptable for v0.1.2 but motivates future migration.
 
+> **Bring-up status (2026-09-27) — option 1 SHELVED.** On the NUCLEO-G474RE the 2 MHz TIM6 ISR (NVIC priority 0) consumed effectively 100 % of the CPU, not the estimated 12–36 %: exception entry/exit alone is ~24 of the ~85 cycles available per tick, and the handler plus body used the rest. After `regulator_start()` started TIM6, execution never returned to thread level — `regulator_start()` did not finish (gate outputs enabled but state still IDLE, TIM7 PID never started) and FreeRTOS tasks stopped. The firmware now has `SLOPE_COMP_ENABLED = 0` (`regulator_config.h`): TIM6 is not started and DAC3 CH1 holds the PID peak for the whole period (plain peak-current mode, **no slope compensation**, so duty must stay < 50 % until a replacement exists). The ramp mechanism must be revisited with a CPU-free option — preferably option 3 (DAC3 hardware sawtooth, reset/stepped by HRTIM events) or option 2 (DMA) — before operating above 50 % duty. The §7.2 step computation and §7.6 per-period reload remain in place for that replacement.
+
 ### 7.6 Ramp Reset
 
 At each HRTIM period reset, DAC3 CH1 must be reloaded with the current PID peak value. **The DAC must be reloaded before the blanking window expires.** If the DAC still holds the previous period's minimum value when blanking ends, the comparator will fire immediately and the charge phase will be zero-length.
@@ -1258,6 +1260,8 @@ Each item is binary — it passes or it does not.
 - [ ] Mode switch from buck to boost completes via disable → reconfigure → soft-start without power stage damage.
 
 ### Slope Compensation
+> Shelved 2026-09-27: TIM6 ISR ramp saturated the CPU (see §7.5 status note). These items are open until a CPU-free ramp is implemented.
+- [ ] Slope compensation mechanism CPU load measured and within budget (proposed: < 20 %; added 2026-09-27).
 - [ ] DAC3 CH1 resets to PID peak value at each period start.
 - [ ] DAC3 CH1 decreases monotonically within each period.
 - [ ] DAC3 CH1 value at any point within a period is within ±2 counts of ideal linear ramp.
