@@ -51,7 +51,8 @@ FAULT_BITS = {
     0x10: ("SW_VIN_RANGE", "V_in out of range for the selected mode"),
     0x20: ("SW_BACKSTOP", "too many consecutive cycle-by-cycle backstop events"),
 }
-CMD = {"clear-fault": 1, "stop": 2, "bench-pwm-on": 3, "bench-pwm-off": 4, "set-voltage": 5, "start": 6}
+CMD = {"clear-fault": 1, "stop": 2, "bench-pwm-on": 3, "bench-pwm-off": 4, "set-voltage": 5, "start": 6,
+       "snapshot": 7}
 ARG_CMDS = ("set-voltage", "start")   # take a millivolt argument in regulator_debug.arg
 MODES = {0: "BUCK", 1: "BOOST", 2: "BUCK_BOOST"}
 SET_RESULTS = {
@@ -292,6 +293,10 @@ def command(cfg: dict, name: str, timeout: float = 3.0, force: bool = False, mv:
         out.update(ok=code == "OK", result=code, mv=mv, **({"explanation": text} if text else {}))
         if code == "OK" and name == "set-voltage":
             out["note"] = "the firmware slews to the new target (SETPOINT_SLEW_MV_PER_CYCLE); poll status for commanded_mv"
+    elif name == "snapshot":
+        out.update(ok=res == 0, result="OK" if res == 0 else "NOT_RUNNING",
+                   note="VD_MON ring frozen in regulator_snapshot_trace (oldest first); pulses held off 100 us as a "
+                        "scope marker (SW2 stays high: pulse-width trigger > 60 us)")
     elif name.startswith("bench-pwm"):
         code, text = BENCH_RESULTS.get(res, (str(res), "unknown result"))
         out.update(ok=code == "OK", result=code, **({"explanation": text} if text else {}))
