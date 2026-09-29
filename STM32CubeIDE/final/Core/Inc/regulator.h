@@ -269,7 +269,10 @@ typedef enum
     REGULATOR_DEBUG_CMD_BENCH_PWM_ON  = 3u, /**< result = RegulatorBenchResult */
     REGULATOR_DEBUG_CMD_BENCH_PWM_OFF = 4u, /**< result = RegulatorBenchResult */
     REGULATOR_DEBUG_CMD_SET_VOLTAGE = 5u, /**< arg = mV; result = RegulatorSetResult */
-    REGULATOR_DEBUG_CMD_START       = 6u  /**< arg = mV; result = RegulatorSetResult */
+    REGULATOR_DEBUG_CMD_START       = 6u, /**< arg = mV; result = RegulatorSetResult */
+    REGULATOR_DEBUG_CMD_SNAPSHOT    = 7u  /**< freeze the VD_MON ring into regulator_snapshot_trace and
+                                               hold pulses off for 2 PID periods as a scope marker;
+                                               result = 0, or 1 if not RUNNING */
 } RegulatorDebugCmd;
 
 /**
@@ -344,6 +347,9 @@ void regulator_debug_poll(void);
  * @param voltage_mv  Target output voltage in millivolts.
  */
 void regulator_set_target_voltage(uint32_t voltage_mv);
+
+/** ADC1 analog watchdog 1 ISR body (pulse skipping), from ADC1_2_IRQHandler. */
+void regulator_adc1_awd_isr(void);
 
 /**
  * regulator_get_state — Read the current FSM state.

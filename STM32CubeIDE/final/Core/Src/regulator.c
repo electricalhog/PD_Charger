@@ -90,110 +90,78 @@
 #define HRTIM_BOOST_SWITCHING_OUTPUTS (HRTIM_OUTPUT_TB2)
 #endif
 
-/** 1 while the buck charge pulses are held off (V_out above the setpoint);
- *  telemetry, written every switching period by the Timer A period ISR.  */
+/* =========================================================================
+ * V_out sensing and pulse skipping (2026-09-28 evening)
+ *
+ * ADC1 converts its four channels once per switching period, triggered by
+ * HRTIM ADC trigger 1 on master compare 1 so that VD_MON's sample ends
+ * ADC_VD_SAMPLE_END_NS into the period, after the pulse and the inductor
+ * discharge at every operating point swept (they end by about 2.5 us), and
+ * before the next period's refresh edge.  DMA fills a ring of
+ * ADC1_DMA_SCANS scans (adc_monitor.h).
+ *
+ * This replaced a free-running scan (9.9 us, two periods, landing at any
+ * phase of the ringing) read by a 200 kHz Timer A ISR that estimated V_out
+ * with a pulse-credit slew limiter and decided pulse skipping in software.
+ * That ISR was 24 % of the CPU (bu profile), and the estimator needed three
+ * rounds of rules against glitch runs (runs 10 to 38 and this evening: pairs,
+ * staircases, a real overshoot it held off).
+ *
+ * Pulse skipping is ADC1 analog watchdog 1 on VD_MON, confirmed in its ISR
+ * over AWD_FILTER_SAMPLES consecutive samples (the hardware filter does not
+ * work with a multi-channel scan, adc_monitor.h): while pulsing the window
+ * is [0, on], while skipping [off, 4095], so regulator_adc1_awd_isr runs only
+ * when V_out crosses the band.  The PID ISR moves the window with the
+ * setpoint.  V_out for the PID, soft-start, OVP/UVP and the debug log is the
+ * trimmed mean of the last VOUT_MEDIAN_SAMPLES samples (highest and lowest dropped).
+ * =========================================================================*/
+
+/** 1 while the charge pulses are held off (V_out above the band); written
+ *  by regulator_adc1_awd_isr.                                             */
 volatile uint8_t regulator_pulses_skipped = 0u;
 
-/** V_out level above which the next charge pulse is skipped, in raw ADC1
- *  counts of VD_MON (so the period ISR compares without scaling).  Written
- *  by the PID ISR from the effective (soft-start) setpoint.               */
-volatile uint16_t regulator_skip_raw_threshold = 0xFFFFu;
+/** Skip band in raw VD_MON counts: skip above `on`, resume below `off`.
+ *  Written by the PID ISR from the effective (soft-start) setpoint.       */
+volatile uint16_t regulator_skip_raw_threshold = 0xFFFu;
+volatile uint16_t regulator_skip_off_raw       = 0xFFFu;
 
-/** Glitch-free V_out in raw ADC counts: the VD_MON sample read once per
- *  switching period, bounded by what the power stage can physically do.
- *
- *  Why (2026-09-27, runs 10 to 13, period trace): ADC1 free-runs its
- *  4-channel scan, so its VD_MON sampling window slides through the 5 us
- *  switching period, and samples land anywhere on the ringing the switch
- *  node carries (TP3 rings at about 1.6 MHz, several volts, for the whole
- *  period at no load) and couples into the sense divider; a bad sample
- *  reads 1 to 3 V off while V_out is steady.  Run 10 showed single bad
- *  samples every 9 to 24 periods with 2.5-cycle sampling (also 25 percent
- *  low: the sample capacitor never settled through the 5.5 kOhm divider
- *  after the near-zero IS_MON channel); with 92.5-cycle sampling (run 12,
- *  final.ioc and MX_ADC1_Init) the scale is right and the bad samples come
- *  in pairs.  A median of three (run 11) passed pairs.  A symmetric slew
- *  limiter with a 12-count acceptance band (run 13) held 5.0 V for 19.7 s
- *  and then let a staircase of bad samples (365, 377 counts, each inside
- *  the band of the last) walk the estimate to 5.52 V and trip OVP while
- *  every pulse was being skipped.
- *
- *  The rule here is the physics instead of a band.  Charge only enters the
- *  output through a charge pulse, so the estimate may rise only by what the
- *  pulses issued so far can have delivered: every period whose pulse is
- *  enabled adds VOUT_RISE_PER_PULSE_RAW to a rise budget, capped at
- *  VOUT_RISE_BUDGET_MAX_RAW, and the estimate rises by at most the budget,
- *  consuming it.  One raw count is 19.1 mV (VD_MON_FULL_SCALE_MV,
- *  calibrated 2026-09-28).  A 600 ns pulse (DCM_MAX_ON_TIME_NS) at 24 V in
- *  and 5 V out measured 2 to 2.7 uC on the scope (runs 21 and 22,
- *  2026-09-28), 90 to 140 mV on the 19 to 28 uF the output behaves as, 5 to
- *  7 counts; at the 400 ns the on-time control settles to under load the
- *  scope shows about 20 mV per pulse (run 28, 100 mV ripple over bursts of
- *  5).  The credit is 4 counts and at most 8 are outstanding.  The ADC
- *  glitches this has to reject (run 20 period trace, with 0.1 nF across R16
- *  and R18) are 60 to 100 counts in either direction, last one ADC scan
- *  (two switching periods) and come in adjacent pairs, so a glitch right
- *  after a burst moves the estimate by at most the outstanding budget,
- *  150 mV, against an OVP margin of 500 mV at 5 V; with a credit of 8 and
- *  16 outstanding (run 28) the estimate reached 5.49 V on glitches while
- *  the scope showed 5.0 to 5.1 V.  The
- *  per-period form used in runs 14 to 27 (rise 6 counts in each of the 3
- *  periods after a pulse) let two glitch pairs walk the estimate 18 counts
- *  through 5.5 V in run 27 while the raw samples around them read 5.0 V
- *  (period trace 20260928-082227).  It may fall by VOUT_FALL_RAW per period
- *  (4 counts, 76 mV; the bench load is 230 mA on the effective 19 to 28 uF,
- *  about 3 counts per period); a heavier load needs that bound raised or
- *  the load current fed in.  The PID ISR uses the same value, so PID,
- *  soft-start, OVP, UVP, pulse skipping and the debug log all see it; the
- *  raw sample stays in adc_measurements.v_out_mv.  The proper fix is analog
- *  (a capacitor on the VD_MON node) or a hardware-timed sample once some
- *  phase of the period is quiet; this is the bring-up workaround.        */
-#define VOUT_RISE_PER_PULSE_RAW   4u   /* 76 mV of rise credit per pulse    */
-#define VOUT_RISE_BUDGET_MAX_RAW  8u   /* two pulses' worth outstanding     */
-#define VOUT_FALL_RAW             4u   /* 76 mV per period                  */
-/* A sample above the estimate for this many consecutive periods is a real
- * rise whatever the pulses say, and the estimate snaps to the lowest sample
- * of that run.  Glitches last one ADC scan, two periods, so the lowest of
- * four is never a glitch; snapping to the latest sample instead (runs 33
- * and 34) let noise one or two counts above the estimate followed by a
- * glitch pair count as four and lift the estimate to the glitch: 1527,
- * 1527, 1673, 1673 raw at 29 V set it to 32 V and the OVP tripped (run 34,
- * trace 20260928-085639; run 35 fault snapshot, estimate 1631 against a raw
- * 1514 while it decayed).  Run 31 (2026-09-28, boost, no load):
- * with every pulse skipped V_out climbed from 29 to 32 V (period trace
- * 20260928-084508, raw 1677 for 2.5 ms) while the estimate, allowed to
- * rise only on pulse credit, stayed at 29.1 V and the OVP never saw it;
- * the static leg's bootstrap refresh switching pumps the output through
- * Q3's reverse conduction (this seat's reading of the trace, not
- * scoped).  Four periods is 20 us of lag on a real rise.               */
-/* Six since 2026-09-28 evening (boost 28 V into 330 ohm): two adjacent glitch
- * pairs, 34.1 34.1 32.3 32.3 V between 28.3 V samples, made four and set the
- * estimate to 32.3 V: SW_OVP (period trace 20260928-1716).  Six is three ADC
- * scans, 30 us of lag on a real rise.                                     */
-#define VOUT_RISE_PERSIST_PERIODS 6u
-/* ...and only if the run's samples agree within this many raw counts (15 is
- * 290 mV).  Glitch runs jump by volts (31.0 41.1 41.1 31.5 V between 27.6
- * and 26.9 V samples beat six periods the same evening); the real rises the
- * pulse credit misses are slow (run 31's refresh pumping, about 6 mV per
- * period).  A wider run restarts from its latest sample.                 */
-#define VOUT_RISE_PERSIST_SPREAD_RAW 15u
-/* ...or if the run only rises, by at most this much per period (52 is 1 V).
- * A spread limit alone blocked a real boost overshoot the same evening: two
- * low samples pulled the estimate down, pulses resumed, and V_out climbed
- * 24.1 29.1 29.9 30.5 30.9 31.5 V in 0.4 to 0.8 V steps while the estimate
- * crept on pulse credit (SW_OVP at 31.4 V estimate).  Glitch runs go up and
- * come back down.                                                        */
-#define VOUT_RISE_STEP_MAX_RAW 52u
+/** Skip transitions (both directions) since start, and watchdog interrupts
+ *  the software filter rejected (single out-of-window samples); telemetry. */
+volatile uint32_t regulator_skip_events = 0u;
+volatile uint32_t regulator_awd_rejected = 0u;
+
+/** V_out in raw counts (trimmed mean), as the PID ISR last computed it.  */
 volatile uint16_t regulator_vout_est_raw = 0u;
-/** Raw counts the estimate may still rise by, earned by enabled pulses. */
-static volatile uint8_t vout_rise_budget_raw = 0u;
-/** Consecutive periods the raw sample has been above the estimate, and the
- *  lowest sample in that run. */
-static volatile uint8_t  vout_above_periods = 0u;
-static volatile uint16_t vout_above_min_raw = 0u;
-static volatile uint16_t vout_above_max_raw = 0u;
-static volatile uint16_t vout_above_last_raw = 0u;
-static volatile bool     vout_above_rising   = true;
+
+/** The skip band sits max(PULSE_SKIP_ABOVE_MV, setpoint * this / 1000)
+ *  above the setpoint (runtime-tunable).  At +200 mV with the 330 ohm load
+ *  (2026-09-28 evening, correct 200 kHz sampling) V_out swung 27.4 to 28.4 V
+ *  around a 27.9 V mean: the band clipped the top, the PID saw a lasting
+ *  positive error and sat at the peak limit, and the converter burst at
+ *  about 9 kHz (audible) whatever kp.  With the band clear of the ripple the
+ *  PID shrinks the pulses until they come every period: at 28 V, 1.5 % gave
+ *  V_out sd 32 mV and 27 skip transitions/s, 3 % 56 mV and 7/s, 5 % 66 mV
+ *  (sd was 272 mV and 17 500/s at +200 mV).                              */
+volatile uint16_t regulator_skip_above_permille = SKIP_ABOVE_PERMILLE_DEFAULT;
+_Static_assert(SKIP_ABOVE_PERMILLE_DEFAULT < (OVP_RELATIVE_PCT - 100u) * 10u / 2u,
+               "skip band must stay well under the relative OVP");
+
+/** Hysteresis on the skip decision, raw counts (3 counts is 57 mV).      */
+#define SKIP_HYSTERESIS_RAW 3u
+
+/** Bench alignment snapshot (mailbox SNAPSHOT): the VD_MON ring frozen at
+ *  the marker, oldest first, and the PID cycles the pulses stay held off
+ *  (the marker on SW2 the scope triggers on).                              */
+volatile uint16_t regulator_snapshot_trace[ADC1_DMA_SCANS];
+static volatile uint8_t snapshot_hold_cycles = 0u;
+volatile uint8_t  regulator_adc_per_pid[16];
+volatile uint32_t regulator_adc_per_pid_idx = 0u;
+extern ADC_HandleTypeDef hadc1;
+#define SNAPSHOT_HOLD_PID_CYCLES 2u   /* 100 us without pulses */
+
+/** The last ADC1_DMA_SCANS VD_MON samples (one per period, oldest first),
+ *  frozen when a software fault latches (the DMA ring keeps running).     */
+volatile uint16_t regulator_fault_trace[ADC1_DMA_SCANS];
 
 /* Boost precharge (2026-09-28, runs 32 and 33).  Starting boost directly
  * turns Q1, the input leg's static switch, fully on into an empty output:
@@ -215,21 +183,10 @@ static uint16_t vin_range_cycles = 0u;
 /* What the software safety check saw when it last latched a fault, for the
  * bench (2026-09-28, run 34: SW_OVP with the estimate at 31.2 V while the
  * period trace and debug log up to the fault read 29.1 V).  u32 each:
- * v_out_mv (the estimate), v_in_mv, the raw VD_MON sample, the estimate in
- * raw counts, the setpoint passed, the PID ISR count at the fault.       */
+ * v_out_mv (the median), v_in_mv, the newest raw VD_MON sample, the median
+ * in raw counts, the setpoint passed, skip transitions so far.           */
 volatile uint32_t regulator_fault_snapshot[6] = {0u};
 
-/** Hysteresis on the skip decision, raw counts (3 counts is 57 mV).      */
-#define SKIP_HYSTERESIS_RAW 3u
-
-/** Per-period trace of what the skip decision saw: bits 0-11 the raw
- *  VD_MON count read in the Timer A period ISR, bit 15 set when that period
- *  was skipped.  512 entries is 2.56 ms; the ISR stops writing on a fault,
- *  so the ring holds the last 2.56 ms before it.  Bring-up instrumentation
- *  (2026-09-27, run 9), read with `bu mem read regulator_period_trace`.  */
-#define PERIOD_TRACE_LENGTH 512u
-volatile uint16_t regulator_period_trace[PERIOD_TRACE_LENGTH];
-volatile uint16_t regulator_period_trace_index = 0u;
 
 /* External peripheral handles declared in main.c */
 extern HRTIM_HandleTypeDef  hhrtim1;
@@ -435,6 +392,7 @@ static volatile bool softstart_active = false;
  * not by power_path_enable(); see OUTPUT_CONNECT_MARGIN_MV.              */
 static volatile bool output_switch_on = false;
 
+_Static_assert(AWD_FILTER_SAMPLES >= 1u && AWD_FILTER_SAMPLES <= 8u, "AWD_FILTER_SAMPLES 1..8");
 _Static_assert(DCM_PULSE_START_TICKS + HRTIM_NS_TO_TICKS(DCM_ON_TIME_CEIL_NS) +
                DCM_REFRESH_DEADTIME_TICKS < HRTIM_PERIOD_COUNTS,
                "DCM_ON_TIME_CEIL_NS does not fit in the period");
@@ -458,6 +416,7 @@ _Static_assert(PEAK_CMD_MAX_COUNTS_BB <= PID_OUTPUT_MAX, "DCM_MAX_PEAK_MA_BB ove
  *  a debugger write.                                                      */
 volatile uint32_t regulator_cyc_pid[3];
 volatile uint32_t regulator_cyc_tima[3];
+volatile uint32_t regulator_cyc_awd[3];
 volatile uint32_t regulator_cyc_vin_poll[3];
 static inline void cyc_record(volatile uint32_t *c, uint32_t n)
 {
@@ -498,6 +457,28 @@ static void hrtim_start_timers(void);
 static void hrtim_apply_buck_mode_static_leg(void);
 static void hrtim_apply_boost_mode_static_leg(void);
 static void hrtim_apply_buck_boost_legs(void);
+static void hrtim_configure_adc_trigger(void);
+
+/** Outputs the pulse-skip watchdog turns off and on in a mode: the pulse
+ *  output(s) and the other leg's bootstrap refresh.  A skipped period
+ *  switches nothing: the refresh pulse alone rings L1 against the node
+ *  capacitances and pumps the output through the off leg's reverse
+ *  conduction (run 31, 29 to 32 V at no load with every pulse skipped).
+ *  Buck-boost keeps the Q2 refresh (TA2) that Q1's bootstrap needs, as
+ *  buck does.                                                             */
+static inline uint32_t skip_outputs(RegulatorMode mode)
+{
+    return (mode == REGULATOR_MODE_BOOST) ? (HRTIM_OUTPUT_TB2 | HRTIM_OUTPUT_TA2)
+                                          : (HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TB2);
+}
+
+/** Pulsing, with the watchdog window [0, on] (outputs already enabled). */
+static void skip_state_reset_pulsing(void)
+{
+    regulator_pulses_skipped = 0u;
+    adc_monitor_awd_window(0u, regulator_skip_raw_threshold);
+    ADC1->ISR = ADC_ISR_AWD1;
+}
 static uint32_t mode_switching_outputs(RegulatorMode mode);
 static void hrtim_disable_all_outputs(void);
 static void change_mode_while_running(RegulatorMode new_mode, uint32_t v_out_mv,
@@ -532,6 +513,11 @@ void regulator_init(void)
     /* --- Step 4: Start COMP1 (§6.1) --- */
     HAL_COMP_Start(&hcomp1);
 
+    /* Flash prefetch: PREFETCH_ENABLE is 0 in the generated
+     * stm32g4xx_hal_conf.h; with 4 wait states at 170 MHz it cut the PID
+     * ISR from 12.4 to 11.2 us (bench, 2026-09-28).                       */
+    __HAL_FLASH_PREFETCH_BUFFER_ENABLE();
+
     /* DWT cycle counter for regulator_cyc_* */
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
     DWT->CYCCNT = 0u;
@@ -539,7 +525,8 @@ void regulator_init(void)
 
     /* --- Step 5: Initialise ADC subsystem --- */
     adc_monitor_init();
-    adc_monitor_start_adc1_dma();
+    adc_monitor_awd_init();                    /* interrupt armed by regulator_start */
+    adc_monitor_start_adc1_dma();              /* waits for HRTIM ADC trigger 1 */
 
     /* --- Step 6: Initialise slope compensation (configures TIM6 rate,
      *             NVIC priority 0, does NOT start TIM6 yet)              --- */
@@ -678,19 +665,14 @@ void regulator_start(void)
     uint32_t ramp_steps = (uint32_t)SOFT_START_RAMP_MS *
                           (uint32_t)PID_EXECUTION_RATE_HZ / 1000u;
     if (ramp_steps == 0u) { ramp_steps = 1u; }
-    /* The V_out estimate starts at 0 and the ramp with it.  Seeding both
-     * from the latest ADC1 sample (runs 1 to 31) read 36.5 V at the start
-     * of run 32 (2026-09-28, boost), right after INPUT_EN closed the input
-     * switch, and the relative OVP tripped on the first PID cycle before
-     * anything switched; a single sample there is not trustworthy.  From 0
-     * the estimate reaches the real value through VOUT_RISE_PERSIST_PERIODS
-     * within 20 us, and while the ramp is below the output every pulse is
-     * skipped, so a residual or primed V_out (run 1's 410 mV in buck, about
-     * V_in in boost) costs only the ramp time to that voltage.           */
+    /* The ramp starts at 0.  A residual or primed V_out (run 1's 410 mV in
+     * buck, about V_in in boost) sits above the skip band until the ramp
+     * reaches it, so the watchdog holds the pulses off meanwhile (armed
+     * below, band set by the first PID cycle).                            */
     uint32_t v_out_now_mv = 0u;
-    regulator_vout_est_raw = 0u;
-    vout_rise_budget_raw   = VOUT_RISE_BUDGET_MAX_RAW;
-    vout_above_periods     = 0u;
+    regulator_skip_raw_threshold = (uint16_t)((PULSE_SKIP_ABOVE_MV * ADC_FULL_SCALE_COUNTS) / VD_MON_FULL_SCALE_MV);
+    regulator_skip_off_raw       = 0u;
+    skip_state_reset_pulsing();
     if (v_out_now_mv > voltage_mv) { v_out_now_mv = voltage_mv; }
     softstart_increment_mv = (voltage_mv - v_out_now_mv) / ramp_steps;
     if (softstart_increment_mv == 0u) { softstart_increment_mv = 1u; }
@@ -727,10 +709,20 @@ void regulator_start(void)
                             (SlopeCompMode)regulator_mode);
     slope_comp_start(0u);   /* peak starts at 0; ramps up with soft-start */
 
-    /* --- Start PID timer (TIM7) --- */
+    /* --- Start the PID timer (TIM7); the pulse-skip watchdog is armed
+     * after the state is RUNNING (below).                                 */
     HAL_TIM_Base_Start_IT(&htim7);
 
     regulator_state = REGULATOR_STATE_RUNNING;
+
+    /* Arm the pulse-skip watchdog only now: its ISR disarms itself when the
+     * state is not RUNNING, and armed earlier a boot sample above the
+     * initial 200 mV window got there first on one boot in three: no
+     * skipping for the whole run, and an unloaded boost precharge handover
+     * pumped V_out to the OVP (2026-09-28 evening).  The PID ISR re-arms it
+     * as well if it ever finds it off while RUNNING.                       */
+    ADC1->ISR  = ADC_ISR_AWD1;
+    ADC1->IER |= ADC_IER_AWD1IE;
 }
 
 /* =========================================================================
@@ -852,6 +844,23 @@ static void regulator_debug_poll_isr(void)
     if (cmd == REGULATOR_DEBUG_CMD_STOP)
     {
         regulator_stop();
+        debug_complete(cmd, 0u);
+    }
+    else if (cmd == REGULATOR_DEBUG_CMD_SNAPSHOT)
+    {
+        if (regulator_state != REGULATOR_STATE_RUNNING)
+        {
+            debug_complete(cmd, 1u);
+            return;
+        }
+        uint32_t scan = adc_monitor_latest_scan();
+        for (uint32_t k = 0u; k < ADC1_DMA_SCANS; k++)   /* oldest first */
+        {
+            scan = (scan + 1u) % ADC1_DMA_SCANS;
+            regulator_snapshot_trace[k] = adc_monitor_vd_at(scan);
+        }
+        HRTIM1->sCommonRegs.ODISR = skip_outputs(regulator_mode);
+        snapshot_hold_cycles = SNAPSHOT_HOLD_PID_CYCLES;
         debug_complete(cmd, 0u);
     }
     else if (cmd == REGULATOR_DEBUG_CMD_SET_VOLTAGE)
@@ -1040,152 +1049,58 @@ RegulatorMode regulator_get_mode(void)
  */
 void regulator_hrtim_tima_period_isr(void)
 {
+    /* Unused since 2026-09-28 evening: the Timer A period interrupt is no
+     * longer enabled (see "V_out sensing and pulse skipping" at the top).  */
+}
+
+/**
+ * regulator_adc1_awd_isr — ADC1 analog watchdog 1: V_out crossed the skip
+ * band (after AWD_FILTER_SAMPLES consecutive samples).  Toggles the pulse
+ * outputs and swings the window to the other edge of the band.
+ * Priority: NVIC_PRIORITY_HRTIM (1), above the PID ISR, which also writes
+ * the window (inside a critical section).
+ */
+void regulator_adc1_awd_isr(void)
+{
+    const uint32_t cyc0 = DWT->CYCCNT;
+    ADC1->ISR = ADC_ISR_AWD1;
     if (regulator_state != REGULATOR_STATE_RUNNING)
     {
+        ADC1->IER &= ~ADC_IER_AWD1IE;
         return;
     }
-    const uint32_t cyc0 = DWT->CYCCNT;
-
-    /* Check if this period reset was caused by the Compare 2 backstop.
-     * We distinguish by checking the HRTIM Timer A interrupt status register:
-     *   - REP flag (bit 0) = period/repetition interrupt
-     *   - CMP2 flag (bit 5) = compare 2 match interrupt
-     *
-     * TODO(hardware): Wire CMP2 interrupt properly.  For now, backstop
-     * counting is a TODO pending hardware verification that CMP2 fires
-     * correctly.  See §10.3.
-     */
-
-    /* Reload DAC3 CH1 with current PID peak value.
-     * Must happen before the blanking window expires (§7.6).              */
-#if SLOPE_COMP_ENABLED
-    slope_comp_reload_dac_peak();   /* the ramp restarts from the peak each period */
-#endif
-
-    /* Glitch-free V_out for this period; see regulator_vout_est_raw.  The
-     * estimate follows the sample, but rises only by the credit the pulses
-     * issued so far have earned, and falls by a bounded amount.           */
-    uint16_t raw      = adc1_dma_buffer[ADC1_DMA_INDEX_VD_MON];
-    uint16_t vout_est = regulator_vout_est_raw;
-    if (raw > vout_est)
+    /* Software filter: act only if the last AWD_FILTER_SAMPLES samples are
+     * all out of the window; otherwise a later sample re-raises the flag.  */
     {
-        uint16_t rise     = (uint16_t)(raw - vout_est);
-        uint16_t rise_max = vout_rise_budget_raw;
-        if (rise > rise_max) { rise = rise_max; }
-        vout_est             = (uint16_t)(vout_est + rise);
-        vout_rise_budget_raw = (uint8_t)(vout_rise_budget_raw - rise);
-        if (raw > vout_est)
+        uint16_t v[8];
+        adc_monitor_vd_recent(v, AWD_FILTER_SAMPLES);
+        for (uint32_t k = 0u; k < AWD_FILTER_SAMPLES; k++)
         {
-            if (vout_above_periods == 0u)
+            bool out = regulator_pulses_skipped ? (v[k] < regulator_skip_off_raw)
+                                                : (v[k] > regulator_skip_raw_threshold);
+            if (!out)
             {
-                vout_above_min_raw = raw;
-                vout_above_max_raw = raw;
-                vout_above_rising  = true;
-            }
-            else if (raw < vout_above_last_raw ||
-                     (uint16_t)(raw - vout_above_last_raw) > VOUT_RISE_STEP_MAX_RAW)
-            {
-                vout_above_rising = false;
-            }
-            vout_above_last_raw = raw;
-            if (raw < vout_above_min_raw) { vout_above_min_raw = raw; }
-            if (raw > vout_above_max_raw) { vout_above_max_raw = raw; }
-            vout_above_periods++;
-            if (!vout_above_rising &&
-                (uint16_t)(vout_above_max_raw - vout_above_min_raw) > VOUT_RISE_PERSIST_SPREAD_RAW)
-            {
-                /* neither one level nor a steady rise: a glitch run; count
-                 * again from here */
-                vout_above_min_raw = raw;
-                vout_above_max_raw = raw;
-                vout_above_rising  = true;
-                vout_above_periods = 1u;
-            }
-            if (vout_above_periods >= VOUT_RISE_PERSIST_PERIODS)
-            {
-                /* sustained: the rise is real, as far as its lowest sample */
-                if (vout_above_min_raw > vout_est) { vout_est = vout_above_min_raw; }
-                vout_above_periods = 0u;
+                regulator_awd_rejected++;
+                cyc_record(regulator_cyc_awd, DWT->CYCCNT - cyc0);
+                return;
             }
         }
-        else
-        {
-            vout_above_periods = 0u;
-        }
+    }
+    const uint32_t outs = skip_outputs(regulator_mode);
+    if (regulator_pulses_skipped == 0u)
+    {
+        HRTIM1->sCommonRegs.ODISR = outs;
+        regulator_pulses_skipped  = 1u;
+        adc_monitor_awd_window(regulator_skip_off_raw, 0xFFFu);
     }
     else
     {
-        vout_above_periods = 0u;
-        uint16_t fall = (uint16_t)(vout_est - raw);
-        vout_est = (uint16_t)(vout_est - ((fall < VOUT_FALL_RAW) ? fall : (uint16_t)VOUT_FALL_RAW));
+        if (snapshot_hold_cycles == 0u) { HRTIM1->sCommonRegs.OENR = outs; }
+        regulator_pulses_skipped = 0u;
+        adc_monitor_awd_window(0u, regulator_skip_raw_threshold);
     }
-    regulator_vout_est_raw = vout_est;
-
-#if !SYNC_RECT_ENABLED
-    /* Pulse skipping, decided every switching period (2026-09-27, run 7).
-     * Deciding it once per PID period let up to ten charge pulses through
-     * before the next look at V_out; at no load each is about 30 mV on the
-     * output, so the ripple was 0.4 V and the relative OVP tripped at 5.5 V.
-     * ADC1 scans VD_MON continuously into adc1_dma_buffer; comparing the raw
-     * count against a threshold the PID ISR keeps in raw counts costs a few
-     * cycles here.  OENR and ODISR are write-1 registers, so a plain store
-     * touches only the outputs named: the pulse output, TA1 (Q1) in buck
-     * and TB2 (Q4) in boost, and the other leg's bootstrap refresh output,
-     * TB2 (Q4) in buck and TA2 (Q2) in boost (2026-09-28, runs 31 and 32).
-     * A skipped period switches nothing: the refresh pulse alone rings L1
-     * against the node capacitances and pumps the output through the
-     * off leg's reverse conduction (run 31, 29 to 32 V at no load with
-     * every pulse skipped).  The static switch's gate holds on its
-     * bootstrap capacitor meanwhile; the next enabled period refreshes it
-     * before its pulse starts (CMP3 before CMP4).  A pulse that has
-     * already started this period is cut short by the disable, which is
-     * the right direction.                                                */
-    {
-        /* Buck-boost skips both pulse outputs, TA1 and TB2, and keeps the
-         * Q2 refresh (TA2) that Q1's bootstrap needs, as in buck.         */
-        const uint32_t skip_outputs = (regulator_mode == REGULATOR_MODE_BOOST)
-                                          ? (HRTIM_OUTPUT_TB2 | HRTIM_OUTPUT_TA2)
-                                          : (HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TB2);
-        if (vout_est > regulator_skip_raw_threshold)
-        {
-            HRTIM1->sCommonRegs.ODISR = skip_outputs;
-            regulator_pulses_skipped  = 1u;
-        }
-        else if ((uint32_t)vout_est + SKIP_HYSTERESIS_RAW < regulator_skip_raw_threshold)
-        {
-            HRTIM1->sCommonRegs.OENR  = skip_outputs;
-            regulator_pulses_skipped  = 0u;
-        }
-        /* else: inside the band, keep the previous decision. */
-
-        if (regulator_pulses_skipped == 0u)
-        {
-            /* One pulse this period: credit the rise it can produce. */
-            uint16_t budget = (uint16_t)vout_rise_budget_raw + VOUT_RISE_PER_PULSE_RAW;
-            vout_rise_budget_raw = (budget > VOUT_RISE_BUDGET_MAX_RAW)
-                                       ? (uint8_t)VOUT_RISE_BUDGET_MAX_RAW : (uint8_t)budget;
-        }
-
-        regulator_period_trace[regulator_period_trace_index] =
-            (uint16_t)(raw & 0x0FFFu) |
-            (uint16_t)(regulator_pulses_skipped ? 0x8000u : 0u);
-        regulator_period_trace_index =
-            (uint16_t)((regulator_period_trace_index + 1u) % PERIOD_TRACE_LENGTH);
-    }
-#else
-    vout_rise_budget_raw = VOUT_RISE_BUDGET_MAX_RAW;
-#endif
-    cyc_record(regulator_cyc_tima, DWT->CYCCNT - cyc0);
-
-    /* TODO(debug): Confirm DAC reload timing with oscilloscope: probe DAC3
-     * output (PA5 / DAC3_OUT1) and TA1 switching node; the DAC must settle
-     * to the new peak value before CMP1 unmasks EEV4 (~100 ns in buck,
-     * ~500 ns in boost from period reset). (§7.6) */
-
-    /* Clear the HRTIM Timer A repetition interrupt flag */
-    /* This is handled by the HAL callback mechanism or direct register clear:
-     * HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].TIMxICR = HRTIM_TIMISR_REP;
-     * The HAL IRQ handler clears it; we just need to implement the callback. */
+    regulator_skip_events++;
+    cyc_record(regulator_cyc_awd, DWT->CYCCNT - cyc0);
 }
 
 /**
@@ -1246,20 +1161,36 @@ void regulator_pid_tim7_isr(void)
     }
 
     const uint32_t cyc0 = DWT->CYCCNT;
+    {   /* bench: ADC1 results per PID period (DMA ring advance), last 16 */
+        static uint32_t prev_next = 0u;
+        uint32_t next = ADC1_DMA_BUFFER_LENGTH - hadc1.DMA_Handle->Instance->CNDTR;
+        regulator_adc_per_pid[regulator_adc_per_pid_idx++ & 15u] =
+            (uint8_t)((next + ADC1_DMA_BUFFER_LENGTH - prev_next) % ADC1_DMA_BUFFER_LENGTH);
+        prev_next = next;
+    }
+    if (snapshot_hold_cycles != 0u && --snapshot_hold_cycles == 0u &&
+        regulator_pulses_skipped == 0u)
+    {
+        HRTIM1->sCommonRegs.OENR = skip_outputs(regulator_mode);   /* marker over */
+    }
     regulator_debug_poll_isr();
     if (regulator_state != REGULATOR_STATE_RUNNING)
     {
         return;   /* a STOP from the mailbox */
     }
+    if ((ADC1->IER & ADC_IER_AWD1IE) == 0u)
+    {
+        ADC1->IER |= ADC_IER_AWD1IE;   /* see regulator_start */
+    }
 
     /* --- 1. Trigger and read ADC conversions --- */
     adc_monitor_trigger_vin();
-    adc_monitor_scale_adc1_buffer();   /* latest free-running ADC1 scan */
 
-    /* V_out from the per-period slew-limited estimate (see
-     * regulator_vout_est_raw), not the latest single sample: the PID, the
-     * soft-start, the software OVP and UVP and the debug log all see the
-     * glitch-free value.  The raw sample stays in adc_measurements.v_out_mv. */
+    /* V_out as the trimmed mean of the last VOUT_MEDIAN_SAMPLES VD_MON
+     * samples (see "V_out sensing and pulse skipping"): the PID, soft-start,
+     * OVP/UVP and the debug log all see it.  The newest raw sample is in
+     * adc_measurements.v_out_mv.                                          */
+    regulator_vout_est_raw = adc_monitor_update(VOUT_MEDIAN_SAMPLES);   /* also the currents */
     uint32_t v_out_mv  = ((uint32_t)regulator_vout_est_raw
                           * VD_MON_FULL_SCALE_MV) / ADC_FULL_SCALE_COUNTS;
     uint32_t i_l_ma    = adc_measurements.i_inductor_ma;
@@ -1324,12 +1255,23 @@ void regulator_pid_tim7_isr(void)
                                                               commanded_mv);
         if (new_mode != regulator_mode)
         {
-            if (new_mode == REGULATOR_MODE_BOOST && regulator_mode == REGULATOR_MODE_BUCK &&
-                v_out_mv + BOOST_PRECHARGE_BELOW_VIN_MV < v_in_mv)
+            /* Never enter boost with V_out far under V_in: Q1 turning fully
+             * on rings the output toward 2 * V_in (runs 32 and 33).  This
+             * was checked only from buck until a start at V_in 24.5 V put a
+             * 28 V target on the buck-boost/boost edge: the precharge was
+             * dropped (target in the buck-boost band), buck went to
+             * buck-boost and on the next cycle to boost at V_out 6.6 V, which
+             * rang to 35.8 V (SW_OVP, 2026-09-28 evening).                  */
+            const bool output_low = (v_out_mv + BOOST_PRECHARGE_BELOW_VIN_MV < v_in_mv);
+            if (new_mode == REGULATOR_MODE_BOOST && output_low)
             {
-                /* Stay in buck until the output is precharged (see
-                 * boost_precharge); step 4b hands over.                      */
-                boost_precharge = true;
+                if (regulator_mode == REGULATOR_MODE_BUCK)
+                {
+                    /* Stay in buck until the output is precharged (see
+                     * boost_precharge); step 4b hands over.                  */
+                    boost_precharge = true;
+                }
+                /* else buck-boost: stays, and raises V_out at any ratio */
             }
             else
             {
@@ -1492,7 +1434,7 @@ void regulator_pid_tim7_isr(void)
         if (t_on_ns > DCM_ON_TIME_CEIL_NS) { t_on_ns = DCM_ON_TIME_CEIL_NS; }
         if (t_on_ns < DCM_MIN_ON_TIME_NS)  { t_on_ns = DCM_MIN_ON_TIME_NS; }
         regulator_on_time_ns = (uint16_t)t_on_ns;
-        const uint32_t cmp2 = DCM_PULSE_START_TICKS + HRTIM_NS_TO_TICKS(t_on_ns);
+        const uint32_t cmp2 = DCM_PULSE_START_TICKS + HRTIM_NS_TO_TICKS_RT(t_on_ns);
         /* Q1 (buck, buck-boost) on from CMP4 to Timer A CMP2; Q4 (boost,
          * buck-boost) on from CMP4 to Timer B CMP2, TB1's set, through the
          * dead-time generator.                                            */
@@ -1525,9 +1467,20 @@ void regulator_pid_tim7_isr(void)
      * (regulator_config.h).  Refreshed here so the soft-start ramp is
      * respected.  Raw counts = mV * 4096 / the calibrated VD_MON full
      * scale.                                                               */
-    regulator_skip_raw_threshold =
-        (uint16_t)(((effective_setpoint_mv + PULSE_SKIP_ABOVE_MV)
-                    * ADC_FULL_SCALE_COUNTS) / VD_MON_FULL_SCALE_MV);   /* < 70000 * 4096 */
+    {
+        uint32_t above_mv = (effective_setpoint_mv * regulator_skip_above_permille) / 1000u;
+        if (above_mv < PULSE_SKIP_ABOVE_MV) { above_mv = PULSE_SKIP_ABOVE_MV; }
+        uint32_t on = ((effective_setpoint_mv + above_mv)
+                       * ADC_FULL_SCALE_COUNTS) / VD_MON_FULL_SCALE_MV;   /* < 70000 * 4096 */
+        if (on > 0xFFEu) { on = 0xFFEu; }
+        uint32_t off = (on > SKIP_HYSTERESIS_RAW) ? (on - SKIP_HYSTERESIS_RAW) : 0u;
+        __disable_irq();   /* the watchdog ISR writes the window too */
+        regulator_skip_raw_threshold = (uint16_t)on;
+        regulator_skip_off_raw       = (uint16_t)off;
+        if (regulator_pulses_skipped) { adc_monitor_awd_window(off, 0xFFFu); }
+        else                          { adc_monitor_awd_window(0u, on); }
+        __enable_irq();
+    }   /* < 70000 * 4096 */
 
     /* --- 8. Software safety checks (§10.2) ---
      * Checked against the slewed target (step 4a), not the soft-start ramp: on the
@@ -1724,11 +1677,10 @@ static void hrtim_configure_compare_registers(void)
  */
 static void hrtim_enable_period_and_fault_interrupts(void)
 {
-    /* Enable Timer A repetition (period) interrupt */
-    __HAL_HRTIM_TIMER_ENABLE_IT(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A,
-                                  HRTIM_TIM_IT_REP);
-    HAL_NVIC_SetPriority(HRTIM1_TIMA_IRQn, NVIC_PRIORITY_HRTIM, 0u);
-    HAL_NVIC_EnableIRQ(HRTIM1_TIMA_IRQn);
+    /* No Timer A period interrupt since 2026-09-28 evening: pulse skipping
+     * is the ADC1 analog watchdog (top of file), at the same priority.     */
+    HAL_NVIC_SetPriority(ADC1_2_IRQn, NVIC_PRIORITY_HRTIM, 0u);
+    HAL_NVIC_EnableIRQ(ADC1_2_IRQn);
 
     /* Route the HRTIM fault interrupt.  FLT1/FLT2 sources stay disarmed
      * here: VS_GOOD is low whenever INPUT_EN is off, so they are armed by
@@ -1816,11 +1768,35 @@ static bool input_path_power_up(RegulatorFaultSource *failure)
  * Both Timer A and Timer B must be running for their compare and period
  * events to fire.  Outputs are enabled separately in regulator_start().
  */
+/**
+ * hrtim_configure_adc_trigger — Master timer at the switching period with
+ * MCMP1 at ADC_TRIGGER_TICKS, routed to HRTIM ADC trigger 1 (ADC1's regular
+ * trigger in final.ioc).  Started with Timers A and B in one write
+ * (hrtim_start_timers), so the trigger keeps a fixed phase in their period.
+ * final.ioc keeps ADC trigger 1 on the master period (CubeMX generation
+ * hangs with MASTER_CMP1 while the master compare unit is not configured
+ * there, 2026-09-28); ADC1R is set to master compare 1 here.  Its
+ * postscaler (HRTIM1.postscaler1) must be 0: at 0x0F, from the original
+ * design, only one trigger in 16 reached the ADC (12.5 kHz, found by
+ * logging the DMA advance per PID period).
+ */
+static void hrtim_configure_adc_trigger(void)
+{
+    HRTIM1->sMasterRegs.MPER   = HRTIM_PERIOD_COUNTS;
+    HRTIM1->sMasterRegs.MCMP1R = ADC_TRIGGER_TICKS;
+    HRTIM1->sMasterRegs.MCR    = (HRTIM1->sMasterRegs.MCR & ~HRTIM_MCR_CK_PSC) |
+                                 (HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].TIMxCR & HRTIM_TIMCR_CK_PSC) |
+                                 HRTIM_MCR_CONT;
+    HRTIM1->sCommonRegs.ADC1R  = HRTIM_ADC1R_AD1MC1;
+}
+
 static void hrtim_start_timers(void)
 {
+    hrtim_configure_adc_trigger();
     /* Start Timer A and Timer B counters.
      * HAL_HRTIM_WaveformCounterStart_IT enables the timer with interrupts. */
     HAL_HRTIM_WaveformCounterStart_IT(&hhrtim1,
+                                       HRTIM_TIMERID_MASTER |
                                        HRTIM_TIMERID_TIMER_A | HRTIM_TIMERID_TIMER_B);
 }
 
@@ -2021,6 +1997,7 @@ static void change_mode_while_running(RegulatorMode new_mode, uint32_t v_out_mv,
         hrtim_apply_boost_mode_static_leg();
     }
     HAL_HRTIM_WaveformOutputStart(&hhrtim1, mode_switching_outputs(regulator_mode));
+    skip_state_reset_pulsing();
 
     /* Reset soft-start for the mode transition (§11.4) */
     uint32_t ramp_steps = (uint32_t)SOFT_START_RAMP_MS *
@@ -2177,10 +2154,16 @@ static void record_fault_snapshot(uint32_t v_out_mv, uint32_t v_in_mv,
 {
     regulator_fault_snapshot[0] = v_out_mv;
     regulator_fault_snapshot[1] = v_in_mv;
-    regulator_fault_snapshot[2] = adc1_dma_buffer[ADC1_DMA_INDEX_VD_MON];
+    uint32_t scan = adc_monitor_latest_scan();
+    regulator_fault_snapshot[2] = adc_monitor_vd_at(scan);
     regulator_fault_snapshot[3] = regulator_vout_est_raw;
     regulator_fault_snapshot[4] = v_setpoint_mv;
-    regulator_fault_snapshot[5] = regulator_period_trace_index;
+    regulator_fault_snapshot[5] = regulator_skip_events;
+    for (uint32_t k = 0u; k < ADC1_DMA_SCANS; k++)   /* oldest first */
+    {
+        scan = (scan + 1u) % ADC1_DMA_SCANS;
+        regulator_fault_trace[k] = adc_monitor_vd_at(scan);
+    }
 }
 
 static bool software_safety_checks_pass(uint32_t v_out_mv,

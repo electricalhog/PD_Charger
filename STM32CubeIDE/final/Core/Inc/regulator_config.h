@@ -293,6 +293,11 @@ extern "C" {
 #define HRTIM_NS_TO_TICKS(ns) \
     ((uint32_t)((uint64_t)(ns) * (SYSCLK_HZ / 1000000UL) * HRTIM_PRESCALER_MUL / 1000UL))
 
+/** The same for a runtime value in 32-bit arithmetic (a 64-bit divide in the
+ *  PID ISR costs ~1 % of the CPU); exact for ns below 789 000.            */
+#define HRTIM_NS_TO_TICKS_RT(ns) \
+    (((uint32_t)(ns) * (uint32_t)((SYSCLK_HZ / 1000000UL) * HRTIM_PRESCALER_MUL)) / 1000u)
+
 /**
  * HRTIM_PERIOD_COUNTS — HRTIM period register value; sets switching frequency.
  * Units  : HRTIM timer counts (183.82 ps/count at MUL32 prescaler)
@@ -512,6 +517,33 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
 #define VIN_FILTER_SHIFT 5u
 
 /**
+ * ADC_VD_SAMPLE_END_NS — Where in the switching period VD_MON's sample ends
+ *          (ADC1 is triggered once per period by HRTIM master compare 1).
+ *          4.85 us: after the pulse and inductor discharge at every point
+ *          swept (they end by about 2.5 us), before the next period's Q2
+ *          refresh edge at 0.
+ * ADC_VD_SAMPLING_NS — The window VD_MON's result averages: 8 conversions
+ *          of 6.5 + 12.5 ADC cycles at 42.5 MHz (PCLK/4), 3.58 us, so the
+ *          result is the mean over 1.27 to 4.85 us of the period.
+ * Units  : ns
+ */
+#define ADC_VD_SAMPLE_END_NS 4850u
+#define ADC_VD_SAMPLING_NS   3576u
+#define ADC_TRIGGER_TICKS    HRTIM_NS_TO_TICKS(ADC_VD_SAMPLE_END_NS - ADC_VD_SAMPLING_NS)
+
+/**
+ * AWD_FILTER_SAMPLES — Consecutive VD_MON samples (one per period) outside
+ *          the skip window before skipping toggles (1 to 8), checked in the
+ *          watchdog ISR against the DMA ring (the hardware AWDFILT does not
+ *          work with a multi-channel scan, adc_monitor.h).  2 rejects a
+ *          single bad sample at 5 us of lag.
+ * VOUT_MEDIAN_SAMPLES — Samples in the trimmed mean V_out the PID uses
+ *          (highest and lowest dropped).
+ */
+#define AWD_FILTER_SAMPLES  2u
+#define VOUT_MEDIAN_SAMPLES 9u
+
+/**
  * DCM_REFRESH_DEADTIME_NS — Gap between the low-side refresh pulse and the
  * high-side charge pulse on the same leg while SYNC_RECT_ENABLED is 0.
  * Units  : ns
@@ -600,6 +632,11 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
  *          (asserted after OVP_RELATIVE_PCT).
  */
 #define PULSE_SKIP_ABOVE_MV 200u
+
+/** SKIP_ABOVE_PERMILLE_DEFAULT — The skip band's proportional part, per mille
+ *  of the setpoint (regulator_skip_above_permille, runtime); the band is the
+ *  larger of this and PULSE_SKIP_ABOVE_MV.  Must stay under OVP_RELATIVE_PCT. */
+#define SKIP_ABOVE_PERMILLE_DEFAULT 15u
 
 /**
  * MAX_DUTY_CYCLE_PCT — Maximum allowed charge-phase duty cycle.
@@ -967,7 +1004,13 @@ _Static_assert(PULSE_SKIP_ABOVE_MV * 100u < SETPOINT_MIN_MV * (OVP_RELATIVE_PCT 
  *          no offset was resolvable from those points.  The cause of the
  *          30 percent VD_MON error is not known.
  */
-#define VD_MON_FULL_SCALE_MV 78400u   /* 60000 × 1.306 */
+/* 2026-09-28 evening: 80600 (x1.028) for the HRTIM-triggered, 8x oversampled
+ * VD_MON (6.5-cycle samples, 1.6 M conversions/s): the scope on TP2 read
+ * 1.7, 2.7 and 3.0 percent above the ADC at 12, 20 and 28 V.  The likely
+ * cause is the sample capacitor's charge draw through the ~5.5 kOhm divider
+ * at that rate (about 10 uA), a gain error that did not show at 12.5 kHz.
+ * Recalibrate if the ADC1 sampling time, ratio or trigger rate changes. */
+#define VD_MON_FULL_SCALE_MV 80600u   /* was 78400 (60000 x 1.306) */
 #define VS_MON_FULL_SCALE_MV 56800u   /* 60000 × 0.947 */
 
 /**
