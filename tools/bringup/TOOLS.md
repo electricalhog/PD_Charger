@@ -25,7 +25,7 @@ tools/bringup/bu <command> [<subcommand>] [args...]
 
 ### Wrapping as an MCP server
 
-`bu schema` lists all 58 commands with arguments (name, flag, positional,
+`bu schema` lists all 62 commands with arguments (name, flag, positional,
 required, kind `flag|value|list`, type, choices, default, help) and an
 **effect class** you can map to MCP tool annotations and a confirmation policy:
 
@@ -95,6 +95,9 @@ Times and JSON sizes are measured (typical). "Artifact" = file written to `bring
 | `scope scpi CMD` | actuate | raw SCPI escape hatch | 0.1 s | < 1 kB | – |
 | `la scan\|decoders\|capture\|decode\|edges` | read | sigrok-cli capture/decode (**untested**: sigrok-cli not installed) | – | – | `.sr`, decode `.txt` |
 | `serial list [--all]` / `serial capture …` | read | USB serial ports / capture (**capture untested**) | 0.1 s / `--seconds` | < 2 kB | `.log` / `.bin` |
+| `pd status` | read | USB PD policy over SWD (`pd_power_status` + knobs): attach, contract, EPR mode, VCONN, VBUS/IBUS, offered SPR/EPR PDOs, counters (**untested on hardware**) | ~1 s | ~3 kB | – |
+| `pd set [--source bench_5v\|regulator] [--profile bench_5v\|spr\|epr] [--path-max-mv N]` | actuate | offer knobs; firmware rebuilds the PDOs and re-sends Source_Capabilities while attached (**untested on hardware**) | ~2 s | ~3 kB | – |
+| `pd trace [--seconds S] [--file F]` | read | capture + decode the UCPD tracer (VCP, 921600 8N1): CAD events, PD messages with PDO/RDO/EPR_Mode decode, notifications, debug strings; not while CubeMonitor-UCPD holds the port | `--seconds` | ≤ `--show` lines | `.bin` + `.log` |
 
 ## 3. External programs and libraries
 

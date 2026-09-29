@@ -234,6 +234,27 @@ bu serial list
 bu serial capture --seconds 3 [--baud 921600 --bytesize 7] [--hex] [--until 'READY']
 ```
 
+### 8b. USB PD (UCPD1 + X-NUCLEO-SRC1M1, ST USBPD core V5.3 with EPR)
+```
+bu pd status                     # attach, contract, EPR mode, VCONN, VBUS/IBUS, offered PDOs, counters
+bu pd trace --seconds 10         # decode the UCPD tracer: CAD, PD messages (PDO/RDO/EPR_Mode), notifications
+bu pd trace --file bringup_out/<x>_pdtrace.bin   # re-decode a capture
+bu pd set --source regulator --profile spr       # ASK FIRST: changes what the port offers
+```
+- The tracer and STM32CubeMonitor-UCPD share the VCP: one at a time.
+  Nothing is traced while idle; attach a sink to see traffic.
+- Offer = profile clipped to the VBUS source and `--path-max-mv`. Boot
+  defaults: source BENCH_5V (shield VIN from the NUCLEO 5 V rail: 5 V /
+  0.5 A only), profile EPR, path max 20 V (the SRC1M1 is an SPR board). EPR
+  PDOs (28/36/48 V) and the EPR Mode Capable bit appear only with source
+  REGULATOR and a path max above 20 V: only with EPR-rated protection on VBUS.
+- EPR entry also needs an EPR (5 A, EPR-capable e-marker) cable: the stack
+  sources VCONN and discovers the cable over SOP' before Enter_Succeeded.
+- With the shield stacked, PC8 (OUTPUT_EN) is the TCPP ENABLE pin and stays
+  high (`OUTPUT_EN_SHARED_WITH_TCPP`); the regulator's output switch no longer
+  gates the output. SRC1M1 VSENSE/ISENSE (PA0/PC1) are sampled on ADC2
+  injected channels; ADC1 stays the regulator's.
+
 ## Configuration
 Defaults: `tools/bringup/bringup.toml`. Machine-specific values (scope address,
 ST-LINK serial, analyzer driver) go in `tools/bringup/bringup.local.toml`

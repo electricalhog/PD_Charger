@@ -14,7 +14,7 @@ import traceback
 from pathlib import Path
 
 from . import build as build_mod
-from . import cubemx, logic, probe, profile, regulator, serialmon, usercode
+from . import cubemx, logic, pd, probe, profile, regulator, serialmon, usercode
 from .config import REPO_ROOT, ToolError, cubemx_exe, gdb_exe, load_config, paths, programmer_exe, rel, run
 from .ioc import Ioc, diff_ioc
 
@@ -346,6 +346,18 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("-A", "--annotations")
     g = la.add_parser("edges", help="per-channel stats of an existing .sr"); g.add_argument("file")
 
+    # USB PD
+    pp = sub.add_parser("pd", help="USB PD stack: policy state (pd_power), offer knobs, tracer decode").add_subparsers(dest="op", required=True)
+    pp.add_parser("status", help="attach/contract/EPR state, VBUS, offered PDOs, counters (SWD)")
+    g = pp.add_parser("set", help="write the offer knobs; the firmware re-advertises while attached")
+    g.add_argument("--source", choices=["bench_5v", "regulator"], help="where VBUS comes from")
+    g.add_argument("--profile", choices=["bench_5v", "spr", "epr"])
+    g.add_argument("--path-max-mv", type=int, help="highest VBUS the port hardware may carry")
+    g = pp.add_parser("trace", help="capture + decode the UCPD tracer on the VCP (921600 8N1); not while CubeMonitor-UCPD holds the port")
+    g.add_argument("--seconds", type=float, default=5.0); g.add_argument("--port")
+    g.add_argument("--file", help="decode a saved capture instead of capturing")
+    g.add_argument("--show", type=int, default=200, help="decoded lines returned (all go to the .log)")
+
     # serial
     se = sub.add_parser("serial", help="VCP / UART capture").add_subparsers(dest="op", required=True)
     g = se.add_parser("list"); g.add_argument("--all", action="store_true", help="include non-USB ports")
@@ -373,6 +385,7 @@ EFFECTS = {
     "scope delay": "read", "scope screenshot": "read", "scope capture": "actuate",
     "la scan": "read", "la decoders": "read", "la decode": "read", "la edges": "read", "la capture": "read",
     "serial list": "read", "serial capture": "read",
+    "pd status": "read", "pd set": "actuate", "pd trace": "read",
 }
 
 
@@ -468,6 +481,12 @@ def dispatch(cfg: dict, a) -> dict:
         if a.op == "decode":
             return {"ok": True, **logic.decode(cfg, a.file, a.decoder, a.annotations)}
         return {"ok": True, **logic.edges(cfg, a.file)}
+    if c == "pd":
+        if a.op == "status":
+            return pd.status(cfg)
+        if a.op == "set":
+            return pd.set_knobs(cfg, a.source, a.profile, a.path_max_mv)
+        return pd.trace(cfg, a.seconds, a.port, a.file, a.show)
     if c == "serial":
         if a.op == "list":
             return serialmon.list_ports(a.all)
