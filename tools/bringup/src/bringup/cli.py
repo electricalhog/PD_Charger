@@ -299,6 +299,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("targets", help="comma list of mV, e.g. 24000,20000,12000")
     g.add_argument("--dwell", type=float, default=1.0, help="seconds after the slew before sampling")
     g.add_argument("--scope", metavar="CHn", help="also measure VAVG/VPP on this channel")
+    g = rg.add_parser("snapshot", help="freeze the VD_MON ring and mark the moment on SW2 (100 us without pulses)")
+    g.add_argument("--timeout", type=float, default=3.0)
     g = rg.add_parser("start", help="set the target (mV) and start from IDLE (after stop or clear-fault)")
     g.add_argument("mv", type=int); g.add_argument("--timeout", type=float, default=5.0)
 
@@ -366,7 +368,7 @@ EFFECTS = {
     "probe list": "read", "probe reset": "actuate", "flash": "actuate",
     "sym": "read", "layout": "read", "mem read": "read", "mem write": "actuate",
     "profile": "read", "regulator status": "read", "regulator clear-fault": "actuate", "regulator stop": "actuate",
-    "regulator bench-pwm": "actuate", "regulator set-voltage": "actuate", "regulator sweep": "actuate", "regulator start": "actuate",
+    "regulator bench-pwm": "actuate", "regulator set-voltage": "actuate", "regulator sweep": "actuate", "regulator snapshot": "actuate", "regulator start": "actuate",
     "scope analyze": "read", "scope idn": "read", "scope state": "read", "scope measure": "read",
     "scope delay": "read", "scope screenshot": "read", "scope capture": "actuate",
     "la scan": "read", "la decoders": "read", "la decode": "read", "la edges": "read", "la capture": "read",
