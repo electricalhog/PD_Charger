@@ -40,6 +40,7 @@
 #include "string.h"
 #endif /* !_TRACE */
 #include "pd_interface.h"
+#include "pd_power.h"
 #include "regulator.h"
 /* USER CODE END Includes */
 
@@ -152,7 +153,30 @@ static USBPD_StatusTypeDef DPM_TurnOffPower(uint8_t PortNum, USBPD_PortPowerRole
   * @{
   */
 /* USER CODE BEGIN USBPD_USER_EXPORTED_FUNCTIONS_GROUP1 */
-
+#if defined(USBPDCORE_EPR)
+/**
+  * @brief  PE asks the DPM what to do (V5.3 core, USBPD_PE_RequestDPMWhatToDo).
+  * @param  PortNum  Port number
+  * @param  IDAction @ref USBPD_CORE_ActionType_TypeDef
+  * @retval USBPD_OK / USBPD_ACCEPT, USBPD_REJECT or USBPD_NOTSUPPORTED
+  */
+uint32_t USBPD_DPM_RequestWhatToDo(uint8_t PortNum, uint32_t IDAction)
+{
+  switch (IDAction)
+  {
+  case USBPD_ACTION_CHECK_PDO:
+    /* The core already compared the request's Copy of PDO with the offer;
+     * our own check is that the position is still offered. */
+    {
+      USBPD_SNKRDO_TypeDef rdo;
+      rdo.d32 = DPM_Ports[PortNum].DPM_RcvRequestDOMsg;
+      return (pd_power_pdo_at(rdo.GenericRDO.ObjectPosition) != 0u) ? USBPD_OK : USBPD_ERROR;
+    }
+  default:
+    return USBPD_NOTSUPPORTED;
+  }
+}
+#endif /* USBPDCORE_EPR */
 /* USER CODE END USBPD_USER_EXPORTED_FUNCTIONS_GROUP1 */
 
 /**
@@ -238,54 +262,40 @@ void USBPD_DPM_UserCableDetection(uint8_t PortNum, USBPD_CAD_EVENT State)
     }
   }
 /* USER CODE BEGIN USBPD_DPM_UserCableDetection */
-
-#ifdef _GUI_INTERFACE
-  switch(State)
-  {
-  case USBPD_CAD_EVENT_ATTEMC:
-  case USBPD_CAD_EVENT_ATTACHED:
-    /* Format and send a notification to GUI if enabled */
-    if (NULL != DPM_GUI_FormatAndSendNotification)
-    {
-      DPM_GUI_FormatAndSendNotification(PortNum, DPM_GUI_NOTIF_ISCONNECTED, 0);
-    }
-    break;
-  default :
-    /* Format and send a notification to GUI if enabled */
-    if (NULL != DPM_GUI_FormatAndSendNotification)
-    {
-      DPM_GUI_FormatAndSendNotification(PortNum, DPM_GUI_NOTIF_ISCONNECTED | DPM_GUI_NOTIF_POWER_EVENT, 0);
-    }
-  }
-#endif /*_GUI_INTERFACE*/
-
+  /* (The GUI notification is sent by the generated code above.) */
   switch(State)
   {
   case USBPD_CAD_EVENT_ATTACHED:
   case USBPD_CAD_EVENT_ATTEMC:
-    {
+    pd_power_on_attach(true);
     if (DPM_Params[PortNum].PE_PowerRole == USBPD_PORTPOWERROLE_SRC)
     {
-      if (USBPD_OK != USBPD_PWR_IF_VBUSEnable(PortNum))
+      /* vSafe5V behind the VBUS switch first (regulator source: start it at
+       * 5 V and wait), then close the switch.  A source that cannot come up
+       * leaves VBUS off: the sink never sees VBUS and the port stays quiet. */
+      if (!pd_power_vbus_prepare())
       {
-        /* Should not occur */
-        NVIC_SystemReset();
+        DPM_USER_DEBUG_TRACE(PortNum, "PD_POWER: vSafe5V not ready (err %lu)",
+                             (unsigned long)pd_power_status.last_error);
+      }
+      else if (USBPD_OK != USBPD_PWR_IF_VBUSEnable(PortNum))
+      {
+        DPM_USER_DEBUG_TRACE(PortNum, "PD_POWER: VBUS switch on failed");
       }
     }
     break;
-    }
   case USBPD_CAD_EVENT_DETACHED :
   case USBPD_CAD_EVENT_EMC :
   default :
-
     if (DPM_Params[PortNum].PE_PowerRole == USBPD_PORTPOWERROLE_SRC)
     {
       if (USBPD_OK != USBPD_PWR_IF_VBUSDisable(PortNum))
       {
-        /* Should not occur */
-        while(1);
+        DPM_USER_DEBUG_TRACE(PortNum, "PD_POWER: VBUS switch off failed");
       }
+      pd_power_vbus_release();
     }
+    pd_power_on_attach(false);
     break;
   }
 
@@ -326,6 +336,7 @@ void USBPD_DPM_Notification(uint8_t PortNum, USBPD_NotifyEventValue_TypeDef Even
     DPM_GUI_PostNotificationMessage(PortNum, EventVal);
   }
 /* USER CODE BEGIN USBPD_DPM_Notification */
+  pd_power_on_notify((uint32_t)EventVal);
   /* Manage event notified by the stack? */
   switch(EventVal)
   {
@@ -409,27 +420,22 @@ void USBPD_DPM_HardReset(uint8_t PortNum, USBPD_PortPowerRole_TypeDef CurrentRol
 USBPD_StatusTypeDef USBPD_DPM_SetupNewPower(uint8_t PortNum)
 {
 /* USER CODE BEGIN USBPD_DPM_SetupNewPower */
-  USBPD_StatusTypeDef status = USBPD_PWR_IF_SetProfile(PortNum);
-
-  /* Notify the regulator of the new voltage contract (§9.2).
-   * DPM_RequestedVoltage is already set by USBPD_DPM_EvaluateRequest()
-   * from the accepted sink request PDO.
-   * If USBPD_PWR_IF_SetProfile succeeded, the voltage contract is in effect.
-   * NOTE: The regulator must be explicitly started via regulator_start()
-   * (e.g., from a separate enable signal or debug command) — a new setpoint
-   * alone does not auto-start the regulator (§9.2 explicit enable requirement). */
-  if (status == USBPD_OK)
+  /* The accepted request (EvaluateRequest stored voltage and position):
+   * move the regulator and wait for it to settle, so PS_RDY is only sent
+   * with VBUS at the new level.  An error makes the PE hard reset. */
+  USBPD_SNKRDO_TypeDef rdo;
+  rdo.d32 = DPM_Ports[PortNum].DPM_RcvRequestDOMsg;
+  uint32_t pos = rdo.GenericRDO.ObjectPosition;
+  bool ok = pd_power_set_contract(pos, DPM_Ports[PortNum].DPM_RequestedVoltage,
+                                  rdo.FixedVariableRDO.OperatingCurrentIn10mAunits * 10u,
+                                  pos >= 8u);
+  if (!ok)
   {
-    pd_interface_notify_voltage_contract(DPM_Ports[PortNum].DPM_RequestedVoltage);
-    /* Auto-start: if regulator is in IDLE and a valid contract arrives,
-     * attempt to start.  This is the normal PD source power-up sequence.   */
-    if (regulator_get_state() == REGULATOR_STATE_IDLE)
-    {
-      regulator_start();
-    }
+    DPM_USER_DEBUG_TRACE(PortNum, "PD_POWER: %lu mV not delivered (err %lu)",
+                         (unsigned long)DPM_Ports[PortNum].DPM_RequestedVoltage,
+                         (unsigned long)pd_power_status.last_error);
   }
-
-  return status;
+  return ok ? USBPD_OK : USBPD_ERROR;
 /* USER CODE END USBPD_DPM_SetupNewPower */
 }
 
@@ -453,9 +459,43 @@ void USBPD_DPM_GetDataInfo(uint8_t PortNum, USBPD_CORE_DataInfoType_TypeDef Data
     (void)memcpy((uint8_t*)Ptr, (uint8_t *)&DPM_Ports[PortNum].DPM_RequestedVoltage, *Size);
     break;
   case USBPD_CORE_DATATYPE_SRC_PDO :
-    USBPD_PWR_IF_GetPortPDOs(PortNum, DataId, Ptr, Size);
-    *Size *= 4;
-    break;
+    {
+      /* The offer is built by pd_power (profile, VBUS source, path limit). */
+      uint32_t pdo[PD_MAX_SPR_PDO];
+      *Size = 4u * pd_power_get_spr_pdos(pdo, PD_MAX_SPR_PDO);
+      (void)memcpy(Ptr, pdo, *Size);
+      break;
+    }
+#if defined(USBPDCORE_EPR)
+  case USBPD_CORE_DATATYPE_SRC_PDO_EPR :
+    {
+      /* EPR PDOs only (object positions 8..): the core puts the SPR list in
+       * positions 1..7 of EPR_Source_Capabilities itself. */
+      uint32_t pdo[PD_MAX_EPR_PDO];
+      *Size = 4u * pd_power_get_epr_pdos(pdo, PD_MAX_EPR_PDO);
+      (void)memcpy(Ptr, pdo, *Size);
+      break;
+    }
+#endif /* USBPDCORE_EPR */
+  case USBPD_CORE_EXTENDED_CAPA :
+    {
+      USBPD_SCEDB_TypeDef scedb = { 0 };
+      scedb.VID                = USBPD_VID;
+      scedb.PID                = USBPD_PID;
+      scedb.XID                = USBPD_XID;
+      scedb.Voltage_regulation = 0u;
+      scedb.Holdup_time        = 3u;      /* ms, the minimum allowed */
+      scedb.Compliance         = 0u;
+      scedb.TouchCurrent       = 0u;
+      scedb.Touchtemp          = 0u;
+      scedb.Source_inputs      = 0x01u;   /* external supply present */
+      scedb.NbBatteries        = 0u;
+      scedb.SourcePDP          = pd_power_spr_pdp_w();
+      scedb.EPRSourcePDP       = pd_power_epr_pdp_w();
+      *Size = sizeof(USBPD_SCEDB_TypeDef);
+      (void)memcpy(Ptr, &scedb, *Size);
+      break;
+    }
   case USBPD_CORE_REVISION:
     {
       *Size = sizeof(USBPD_RevisionDO_TypeDef);
@@ -535,6 +575,16 @@ void USBPD_DPM_SetDataInfo(uint8_t PortNum, USBPD_CORE_DataInfoType_TypeDef Data
         break;
       }
 
+    case USBPD_CORE_DATATYPE_EPRMODE :
+      /* EPR_Mode data object: action in B31..24, data in B23..16. */
+      if (Size >= 4u)
+      {
+        uint32_t d;
+        (void)memcpy(&d, Ptr, 4u);
+        pd_power_on_epr_mode(d >> 24, (d >> 16) & 0xFFu);
+      }
+      break;
+
     default:
     break;
   }
@@ -563,8 +613,13 @@ USBPD_StatusTypeDef USBPD_DPM_EvaluateRequest(uint8_t PortNum, USBPD_CORE_PDO_Ty
   /* read the request value received */
   rdo.d32 = DPM_Ports[PortNum].DPM_RcvRequestDOMsg;
 
-  /* Search PDO in Port Source PDO list, that corresponds to Position provided in Request RDO */
-  if (USBPD_PWR_IF_SearchRequestedPDO(PortNum,  rdo.GenericRDO.ObjectPosition, &pdo.d32) == USBPD_OK)
+  pd_power_status.n_requests++;
+  pd_power_status.last_rdo = rdo.d32;
+
+  /* The PDO at the requested position in the offer as sent (SPR 1..7,
+   * EPR 8..); 0 if the position is not offered. */
+  pdo.d32 = pd_power_pdo_at(rdo.GenericRDO.ObjectPosition);
+  if (pdo.d32 != 0u)
   {
     /* Evaluate the request */
     if(pdo.GenericPDO.PowerObject == USBPD_CORE_PDO_TYPE_FIXED)
@@ -587,6 +642,10 @@ USBPD_StatusTypeDef USBPD_DPM_EvaluateRequest(uint8_t PortNum, USBPD_CORE_PDO_Ty
          _retr = USBPD_ACCEPT;
       }
     }
+  }
+  if (_retr != USBPD_ACCEPT)
+  {
+    pd_power_status.n_rejects++;
   }
   return _retr;
 /* USER CODE END USBPD_DPM_EvaluateRequest */
@@ -619,7 +678,35 @@ USBPD_StatusTypeDef USBPD_DPM_EvaluateVconnSwap(uint8_t PortNum)
 USBPD_StatusTypeDef USBPD_DPM_PE_VconnPwr(uint8_t PortNum, USBPD_FunctionalState State)
 {
 /* USER CODE BEGIN USBPD_DPM_PE_VconnPwr */
-  return USBPD_ERROR;
+  /* VCONN goes on the CC pin the sink is not using (the cable's Ra side),
+   * through the TCPP0203 VCONN switch.  EPR entry needs it: the core
+   * discovers the cable over SOP' before EPR Mode Enter Succeeded. */
+  uint32_t vconn_cc = (DPM_Params[PortNum].ActiveCCIs == CC1) ? USBPD_PWR_TYPE_C_CC2 : USBPD_PWR_TYPE_C_CC1;
+  USBPD_StatusTypeDef status = USBPD_ERROR;
+  if (DPM_Params[PortNum].ActiveCCIs == CCNONE)
+  {
+    return USBPD_ERROR;
+  }
+  if (USBPD_ENABLE == State)
+  {
+    if (BSP_USBPD_PWR_VCONNOn(PortNum, vconn_cc) == BSP_ERROR_NONE)
+    {
+      DPM_Params[PortNum].VconnCCIs   = (vconn_cc == USBPD_PWR_TYPE_C_CC1) ? CC1 : CC2;
+      DPM_Params[PortNum].VconnStatus = USBPD_TRUE;
+      pd_power_on_vconn(true);
+      status = USBPD_OK;
+    }
+  }
+  else
+  {
+    if (BSP_USBPD_PWR_VCONNOff(PortNum, vconn_cc) == BSP_ERROR_NONE)
+    {
+      DPM_Params[PortNum].VconnStatus = USBPD_FALSE;
+      pd_power_on_vconn(false);
+      status = USBPD_OK;
+    }
+  }
+  return status;
 /* USER CODE END USBPD_DPM_PE_VconnPwr */
 }
 
@@ -1164,9 +1251,8 @@ static USBPD_StatusTypeDef DPM_TurnOffPower(uint8_t PortNum, USBPD_PortPowerRole
   USBPD_StatusTypeDef status;
   status = USBPD_PWR_IF_VBUSDisable(PortNum);
 
-  /* Notify the regulator that the PD contract has ended (§9.2).
-   * This triggers a controlled regulator shutdown via regulator_stop().    */
-  pd_interface_notify_disconnect();
+  /* The contract has ended (§9.2): regulator off when it is the source. */
+  pd_power_vbus_release();
 
   return status;
 }
@@ -1179,9 +1265,12 @@ static USBPD_StatusTypeDef DPM_TurnOffPower(uint8_t PortNum, USBPD_PortPowerRole
   */
 static USBPD_StatusTypeDef DPM_TurnOnPower(uint8_t PortNum, USBPD_PortPowerRole_TypeDef Role)
 {
-  USBPD_StatusTypeDef status;
-  /* Enable the output */
-  status = USBPD_PWR_IF_VBUSEnable(PortNum);
+  USBPD_StatusTypeDef status = USBPD_ERROR;
+  /* vSafe5V behind the switch, then close it */
+  if (pd_power_vbus_prepare())
+  {
+    status = USBPD_PWR_IF_VBUSEnable(PortNum);
+  }
   return status;
 }
 

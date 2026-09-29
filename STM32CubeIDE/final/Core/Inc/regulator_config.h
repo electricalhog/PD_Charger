@@ -428,6 +428,21 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
 #define OUTPUT_SWITCH_ENABLED 1u
 
 /**
+ * OUTPUT_EN_SHARED_WITH_TCPP — PC8 also drives the TCPP0203 ENABLE pin.
+ * Units  : boolean (0u or 1u)
+ * Value  : 1u (2026-09-29: X-NUCLEO-SRC1M1 stacked on the NUCLEO for the
+ *          USB PD stack)
+ * Purpose: With 1u the regulator never writes OUTPUT_EN; pd_power.c holds
+ *          PC8 high so the TCPP stays enabled (attach detection needs it).
+ *          The power board's output switch then stays on while the board is
+ *          powered, so its output must feed a switched path (the SRC1M1
+ *          VIN, whose VBUS gate the PD stack closes), never a bare load.
+ *          Back to 0u when the shield is off and OUTPUT_EN is the output
+ *          switch again (step 4c gating, OUTPUT_SWITCH_ENABLED).
+ */
+#define OUTPUT_EN_SHARED_WITH_TCPP 1u
+
+/**
  * OUTPUT_CONNECT_MARGIN_MV — How close V_out must be to the target before
  *          the PID ISR asserts OUTPUT_EN (step 4c in regulator.c).
  * Units  : mV

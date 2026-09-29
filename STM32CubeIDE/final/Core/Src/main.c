@@ -28,6 +28,7 @@
 #include "pd_interface.h"
 #include "adc_monitor.h"
 #include "debug_log.h"
+#include "pd_power.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -38,10 +39,13 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-/** Default task test voltage (millivolts).
- *  The default task bypasses PD negotiation and regulates to this voltage
- *  directly, enabling standalone regulation testing. */
-#define DEFAULT_TASK_TEST_VOLTAGE_MV  28000u  /* 2026-09-28 boost: 24 V in; output switch on from the evening run (330 ohm load, OUTPUT_SWITCH_ENABLED 1). Buck runs 1 to 29 used 5000u. */
+/** Bench auto-start voltage (millivolts), 0 = off.
+ *  Non-zero: the default task starts the regulator at this voltage without
+ *  PD negotiation (standalone regulation testing; 2026-09-28 used 28000u
+ *  boost and 5000u buck).  0 since 2026-09-29: the USB PD stack owns the
+ *  output (pd_power.c starts the regulator on attach/contract), and `bu
+ *  regulator start MV` still starts it by hand. */
+#define BENCH_AUTOSTART_MV  0u
 
 /* USER CODE END PD */
 
@@ -147,6 +151,11 @@ int main(void)
    * calibration, slope compensation setup, and transitions to IDLE state.
    * Must run before osKernelStart() so interrupts are armed before RTOS. */
   regulator_init();
+
+  /* USB PD power policy: stack settings (SOP', EPR source), TCPP ENABLE and
+   * FLGn, VBUS sensing on ADC2 injected channels, PDO lists.  Before
+   * MX_USBPD_Init(), which reads the settings. */
+  pd_power_init();
 
   /* Clear the debug capture buffer so the first samples collected after
    * osKernelStart() are clean (no zero-filled ghost entries). */
@@ -1106,9 +1115,11 @@ void StartDefaultTask(void const * argument)
   /* Allow peripheral initialisation (regulator_init, PD stack) to settle. */
   osDelay(200);
 
-  /* Set a fixed test voltage and start the regulator without PD negotiation. */
-  regulator_set_target_voltage(DEFAULT_TASK_TEST_VOLTAGE_MV);
+#if BENCH_AUTOSTART_MV
+  /* Fixed test voltage without PD negotiation (see BENCH_AUTOSTART_MV). */
+  regulator_set_target_voltage(BENCH_AUTOSTART_MV);
   regulator_start();
+#endif
 
   /* Infinite loop: service debugger commands (regulator_debug mailbox,
    * used by tools/bringup to clear faults / stop).  The debug buffer is
@@ -1117,6 +1128,7 @@ void StartDefaultTask(void const * argument)
   {
     osDelay(10);
     regulator_debug_poll();
+    pd_power_poll();
   }
   /* USER CODE END 5 */
 }
@@ -1139,7 +1151,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
-
+  if (htim->Instance == TIM2)
+  {
+    pd_power_tick_1ms();   /* VBUS/IBUS sample on ADC2 injected channels */
+  }
   /* USER CODE END Callback 1 */
 }
 

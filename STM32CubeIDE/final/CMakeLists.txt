@@ -45,6 +45,8 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
+    # USB PD source power policy (not in the .ioc: survives regeneration)
+    Core/Src/pd_power.c
 )
 
 # Add include paths
@@ -55,6 +57,17 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add project symbols (macros)
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined symbols
+)
+
+# USB PD (2026-09-29, pd_power.c), on the CubeMX interface target so the
+# BSP, USBPD device and middleware object libraries see them too: the SRC1M1
+# BSP must not take ADC1 over (its VBUSInit reprograms ADC1 as a continuous
+# scan; pd_power samples VSENSE/ISENSE on ADC2 and does the BSP's GPIO/EXTI
+# setup), and the port sources VCONN, which EPR entry needs for SOP' cable
+# discovery.
+target_compile_definitions(stm32cubemx INTERFACE
+    USBPD_CONFIG_MX
+    _VCONN_SUPPORT
 )
 
 # Control-loop sources at -O2 in every build type (they keep -g3 in Debug).
