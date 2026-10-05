@@ -87,7 +87,9 @@ Read the report before applying:
 hand edits in `FreeRTOSConfig.h` (heap 20000->7000, malloc-failed hook, stack
 overflow check), `main.c` (defaultTask stack 512->128), UCPD/tracer IRQ
 priorities in `usbpd_devices_conf.h`, `tracer_emb_conf.h`, `tracer_emb_hw.c`,
-and the custom sources list in `cmake/stm32cubemx/CMakeLists.txt`. Do not
+the custom sources list in `cmake/stm32cubemx/CMakeLists.txt`, and the
+`USBPD_DPM_RequestDPMWhatToDo` entry in the `dpmCallbacks` table of
+`USBPD/App/usbpd_dpm_core.c` (needed by USB-PD core v5 for EPR). Do not
 `--apply` until the user has decided how to fix this (move settings into the
 .ioc / USER CODE / root CMakeLists.txt).
 
@@ -157,6 +159,20 @@ backstop, TB1 = static leg, configured dead-time. Validated 2026-09-27:
 result the tool refuses to retry without `--force`: only use that after the
 user has confirmed the hardware is OK. With no power board attached (or VIN
 off) the fault lines float and the firmware sits in FAULT; that's expected.
+
+### 5c. USB-PD source (`PD_VBUS_PATH_CHARGER` builds)
+```
+bu pd status     # offered PDOs, last RDO + verdict, contract, transition ms, EPR counters, last 32 events
+```
+With the CMake option `PD_VBUS_PATH_CHARGER` (default ON) the regulator
+output **is** the Type-C VBUS: it starts only on a sink attach, a contract
+sets the voltage, and `regulator start` / `set-voltage` return
+`PD_OWNS_VBUS`. Never work around that with `mem write` to
+`target_voltage_mv` or `regulator_debug`. Offered PDOs, currents, EPR and
+VCONN are in `Core/Inc/pd_bench_config.h`; changing them is the user's
+decision. The OFF build (old bench firmware) starts the regulator at
+`DEFAULT_TASK_TEST_VOLTAGE_MV` on boot: only with the receptacle unplugged.
+Plan and stage gates: `plans/epr-bringup.md`.
 
 ### 6. Measure: Rigol DS1054Z (reports as DS1104Z)
 **Analyse sample data, not pictures.** `scope capture` saves a CSV and returns
