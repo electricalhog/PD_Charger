@@ -318,7 +318,9 @@ typedef enum
     REGULATOR_SET_OK           = 0u,
     REGULATOR_SET_OUT_OF_RANGE = 1u, /**< outside SETPOINT_MIN_MV..SETPOINT_MAX_MV */
     REGULATOR_SET_NOT_IDLE     = 2u, /**< START only from IDLE                     */
-    REGULATOR_SET_START_FAILED = 3u  /**< START left the regulator not RUNNING    */
+    REGULATOR_SET_START_FAILED = 3u, /**< START left the regulator not RUNNING    */
+    REGULATOR_SET_PD_OWNS_VBUS = 4u  /**< PD_VBUS_PATH_CHARGER build: only a USB-PD
+                                          contract sets the output voltage        */
 } RegulatorSetResult;
 
 typedef struct

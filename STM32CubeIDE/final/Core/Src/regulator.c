@@ -867,7 +867,11 @@ static void regulator_debug_poll_isr(void)
     {
         uint32_t mv = regulator_debug.arg;
         uint32_t result = REGULATOR_SET_OUT_OF_RANGE;
-        if (mv >= SETPOINT_MIN_MV && mv <= SETPOINT_MAX_MV)
+        if (PD_OWNS_VBUS)
+        {
+            result = REGULATOR_SET_PD_OWNS_VBUS;
+        }
+        else if (mv >= SETPOINT_MIN_MV && mv <= SETPOINT_MAX_MV)
         {
             regulator_set_target_voltage(mv);
             result = REGULATOR_SET_OK;
@@ -904,7 +908,11 @@ void regulator_debug_poll(void)
         case REGULATOR_DEBUG_CMD_START:
         {
             uint32_t mv = regulator_debug.arg;
-            if (mv < SETPOINT_MIN_MV || mv > SETPOINT_MAX_MV)
+            if (PD_OWNS_VBUS)
+            {
+                result = REGULATOR_SET_PD_OWNS_VBUS;
+            }
+            else if (mv < SETPOINT_MIN_MV || mv > SETPOINT_MAX_MV)
             {
                 result = REGULATOR_SET_OUT_OF_RANGE;
             }

@@ -26,6 +26,7 @@
 /* USER CODE BEGIN Includes */
 #include "regulator.h"
 #include "pd_interface.h"
+#include "pd_vbus.h"
 #include "adc_monitor.h"
 #include "debug_log.h"
 /* USER CODE END Includes */
@@ -1106,9 +1107,12 @@ void StartDefaultTask(void const * argument)
   /* Allow peripheral initialisation (regulator_init, PD stack) to settle. */
   osDelay(200);
 
+#if !PD_OWNS_VBUS
   /* Set a fixed test voltage and start the regulator without PD negotiation. */
   regulator_set_target_voltage(DEFAULT_TASK_TEST_VOLTAGE_MV);
   regulator_start();
+#endif /* With PD_OWNS_VBUS the regulator output is the Type-C VBUS and only
+        * starts when a sink attaches (pd_vbus.c, BSP_USBPD_PWR_VBUSOn). */
 
   /* Infinite loop: service debugger commands (regulator_debug mailbox,
    * used by tools/bringup to clear faults / stop).  The debug buffer is
@@ -1117,6 +1121,9 @@ void StartDefaultTask(void const * argument)
   {
     osDelay(10);
     regulator_debug_poll();
+#if PD_OWNS_VBUS
+    pd_vbus_poll();
+#endif
   }
   /* USER CODE END 5 */
 }

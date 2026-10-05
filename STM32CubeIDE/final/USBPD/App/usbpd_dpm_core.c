@@ -152,7 +152,12 @@ USBPD_StatusTypeDef USBPD_DPM_InitCore(void)
 #endif /* _VCONN_SUPPORT */
     USBPD_DPM_EnterErrorRecovery,
     USBPD_DPM_EvaluateDataRoleSwap,
-    USBPD_DPM_IsPowerReady
+    USBPD_DPM_IsPowerReady,
+#if defined(USBPDCORE_EPR)
+    /* Hand edit (outside USER CODE; CubeMX regeneration drops it): USB-PD
+     * core v5 calls this member without a NULL check during EPR entry. */
+    USBPD_DPM_RequestDPMWhatToDo,
+#endif /* USBPDCORE_EPR */
   };
 
   static const USBPD_CAD_Callbacks CAD_cbs =

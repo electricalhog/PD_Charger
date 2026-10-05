@@ -31,6 +31,20 @@
 extern "C" {
 #endif
 
+/**
+ * PD_OWNS_VBUS — 1 when the USB-PD stack drives VBUS through this board's
+ * regulator and output switch (CMake option PD_VBUS_PATH_CHARGER, see
+ * pd_vbus.c).  The Type-C receptacle's VBUS is then the regulator output,
+ * so nothing but a negotiated contract may set the voltage: the default
+ * task does not auto-start the regulator and the debug mailbox refuses
+ * START / SET_VOLTAGE (REGULATOR_SET_PD_OWNS_VBUS).
+ */
+#if defined(PD_VBUS_PATH_CHARGER) && (PD_VBUS_PATH_CHARGER)
+#define PD_OWNS_VBUS 1u
+#else
+#define PD_OWNS_VBUS 0u
+#endif
+
 /* =========================================================================
  * Shared state (§9.1)
  *
