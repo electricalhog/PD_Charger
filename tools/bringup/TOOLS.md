@@ -75,12 +75,13 @@ Times and JSON sizes are measured (typical). "Artifact" = file written to `bring
 | `layout EXPR` | read | struct layout with offsets (gdb `ptype /o`) | 0.2 s | < 1 kB | – |
 | `mem read TARGET [--type --count --size --save]` | read | live RAM/register read by symbol or address, core keeps running | 0.2 s | ≤ 2 kB (max 256 values inline) | `mem_*.bin` if `--save` or > 1 kB (e.g. `debug_log` 12.3 kB) |
 | `mem write TARGET VALUE [--type]` | actuate | live write; aligned single bus write for 8/16/32-bit | 0.3 s | < 1 kB | – |
+| `pd status` | read | USB-PD source telemetry (`pd_status`): offered SPR/EPR PDOs, last RDO and verdict, contract, transition time, EPR entry counters, last 32 PD/CAD events with ages, diagnosis | 0.2 s (not timed on hardware) | ~2–4 kB | – |
 | `regulator status` | read | state, fault source, ADM1270 lines, HRTIM flags/IRQ/outputs, ADC, diagnosis, protection thresholds | 0.15 s | 1.3 kB (+1 kB protection table) | – |
 | `regulator clear-fault [--force]` | actuate | firmware: ADM1270 cool-down → INPUT_EN toggle → verify → FAULT→IDLE | 0.1–0.5 s | 1.5 kB | – |
 | `regulator stop` | actuate | outputs off, power path off | 0.2 s | 1.5 kB | – |
 | `regulator bench-pwm on\|off` | actuate | open-loop gate test (IDLE, input path off, fault lines high) | 0.2 s | 1.5 kB | – |
 | `regulator set-voltage MV` | actuate | new regulation target through the mailbox (`arg` word); firmware slews to it | 0.3 s | 1.5 kB | – |
-| `regulator start MV` | actuate | set target and start from IDLE | 0.3–1 s | 1.5 kB | – |
+| `regulator start MV` | actuate | set target and start from IDLE; refused (`PD_OWNS_VBUS`) in `PD_VBUS_PATH_CHARGER` builds, as is `set-voltage` | 0.3–1 s | 1.5 kB | – |
 | `profile [--samples N] [--lines N]` | read | statistical CPU profile over SWD: DWT PC samples → functions (and source lines), SCB_ICSR/pxCurrentTCB → time per ISR/task; no firmware support beyond DEMCR.TRCENA | ~4 s per 1000 samples | ~3 kB | – |
 | `regulator sweep MV,MV,… [--dwell S] [--scope CHn]` | actuate | set-voltage per point, then control telemetry + debug_log stats (+ scope VAVG/VPP); stops at a fault | ~2.5 s/point | ~0.5 kB/point | – |
 | `scope idn` / `scope state` | read | identity / full channel+timebase+trigger+acquire state | 0.1 s / 1.2 s | < 1 kB / 1 kB | – |

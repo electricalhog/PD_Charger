@@ -60,6 +60,9 @@ SET_RESULTS = {
     1: ("OUT_OF_RANGE", "outside the firmware's SETPOINT_MIN_MV..SETPOINT_MAX_MV"),
     2: ("NOT_IDLE", "start only from IDLE: stop the regulator or clear the fault first"),
     3: ("START_FAILED", "regulator_start() did not reach RUNNING: see status (fault source, input lines)"),
+    4: ("PD_OWNS_VBUS", "firmware built with PD_VBUS_PATH_CHARGER: the output is the Type-C VBUS, "
+                        "so only a USB-PD contract sets it; rebuild with -DPD_VBUS_PATH_CHARGER=OFF "
+                        "for dummy-load runs with the receptacle disconnected"),
 }
 BENCH_RESULTS = {
     0: ("OK", ""),
