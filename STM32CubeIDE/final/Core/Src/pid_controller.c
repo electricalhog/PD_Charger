@@ -35,8 +35,12 @@ float pid_update(PidState *state, const PidConfig *config,
     /* --- Proportional term --- */
     float proportional = config->kp * error;
 
-    /* --- Integral term (Euler forward integration) --- */
+    /* --- Integral term (Euler forward integration), bounded ---
+     * The integrator itself stays inside the output limits, so it can never
+     * hold more than the output can express.                              */
     float integral_candidate = state->integrator + (config->ki * error * config->dt_seconds);
+    if (integral_candidate > config->output_max) { integral_candidate = config->output_max; }
+    if (integral_candidate < config->output_min) { integral_candidate = config->output_min; }
 
     /* --- Derivative term (backward difference on error signal) --- */
     float derivative = config->kd * (error - state->previous_error) / config->dt_seconds;
@@ -44,24 +48,29 @@ float pid_update(PidState *state, const PidConfig *config,
     /* --- Unsaturated output --- */
     float raw_output = proportional + integral_candidate + derivative;
 
-    /* --- Clamp output and apply back-calculation anti-windup ---
+    /* --- Clamp output; conditional integration as anti-windup ---
      *
-     * If the raw output exceeds the limits, remove the excess from the
-     * integrator so that the integrator state reflects only what was
-     * actually applied.  This prevents runaway accumulation during
-     * saturation (e.g., large PD voltage steps).
+     * When the output is saturated and the error would push it further into
+     * saturation, the integrator keeps its previous value.
+     *
+     * The earlier form here was back-calculation with unity gain: the whole
+     * clamped excess was moved into the integrator.  With kp large against
+     * ki that turns one saturated cycle into a stored opposite-sign command:
+     * on the bench (2026-09-27, run 1) a raw output of -316 clamped to 0
+     * left +316 in the integrator, which was applied in full on the next
+     * cycle (DAC 0, 416, 0, 1178, 0, 3771 over six cycles, then OVP).
      */
     float clamped_output = raw_output;
 
     if (raw_output > config->output_max)
     {
-        clamped_output        = config->output_max;
-        integral_candidate   -= (raw_output - config->output_max);
+        clamped_output = config->output_max;
+        if (error > 0.0f) { integral_candidate = state->integrator; }
     }
     else if (raw_output < config->output_min)
     {
-        clamped_output        = config->output_min;
-        integral_candidate   -= (raw_output - config->output_min);
+        clamped_output = config->output_min;
+        if (error < 0.0f) { integral_candidate = state->integrator; }
     }
 
     /* --- Commit state updates --- */

@@ -1,0 +1,47 @@
+# Copy to bringup-mcp.toml next to pyproject.toml (or point $BRINGUP_MCP_CONFIG at it).
+# Nothing in here decides what the agent may do to hardware: that is the bench state file,
+# written only by `bringup-mcp bench ...` and `bringup-mcp allow ...` on this host.
+
+[repo]
+root = "/home/daniel/GitHub/PD_Charger"
+bu = "tools/bringup/bu"                  # relative to root
+
+[bench]
+state_file = "bringup_out/bench-state.json"   # relative to root; git-ignored with bringup_out
+# bu commands whose first word is listed here reach a bench instrument, not the board. Their
+# actuate calls run without a token while the power stage is attached (still refused when unset).
+instrument_prefixes = ["scope", "la", "serial"]
+
+[http]
+host = "127.0.0.1"                       # tailscale serve fronts this; never 0.0.0.0
+port = 40050
+# Host headers the server answers to (DNS-rebinding protection). Add the tailnet name and port.
+allowed_hosts = ["framework16.tail88868f.ts.net:40050", "127.0.0.1:40050", "localhost:40050"]
+
+[shell]
+enabled = false                          # Jonah's direction of 2026-09-27 is to expose git/gh/shell; flip when Dan agrees
+allow = ["git", "gh", "uv", "arm-none-eabi-addr2line", "arm-none-eabi-nm", "arm-none-eabi-size"]
+deny_git_push_to = ["main", "master"]
+timeout_s = 120
+max_output_bytes = 65536
+
+[timeouts]                               # seconds per bu command; measured values from TOOLS.md plus margin
+default_s = 30
+"cubemx generate" = 600
+"cubemx script" = 600
+"build" = 300
+"flash" = 90
+"probe reset" = 30
+"scope capture" = 90
+"scope wait" = 60
+"scope analyze" = 60
+"la capture" = 120
+"serial capture" = 120
+"regulator clear-fault" = 30
+"regulator stop" = 30
+"regulator bench-pwm" = 30
+"doctor" = 60
+
+[limits]
+max_result_bytes = 65536                 # a tool result larger than this is capped, and says so
+max_field_bytes = 8192                   # any single string longer than this is replaced by a size note

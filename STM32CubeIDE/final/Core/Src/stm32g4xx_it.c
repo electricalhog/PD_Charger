@@ -349,6 +349,15 @@ void HRTIM1_TIMA_IRQHandler(void)
  *        Fires when FLT1 (VS_GOOD, PA12) or FLT2 (IS_GOOD, PA15) asserts
  *        (active-low).  Priority 1.  ISR body is in regulator.c (§10.1).
  */
+void ADC1_2_IRQHandler(void)
+{
+  /* ADC1 analog watchdog 1: V_out crossed the pulse-skip band (regulator.c) */
+  if ((ADC1->ISR & ADC_ISR_AWD1) && (ADC1->IER & ADC_IER_AWD1IE))
+  {
+    regulator_adc1_awd_isr();
+  }
+}
+
 void HRTIM1_FLT_IRQHandler(void)
 {
   regulator_hrtim_fault_isr();

@@ -293,6 +293,11 @@ extern "C" {
 #define HRTIM_NS_TO_TICKS(ns) \
     ((uint32_t)((uint64_t)(ns) * (SYSCLK_HZ / 1000000UL) * HRTIM_PRESCALER_MUL / 1000UL))
 
+/** The same for a runtime value in 32-bit arithmetic (a 64-bit divide in the
+ *  PID ISR costs ~1 % of the CPU); exact for ns below 789 000.            */
+#define HRTIM_NS_TO_TICKS_RT(ns) \
+    (((uint32_t)(ns) * (uint32_t)((SYSCLK_HZ / 1000000UL) * HRTIM_PRESCALER_MUL)) / 1000u)
+
 /**
  * HRTIM_PERIOD_COUNTS — HRTIM period register value; sets switching frequency.
  * Units  : HRTIM timer counts (183.82 ps/count at MUL32 prescaler)
@@ -311,6 +316,16 @@ _Static_assert(HRTIM_PERIOD_COUNTS >= 5440u && HRTIM_PERIOD_COUNTS <= 54400u,
  * Source time-domain constants for blanking window and bootstrap pulse.
  * Adjust empirically using an oscilloscope on IL_MON and the switching nodes.
  */
+/* 100 ns until run 4 (2026-09-27, 24 V in, no load).  At about 4.7 V out the
+ * modulator fell into minimum pulses (258 ns, i.e. blanking plus the trip
+ * delay) while the commanded threshold was 190 mV: the comparator tripped
+ * at the end of blanking, forced CCM drove the inductor current negative,
+ * and the output collapsed to -1.7 V in 40 us.  SW2 rings +-3 V for a few
+ * hundred ns at each SW1 edge, so the INA281 output is not trusted before
+ * that ring settles.  Run 5 with 300 ns was worse (the longer minimum pulse
+ * put more energy into each cycle the modulator could not end early), and
+ * the 100 us bounce it showed is the L1 / C_out resonance at no load, not
+ * a comparator glitch, so 100 ns is restored.                              */
 #define HRTIM_BLANKING_NS_BUCK   100u  /**< Buck blanking:  100 ns after switching edge */
 #define HRTIM_BLANKING_NS_BOOST  500u  /**< Boost blanking: 500 ns covers bootstrap + ring */
 #define BOOTSTRAP_REFRESH_NS     200u  /**< Bootstrap LOW pulse: 200 ns per gate driver spec */
@@ -365,6 +380,265 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
                "BOOTSTRAP_REFRESH_TICKS must fit within boost blanking window");
 
 /**
+ * SYNC_RECT_ENABLED — Drive the low-side switch of the active leg (Q2 in
+ * buck) as the synchronous rectifier.  Added 2026-09-27 after runs 1 to 5.
+ *
+ * With 1 the leg runs in forced continuous conduction: whenever the high
+ * side is off the low side is on, so at no load the inductor current goes
+ * negative every cycle (V_out / L for the rest of the period: about 5 A at
+ * 5 V out), the output collapses within one PID period, and because the
+ * INA281 current sense is unidirectional the comparator never sees the
+ * negative current and the next charge phase runs to the backstop (runs 1,
+ * 4 and 5: SW_OVP from 10 to 13 V overshoots).
+ *
+ * With 0 the inductor current freewheels through the low-side GaN FET's
+ * reverse conduction and stops at zero (discontinuous conduction), and
+ * regulator.c skips the charge pulses while V_out is above the setpoint.
+ * The low side is still switched, but only for the bootstrap refresh: Q2 is
+ * on for BOOTSTRAP_REFRESH_NS at the start of every period and the charge
+ * pulse starts DCM_REFRESH_DEADTIME_NS after it ends.  Runs 6 to 18
+ * (2026-09-27) left Q2 off entirely; the high-side bootstrap then only
+ * charged while SW1 sat below the 5 V rail, Q1's gate drive starved, the
+ * "pulses" on TP3 were 20 ns needles ringing at 25 MHz, and Q1 conducted
+ * as a resistor of a few hundred ohms (about 60 mA into the 33 ohm bench
+ * load whatever the DAC asked for, and it charged the idle output to 8 V
+ * from Vin with every output disabled).  The cost of 0 is the
+ * reverse-conduction drop (about 2 V for an EPC2302, dissipative at load).
+ * Set to 1 once the converter regulates under a load that keeps the
+ * inductor current positive, or once diode emulation exists.
+ */
+#define SYNC_RECT_ENABLED 0u
+
+/**
+ * OUTPUT_SWITCH_ENABLED — Whether regulator_start() asserts OUTPUT_EN.
+ * Units  : boolean (0u or 1u)
+ * Value  : 1u (bench, 2026-09-28 evening: boost at 28 V into a 330 ohm
+ *          load, 85 mA / 2.4 W; Dan)
+ * Purpose: With 1u the power path drives OUTPUT_EN high with INPUT_EN, so
+ *          the Q5/Q6 output switch (through the R27/Q9 buffer Dan added
+ *          2026-09-28) connects VBUS, and with it the 2 W 33 ohm bench load.
+ *          With 0u OUTPUT_EN stays low for the whole run: the regulator runs
+ *          into VOUTa alone (the scope is before the output FETs, Dan
+ *          2026-09-27) and the load is out of circuit.  Set to 0u for the
+ *          boost runs, where 28 V into 33 ohm would be 24 W.  OUTPUT_DIS is
+ *          driven the same in either case.
+ * Adjust : 1u for buck runs that want the bench load; back to 1u for real
+ *          operation once the output switch is characterised.
+ */
+#define OUTPUT_SWITCH_ENABLED 1u
+
+/**
+ * OUTPUT_CONNECT_MARGIN_MV — How close V_out must be to the target before
+ *          the PID ISR asserts OUTPUT_EN (step 4c in regulator.c).
+ * Units  : mV
+ * Value  : 1000u (2026-09-28)
+ * Purpose: With OUTPUT_EN asserted at start, boost 28 V into 330 ohm
+ *          faulted SW_UVP after 5 ms: the buck precharge sat at the 600 ns
+ *          DCM_MAX_ON_TIME_NS cap and V_out stalled at 13.6 V, because
+ *          charge per pulse falls as V_out nears V_in and the load took it
+ *          all.  Connecting the load only once the final mode is regulating
+ *          keeps the start at no load (runs 30 to 38) and makes the load a
+ *          step the loop has to hold.
+ */
+#define OUTPUT_CONNECT_MARGIN_MV 1000u
+
+/**
+ * DCM_MAX_PEAK_MA — Peak inductor current the on-time law may command
+ *          (SYNC_RECT_ENABLED 0).  The PID output is clamped to it too, so the
+ *          integrator cannot wind past it.
+ * Units  : mA
+ * Value  : 2500u (2026-09-28 evening)
+ * Purpose: DCM_MAX_ON_TIME_NS alone capped the pulse at 600 ns whatever the
+ *          operating point.  That is 2.4 A at 5 V out from 24 V, but only
+ *          1.2 A at 13.6 V, where charge per pulse was down to the 330 ohm
+ *          load's need and buck stalled (boost start into the load, SW_UVP).
+ *          Near V_in a fixed peak current delivers more charge per pulse, so
+ *          the peak is the limit that keeps authority up there; 2.5 A keeps
+ *          the low-V_out behaviour of runs 21 to 29.
+ */
+#define DCM_MAX_PEAK_MA 2500u
+
+/**
+ * DCM_MAX_PEAK_MA_BB — The same limit in buck-boost.  A buck-boost pulse
+ *          delivers only L * I_pk^2 / 2 (2.9 W at 2.5 A and 200 kHz, before
+ *          two diode drops): at 2.5 A the output held 18.3 V against a 24 to
+ *          26 V target with the PID railed (2026-09-28 evening, 330 ohm).
+ *          4 A is 7.5 W ideal, well under L1's 21 A saturation.
+ * Units  : mA
+ */
+#define DCM_MAX_PEAK_MA_BB 4000u
+
+/**
+ * DCM_ON_TIME_CEIL_NS — Longest computed on-time (PID ISR step 6b).  The
+ *          CMP2 value written at start and on a mode change is still
+ *          DCM_MAX_ON_TIME_NS until the first PID cycle.
+ * DCM_WINDOW_MARGIN_NS — Slack left at the end of the period so the inductor
+ *          current reaches zero before the next pulse (discontinuous mode).
+ * Units  : ns
+ */
+#define DCM_ON_TIME_CEIL_NS  4000u
+#define DCM_WINDOW_MARGIN_NS 300u
+
+/** DCM_DIODE_DROP_MV — body-diode drop in the freewheel path, for the DCM
+ *  on-time bound (PID ISR step 6b).  Units: mV. */
+#define DCM_DIODE_DROP_MV 700u
+
+/**
+ * SETPOINT_SLEW_MV_PER_CYCLE — How fast the regulated setpoint follows a new
+ *          target while running (PID ISR step 4a).
+ * Units  : mV per PID cycle (20 kHz): 1 is 20 V/s
+ * Purpose: A step down (28 V to 20 V) put V_out over the relative OVP of the
+ *          new target at once: the output only falls as fast as the load
+ *          discharges it.  OVP/UVP are checked against the slewed value.
+ *          At 20 V/s a 330 ohm load keeps up down to about 1 V at 25 uF.
+ */
+#define SETPOINT_SLEW_MV_PER_CYCLE 1u
+
+/**
+ * BUCK_BOOST_ENABLED — Use REGULATOR_MODE_BUCK_BOOST for setpoints near V_in.
+ *          Q1 (TA1) and Q4 (TB2) pulse together for t_on = I_pk * L / V_in,
+ *          then L1 freewheels from ground through Q2's and into the output
+ *          through Q3's body diodes, so each pulse delivers L * I_pk^2 / 2
+ *          at any V_out/V_in (discontinuous, non-synchronous).
+ * BB_BELOW_VIN_MV / BB_ABOVE_VIN_MV — Band around V_in (filtered) where it is
+ *          selected; BB_HYSTERESIS_MV on each edge.
+ * Units  : boolean; mV
+ */
+#define BUCK_BOOST_ENABLED 1u
+#define BB_BELOW_VIN_MV   2000u
+#define BB_ABOVE_VIN_MV   3000u
+#define BB_HYSTERESIS_MV   500u
+
+/**
+ * VIN_FILTER_SHIFT — V_in low-pass for mode selection: filtered += (sample -
+ *          filtered) >> shift per PID cycle.  5 is a 1.6 ms time constant;
+ *          single V_in samples read up to 4 V off (run 36).
+ */
+#define VIN_FILTER_SHIFT 5u
+
+/**
+ * ADC_VD_SAMPLE_END_NS — Where in the switching period VD_MON's sample ends
+ *          (ADC1 is triggered once per period by HRTIM master compare 1).
+ *          4.85 us: after the pulse and inductor discharge at every point
+ *          swept (they end by about 2.5 us), before the next period's Q2
+ *          refresh edge at 0.
+ * ADC_VD_SAMPLING_NS — The window VD_MON's result averages: 8 conversions
+ *          of 6.5 + 12.5 ADC cycles at 42.5 MHz (PCLK/4), 3.58 us, so the
+ *          result is the mean over 1.27 to 4.85 us of the period.
+ * Units  : ns
+ */
+#define ADC_VD_SAMPLE_END_NS 4850u
+#define ADC_VD_SAMPLING_NS   3576u
+#define ADC_TRIGGER_TICKS    HRTIM_NS_TO_TICKS(ADC_VD_SAMPLE_END_NS - ADC_VD_SAMPLING_NS)
+
+/**
+ * AWD_FILTER_SAMPLES — Consecutive VD_MON samples (one per period) outside
+ *          the skip window before skipping toggles (1 to 8), checked in the
+ *          watchdog ISR against the DMA ring (the hardware AWDFILT does not
+ *          work with a multi-channel scan, adc_monitor.h).  2 rejects a
+ *          single bad sample at 5 us of lag.
+ * VOUT_MEDIAN_SAMPLES — Samples in the trimmed mean V_out the PID uses
+ *          (highest and lowest dropped).
+ */
+#define AWD_FILTER_SAMPLES  2u
+#define VOUT_MEDIAN_SAMPLES 9u
+
+/**
+ * DCM_REFRESH_DEADTIME_NS — Gap between the low-side refresh pulse and the
+ * high-side charge pulse on the same leg while SYNC_RECT_ENABLED is 0.
+ * Units  : ns
+ * Purpose: With dead-time insertion off on Timer A (its two outputs are
+ *          programmed separately, see hrtim_configure_compare_registers)
+ *          this is the only thing keeping Q1 and Q2 from overlapping.
+ *          Both edges are HRTIM compare events, so the gap is exact to a
+ *          tick plus driver skew; 50 ns is several times the EPC2302
+ *          switching times.
+ */
+#define DCM_REFRESH_DEADTIME_NS    50u
+#define DCM_REFRESH_DEADTIME_TICKS HRTIM_NS_TO_TICKS(DCM_REFRESH_DEADTIME_NS)
+
+/**
+ * DCM_PULSE_START_TICKS — Timer A CMP4: where the buck charge pulse starts
+ * (the end of the refresh pulse plus the gap).  Timer A CMP1 (blanking end)
+ * and CMP2 (backstop) are offset by the same amount in regulator.c.
+ */
+#define DCM_PULSE_START_TICKS (BOOTSTRAP_REFRESH_TICKS + DCM_REFRESH_DEADTIME_TICKS)
+
+/**
+ * DCM_MAX_ON_TIME_NS — Charge-pulse length cap while SYNC_RECT_ENABLED is 0.
+ * Units  : ns
+ * Purpose: The CMP2 backstop is the only on-time limit that has been seen
+ *          to act; the peak-current comparator has not yet been observed
+ *          ending a pulse (IL_MON has not been on a scope channel).  It
+ *          therefore sets the converter's authority.  Run 21 (2026-09-28,
+ *          24 V in, 33 ohm load, 5 V target) ran 406 ns pulses every
+ *          period with 8 percent skipped, the PID output saturated at
+ *          PID_OUTPUT_MAX, and V_out held at 4.79 V on the scope: 400 ns
+ *          delivers about 0.8 uC per pulse into the output (145 mA at
+ *          200 kHz), not the 1.25 uC the ideal ramp predicts, and could not
+ *          reach 5 V.  Charge per pulse scales about as the square of the
+ *          on-time, so 600 ns is about 1.8 uC (360 mA at 5 V) at about
+ *          2.5 A peak in L1 (IHLP-6767 4.7 uH) and Q1.  Run 6 (2026-09-27,
+ *          no load) had seen 1.1 to 1.5 us pulses at 6 A peak overshoot
+ *          the setpoint; those ran before the Q1 bootstrap starvation
+ *          (see SYNC_RECT_ENABLED) was understood, so they say nothing
+ *          about the comparator.
+ */
+#define DCM_MAX_ON_TIME_NS 600u
+
+/**
+ * DCM_MIN_ON_TIME_NS — Shortest charge pulse the firmware will command while
+ *                      SYNC_RECT_ENABLED is 0.
+ * Units  : ns
+ * Purpose: The PID ISR sets Timer A CMP2 (the TA1 reset) each PID period
+ *          from its peak-current command through t_on = I_pk * L /
+ *          (V_in - V_out) (regulator.c, "Predicted on-time").  Below the
+ *          blanking window (HRTIM_BLANKING_NS_BUCK) the comparator could not
+ *          act anyway, and a shorter pulse than the gate drivers resolve
+ *          is not a smaller pulse, so the command floors here and pulse
+ *          skipping handles anything lighter.  Why the on-time is computed
+ *          at all: runs 22 and 26 (2026-09-28, 24 V in, 33 ohm load) ran
+ *          every pulse to the CMP2 backstop with DAC thresholds of 3 V and
+ *          280 mV alike, while run 25 with a 21 mV threshold trimmed pulses
+ *          to almost nothing.  The comparator path therefore works only for
+ *          thresholds below roughly 150 mV (0.6 A); IL_MON has not been on a
+ *          scope channel, so whether the INA281 output is slow, filtered or
+ *          clipped before PA1 is open.
+ */
+#define DCM_MIN_ON_TIME_NS 100u
+
+/**
+ * PULSE_SKIP_ABOVE_MV — How far above the setpoint pulse skipping engages
+ *                       while SYNC_RECT_ENABLED is 0.
+ * Units  : mV above the effective (soft-start) setpoint
+ * Purpose: In DCM the smallest pulse the modulator can make still moves
+ *          V_out, so at no load the only way down is to make no pulse; the
+ *          Timer A period ISR skips pulses while the V_out estimate is above
+ *          setpoint + this (SKIP_HYSTERESIS_RAW below it to
+ *          resume).  Skipping is the guard for that case only.  The PID owns
+ *          the setpoint through the peak-current DAC.  With the skip band
+ *          at the setpoint itself (runs 7 to 22) the estimate hovered just
+ *          under the setpoint, the PID saw a small positive error for ever
+ *          and railed at PID_OUTPUT_MAX, every pulse ran to the CMP2
+ *          backstop, and the converter was a burst-mode hysteretic loop
+ *          (run 22, 2026-09-28, 33 ohm load: 0.6 V ripple at 5 V, 57
+ *          percent of periods skipped).  200 mV is about two full buck
+ *          pulses at 5 V.  It was 4 percent until run 37 (2026-09-28, boost
+ *          24 V to 28 V, no load): there 4 percent is 1.12 V, a boost pulse
+ *          moves V_out only a few mV, and V_out sat at the skip threshold,
+ *          29.1 V, with the PID at its floor.  The band is set by what one
+ *          pulse does, which does not scale with the setpoint, so it is in
+ *          mV.  Must stay under the relative OVP margin at SETPOINT_MIN_MV
+ *          (asserted after OVP_RELATIVE_PCT).
+ */
+#define PULSE_SKIP_ABOVE_MV 200u
+
+/** SKIP_ABOVE_PERMILLE_DEFAULT — The skip band's proportional part, per mille
+ *  of the setpoint (regulator_skip_above_permille, runtime); the band is the
+ *  larger of this and PULSE_SKIP_ABOVE_MV.  Must stay under OVP_RELATIVE_PCT. */
+#define SKIP_ABOVE_PERMILLE_DEFAULT 15u
+
+/**
  * MAX_DUTY_CYCLE_PCT — Maximum allowed charge-phase duty cycle.
  * Units  : percent of switching period
  * Derive : 85 % leaves ~750 ns at 200 kHz for the discharge phase and
@@ -373,7 +647,12 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
  *          26112 → 23120 < 26112 ✓  (§10.3)
  * Range  : [50, 96]
  */
-#define MAX_DUTY_CYCLE_PCT 85u
+/* 85 until run 4 (2026-09-27): the current sense is unidirectional, so
+ * once the inductor current is negative the comparator never trips and the
+ * charge phase runs to this backstop; 4.25 us at 4 A/us put 10 V on the
+ * output before the software OVP saw it.  50 (the lowest the assert below
+ * allows) halves that.  Buck at 24 V in needs 21 % for 5 V out.        */
+#define MAX_DUTY_CYCLE_PCT 50u
 
 _Static_assert(MAX_DUTY_CYCLE_PCT >= 50u && MAX_DUTY_CYCLE_PCT <= 96u,
                "MAX_DUTY_CYCLE_PCT out of valid range [50, 96]");
@@ -388,11 +667,19 @@ _Static_assert(MAX_DUTY_CYCLE_PCT >= 50u && MAX_DUTY_CYCLE_PCT <= 96u,
  *          inductor current ramp when COMP1 is inactive.
  * Compare: CMP2xR on both Timer A (buck active) and Timer B (boost active).
  */
+#if SYNC_RECT_ENABLED
 #define MAX_ON_TIME_COUNTS ((HRTIM_PERIOD_COUNTS) * (MAX_DUTY_CYCLE_PCT) / 100u)
+#else
+#define MAX_ON_TIME_COUNTS HRTIM_NS_TO_TICKS(DCM_MAX_ON_TIME_NS)
+#endif
 
 _Static_assert(BOOTSTRAP_REFRESH_TICKS <
                (HRTIM_PERIOD_COUNTS - MAX_ON_TIME_COUNTS),
                "BOOTSTRAP_REFRESH_TICKS must not overlap active switching phase");
+
+_Static_assert(DCM_PULSE_START_TICKS + MAX_ON_TIME_COUNTS + DCM_REFRESH_DEADTIME_TICKS <
+               HRTIM_PERIOD_COUNTS,
+               "DCM charge pulse must end before the next refresh pulse");
 
 /* =========================================================================
  * SECTION 7: SLOPE COMPENSATION TIMER (TIM6) CONSTANTS
@@ -509,6 +796,38 @@ _Static_assert(PID_EXECUTION_RATE_HZ >= 1000u &&
 #define PID_OUTPUT_MIN 0
 
 /**
+ * PEAK_FLOOR_NEG_MARGIN_MA — How far below zero the average inductor current
+ * may be commanded by the per-cycle peak-current floor (added 2026-09-27).
+ * Units  : mA
+ * Purpose: In forced continuous conduction the low-side switch conducts
+ *          whenever the high side is off, so a peak-current setpoint of zero
+ *          drives a large negative average inductor current.  At no load the
+ *          output then collapses within one PID period (bench, run 1: V_out
+ *          366, 0, 1127, 0, 3720, 0 mV on successive cycles).  regulator.c
+ *          floors the PID output each cycle at ripple/2 − this margin, so
+ *          the average inductor current cannot be commanded below −margin.
+ *          0 would forbid any negative current, leaving no way to bleed an
+ *          overshoot at no load; a few hundred mA is a controllable way down
+ *          (300 mA into 40 µF is 0.4 V per PID period).
+ */
+#define PEAK_FLOOR_NEG_MARGIN_MA 300u
+
+/**
+ * PEAK_TRIP_DELAY_NS — Delay from the inductor current reaching the DAC
+ * threshold to the high-side gate actually turning off (added 2026-09-27).
+ * Units  : ns
+ * Purpose: INA281 (1.3 MHz), COMP1, HRTIM and the gate driver act this long
+ *          after the threshold is crossed, and the current keeps rising at
+ *          (V_in − V_out)/L meanwhile, so the real peak is the threshold plus
+ *          di/dt × t_d: about 0.8 A at 24 V in, 5 V out, 4.7 µH.  regulator.c
+ *          lowers the DAC by that amount so the PID output is the peak that
+ *          actually happens.  Bench estimate from run 2 (V_out rose 1.0 V and
+ *          1.5 V per PID period on commands that allowed no net current);
+ *          measure it with a probe on IL_MON and the switch node, and set it.
+ */
+#define PEAK_TRIP_DELAY_NS 200u
+
+/**
  * PID_OUTPUT_MAX — Maximum PID output (DAC counts).
  * Units  : DAC counts (0–4095)
  * Derive : 4000 counts × 3.3 V / 4096 / 0.250 V·A⁻¹ ≈ 12.9 A peak
@@ -569,6 +888,8 @@ _Static_assert(PID_OUTPUT_MAX > PID_OUTPUT_MIN && PID_OUTPUT_MAX <= 4095,
  * Range  : [105, 150]
  */
 #define OVP_RELATIVE_PCT 110u
+_Static_assert(PULSE_SKIP_ABOVE_MV * 100u < SETPOINT_MIN_MV * (OVP_RELATIVE_PCT - 100u),
+               "pulse skipping must engage below the relative OVP");
 
 /**
  * UVP_RELATIVE_PCT — Relative output undervoltage threshold (% of setpoint).
@@ -605,6 +926,28 @@ _Static_assert(PID_OUTPUT_MAX > PID_OUTPUT_MIN && PID_OUTPUT_MAX <= 4095,
  * TODO(hardware): Verify during bring-up.
  */
 #define BOOST_VIN_MARGIN_MV 500u
+
+/**
+ * BOOST_PRECHARGE_BELOW_VIN_MV — How far under V_in the buck leg precharges
+ * the output before a boost start hands over to boost (regulator.c,
+ * boost_precharge).
+ * Units  : millivolts
+ * Value  : 2000 mV (2026-09-28, after runs 32 and 33 rang to 36 to 38 V at a
+ *          28 V target from an empty output)
+ * Purpose: Q1 turning fully on steps V_in minus V_out across L1 and C_out;
+ *          the undamped ring reaches up to twice that step above V_out and
+ *          Q3's reverse conduction holds the peak.  2 V under 24 V in is at
+ *          most about 26 V, under a 28 V target.
+ */
+#define BOOST_PRECHARGE_BELOW_VIN_MV 2000u
+
+/**
+ * BOOST_PRECHARGE_DONE_MARGIN_MV — How close V_out must be to the precharge
+ * cap before the hand-over to boost.
+ * Units  : millivolts
+ * Value  : 500 mV
+ */
+#define BOOST_PRECHARGE_DONE_MARGIN_MV 500u
 
 /**
  * MAX_CONSECUTIVE_BACKSTOPS_DEFAULT — Default consecutive-backstop fault
@@ -645,15 +988,30 @@ _Static_assert(PID_OUTPUT_MAX > PID_OUTPUT_MIN && PID_OUTPUT_MAX <= 4095,
 #define VREF_MV 3300u
 
 /**
- * ADC_VOLTAGE_FULL_SCALE_MV — Full-scale physical voltage for VD_MON / VS_MON.
+ * VD_MON_FULL_SCALE_MV / VS_MON_FULL_SCALE_MV — Full-scale physical voltage
+ * for the two voltage channels, one constant each, calibrated on the bench.
  * Units  : millivolts
- * Derive : Divider ratio = R_low / (R_high + R_low)
- *          = 5820 / (100000 + 5820) = 5820 / 105820 = 0.05500.
- *          ADC full-scale = 3.3 V → full-scale physical voltage =
- *          3.3 V / 0.05500 = 60.0 V.  (§3.4, Appendix D)
- *          Scaling: V_mV = ADC_raw × 60000 / 4096 ≈ 14.65 mV/count.
+ * Derive : Nominal, from the divider: R_low / (R_high + R_low)
+ *          = 5820 / (100000 + 5820) = 0.05500; 3.3 V / 0.05500 = 60.0 V, so
+ *          V_mV = raw × 60000 / 4096 ≈ 14.65 mV/count (§3.4, Appendix D).
+ *          Measured 2026-09-28 07:2x against the DS1104Z (10x probes) with
+ *          the regulator running buck at maximum pulse into 33 ohm: VD_MON
+ *          averaged 3794 mV over 512 PID samples while CH4 on TP2 averaged
+ *          4.955 V (ratio 1.306; the same ratio, 1.27 to 1.31, at 5.0 V in
+ *          run 14 and at 7.2 V idle), and VS_MON averaged 25278 mV while CH1
+ *          on TP1 averaged 23.95 V (ratio 0.947).  Dan, 2026-09-28 07:36:
+ *          the oscilloscope is right, the ADC needs calibration.  Gain only;
+ *          no offset was resolvable from those points.  The cause of the
+ *          30 percent VD_MON error is not known.
  */
-#define ADC_VOLTAGE_FULL_SCALE_MV 60000u
+/* 2026-09-28 evening: 80600 (x1.028) for the HRTIM-triggered, 8x oversampled
+ * VD_MON (6.5-cycle samples, 1.6 M conversions/s): the scope on TP2 read
+ * 1.7, 2.7 and 3.0 percent above the ADC at 12, 20 and 28 V.  The likely
+ * cause is the sample capacitor's charge draw through the ~5.5 kOhm divider
+ * at that rate (about 10 uA), a gain error that did not show at 12.5 kHz.
+ * Recalibrate if the ADC1 sampling time, ratio or trigger rate changes. */
+#define VD_MON_FULL_SCALE_MV 80600u   /* was 78400 (60000 x 1.306) */
+#define VS_MON_FULL_SCALE_MV 56800u   /* 60000 × 0.947 */
 
 /**
  * ADC_IL_FULL_SCALE_MA — Full-scale physical current for IL_MON / IS_MON.

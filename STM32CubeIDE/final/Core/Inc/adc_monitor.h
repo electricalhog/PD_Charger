@@ -24,6 +24,7 @@
 
 #include <stdint.h>
 #include "regulator_config.h"
+#include "stm32g4xx.h"   /* ADC1 registers for adc_monitor_awd_window */
 
 #ifdef __cplusplus
 extern "C" {
@@ -39,14 +40,35 @@ extern "C" {
  *   Rank 4: ADC1_IN15 (PB0, IS_MON)
  * =========================================================================*/
 
-/** Number of ADC1 channels in the regular scan sequence. */
-#define ADC1_DMA_BUFFER_LENGTH          4u
+/** ADC1 regular group: VD_MON alone, 8x hardware oversampled (6.5-cycle
+ *  samples, 3.6 us of the period averaged per result), once per switching
+ *  period on HRTIM ADC trigger 1 (master compare 1, see regulator.c), into
+ *  a circular DMA ring of ADC1_DMA_SCANS results: 64 periods, 320 us, which
+ *  doubles as a per-period trace (bu mem read adc1_dma_buffer).
+ *  Why oversampling (2026-09-28 evening): single VD_MON samples read about
+ *  1.6 V (sd) of noise that the scope does not see on V_out (TP2 has nothing
+ *  above 20 mV past 220 kHz) and that a 1 nF on the divider did not change,
+ *  so it enters after the divider; it beat at 40 kHz against the 200 kHz
+ *  sampling.
+ *  ADC1 injected group: IL_MON, ID_MON, IS_MON, not oversampled, started by
+ *  software from the PID ISR (adc_monitor_update), configured in
+ *  adc_monitor_init (not in final.ioc).                                  */
+#define ADC1_SCAN_LENGTH                1u
+#define ADC1_DMA_SCANS                  64u
+#define ADC1_DMA_BUFFER_LENGTH          (ADC1_SCAN_LENGTH * ADC1_DMA_SCANS)
+/** VD_MON samples the trimmed mean may use (one PID period at 20 kHz). */
+#define ADC1_AVG_SCANS                  10u
 
-/** DMA buffer index for each ADC1 channel */
-#define ADC1_DMA_INDEX_VD_MON           0u  /**< Rank 1: V_out */
-#define ADC1_DMA_INDEX_IL_MON           1u  /**< Rank 2: I_inductor */
-#define ADC1_DMA_INDEX_ID_MON           2u  /**< Rank 3: I_out */
-#define ADC1_DMA_INDEX_IS_MON           3u  /**< Rank 4: I_in */
+/** DMA ring index of VD_MON within a scan (the only regular channel) */
+#define ADC1_DMA_INDEX_VD_MON           0u  /**< Regular rank 1: V_out */
+
+/** Results (DMA ring, JDR1..3) are the sum of 8 conversions, no shift: with
+ *  oversampling the analog watchdog compares data bits [15:4] (the LL driver
+ *  note on LL_ADC_ConfigAnalogWDThresholds), so a 12-bit shifted result made
+ *  it see V_out / 16 and it never fired (bench, 2026-09-28).  Unshifted, it
+ *  sees the 12-bit value / 2: a 2-count (38 mV) threshold step.           */
+#define ADC1_OVS_SUM_SHIFT              3u  /**< sum -> 12-bit value */
+#define ADC1_AWD_THRESHOLD_SHIFT        1u  /**< 12-bit value -> TR1 field */
 
 /* =========================================================================
  * Measurement result structure
@@ -86,8 +108,49 @@ typedef struct
  */
 extern volatile AdcMeasurements adc_measurements;
 
-/** Raw ADC1 DMA buffer (12-bit unsigned counts for each channel). */
+/** Raw ADC1 DMA ring (12-bit counts, ADC1_SCAN_LENGTH per scan). */
 extern volatile uint16_t adc1_dma_buffer[ADC1_DMA_BUFFER_LENGTH];
+
+/** Index of the newest complete scan in adc1_dma_buffer (from the DMA's
+ *  remaining count). */
+uint32_t adc_monitor_latest_scan(void);
+
+/** Median of the last n (<= 15) VD_MON samples, raw counts.  One sample per
+ *  switching period, so a single bad sample never reaches the result.    */
+uint16_t adc_monitor_vd_median_raw(uint32_t n);
+
+/** One pass over the ring for the PID ISR: updates adc_measurements' ADC1
+ *  fields (as adc_monitor_scale_adc1_buffer) and returns the mean of the
+ *  last n (3 to ADC1_AVG_SCANS) VD_MON samples less the highest and lowest,
+ *  in raw counts.                                                         */
+uint16_t adc_monitor_update(uint32_t n);
+
+/** ADC1 analog watchdog 1 on VD_MON (single channel), unfiltered.  The
+ *  hardware filter (ADC_TR1.AWDFILT) never fired with VD_MON in a 4-channel
+ *  scan (bench, 2026-09-28: flag set at once with AWDFILT 0, never with 1):
+ *  it appears to count consecutive conversions of the sequence, not of the
+ *  watched channel.  Confirm in the ISR with adc_monitor_vd_recent instead.
+ *  Call before adc_monitor_start_adc1_dma (CFGR is written with ADSTART=0). */
+void adc_monitor_awd_init(void);
+
+/** The newest n (<= 8) VD_MON samples, newest first, including the scan in
+ *  progress (VD_MON is its first conversion).                            */
+void adc_monitor_vd_recent(uint16_t *out, uint32_t n);
+
+/** Set the watchdog window [lt, ht] in raw counts; allowed while converting
+ *  (checked on the bench, 2026-09-28). */
+static inline void adc_monitor_awd_window(uint32_t lt, uint32_t ht)
+{
+    lt >>= ADC1_AWD_THRESHOLD_SHIFT;
+    ht >>= ADC1_AWD_THRESHOLD_SHIFT;
+    ADC1->TR1 = (lt & 0xFFFu) | (ADC1->TR1 & ADC_TR1_AWDFILT) | ((ht & 0xFFFu) << 16);
+}
+
+/** 12-bit VD_MON value of ring slot `scan`. */
+static inline uint16_t adc_monitor_vd_at(uint32_t scan)
+{
+    return (uint16_t)(adc1_dma_buffer[scan * ADC1_SCAN_LENGTH + ADC1_DMA_INDEX_VD_MON] >> ADC1_OVS_SUM_SHIFT);
+}
 
 /* =========================================================================
  * API
