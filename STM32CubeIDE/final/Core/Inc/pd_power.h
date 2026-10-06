@@ -109,6 +109,10 @@ typedef struct
     uint32_t last_error;        /**< PD_ERR_* of the last refused setup             */
     uint32_t vconn_on;          /**< 1 while VCONN is sourced                       */
     uint32_t tick_ms;           /**< HAL tick of the last VBUS sample               */
+    uint32_t tcpp_type;         /**< TCPP0203 type/version register                 */
+    uint32_t tcpp_ack;          /**< ACK register: VCONN switch, GDP/GDC, power mode */
+    uint32_t tcpp_flags;        /**< FLAG register: OCP/OVP/OTP, VBUS ok            */
+    uint32_t tcpp_reads;        /**< Snapshots taken (read errors: bit 31 set)      */
 } PdPowerStatus;
 
 extern volatile PdPowerStatus pd_power_status;

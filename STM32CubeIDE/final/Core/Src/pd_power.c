@@ -30,6 +30,7 @@
 #include "usbpd_pdo_defs.h"
 #include "src1m1_conf.h"
 #include "src1m1_usbpd_pwr.h"
+#include "tcpp0203.h"
 #include "regulator.h"
 #include "regulator_config.h"
 #include "pd_interface.h"
@@ -38,6 +39,7 @@
 extern ADC_HandleTypeDef hadc2;
 extern uint16_t usbpd_pwr_adcx_buff[];
 extern volatile uint32_t regulator_commanded_mv;
+extern TCPP0203_Object_t USBPD_PWR_PortCompObj[];
 
 /* =========================================================================
  * State
@@ -325,8 +327,33 @@ void pd_power_init(void)
     applied_path_mv = pd_vbus_path_max_mv;
 }
 
+/* TCPP0203 register snapshot for `bu pd status` (bench diagnosis: which
+ * VCONN switch is closed, power mode, protection flags).  The PE/CAD tasks
+ * use the same I2C bus without a lock, so read with the scheduler suspended:
+ * three single-byte reads at 400 kHz, well under a millisecond. */
+static void tcpp_snapshot(void)
+{
+    uint8_t type = 0u, ack = 0u, flags = 0u;
+    int32_t err = 0;
+    vTaskSuspendAll();
+    err |= TCPP0203_ReadTCPPType(&USBPD_PWR_PortCompObj[0], &type);
+    err |= TCPP0203_ReadAckRegister(&USBPD_PWR_PortCompObj[0], &ack);
+    err |= TCPP0203_ReadFlagRegister(&USBPD_PWR_PortCompObj[0], &flags);
+    (void)xTaskResumeAll();
+    pd_power_status.tcpp_type  = type;
+    pd_power_status.tcpp_ack   = ack;
+    pd_power_status.tcpp_flags = flags;
+    pd_power_status.tcpp_reads = ((pd_power_status.tcpp_reads + 1u) & 0x7FFFFFFFu) | ((err != 0) ? 0x80000000u : 0u);
+}
+
 void pd_power_poll(void)
 {
+    static uint32_t polls;
+    if ((++polls % 100u) == 0u)   /* every second from the 10 ms default task */
+    {
+        tcpp_snapshot();
+    }
+
     int32_t ma;
     if (BSP_USBPD_PWR_VBUSGetCurrent(USBPD_PWR_TYPE_C_PORT_1, &ma) == BSP_ERROR_NONE)
     {

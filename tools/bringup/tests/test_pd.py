@@ -77,5 +77,5 @@ def test_decode_pdo_apdos_and_rdo():
 
 
 def test_status_field_count_matches_firmware_struct():
-    # pd_power.h PdPowerStatus: 9 scalars, spr_pdo[7], epr_pdo[6], 12 scalars, all 32-bit (136 B in the ELF).
-    assert len(pd.STATUS_FIELDS) == 9 + 7 + 6 + 12
+    # pd_power.h PdPowerStatus: 9 scalars, spr_pdo[7], epr_pdo[6], 16 scalars, all 32-bit (152 B in the ELF).
+    assert len(pd.STATUS_FIELDS) == 9 + 7 + 6 + 16

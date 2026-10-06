@@ -32,7 +32,8 @@ ERRORS = {0: "NONE", 1: "SOURCE_CANT", 2: "PATH_LIMIT", 3: "REGULATOR", 4: "SETT
 STATUS_FIELDS = (["attached", "contract_mv", "contract_ma", "contract_pos", "epr_mode", "vbus_mv", "ibus_ma",
                   "n_spr_pdo", "n_epr_pdo"] + [f"spr_pdo{i}" for i in range(7)] + [f"epr_pdo{i}" for i in range(6)]
                  + ["last_notify", "n_notify", "n_requests", "n_rejects", "n_hard_resets", "n_epr_entries",
-                    "n_epr_fails", "epr_last_action", "last_rdo", "last_error", "vconn_on", "tick_ms"])
+                    "n_epr_fails", "epr_last_action", "last_rdo", "last_error", "vconn_on", "tick_ms",
+                    "tcpp_type", "tcpp_ack", "tcpp_flags", "tcpp_reads"])
 EPR_ACTIONS = {1: "Enter", 2: "Enter_Acknowledged", 3: "Enter_Succeeded", 4: "Enter_Failed", 5: "Exit"}
 EPR_FAIL_DATA = {0: "unknown", 1: "cable not EPR capable", 2: "source failed to become VCONN source",
                  3: "EPR Mode Capable not set in RDO", 4: "source unable now", 5: "EPR Mode Capable not set in PDO"}
@@ -341,6 +342,27 @@ def status(cfg: dict) -> dict:
         "epr_last_mode_do": {"action": EPR_ACTIONS.get(act, act), "data": dat} if v["epr_last_action"] else None,
         "counters": {k: v[k] for k in ("n_notify", "n_requests", "n_rejects", "n_hard_resets", "n_epr_entries",
                                         "n_epr_fails")},
+        "tcpp": decode_tcpp(v),
+    }
+
+
+def decode_tcpp(v: dict) -> dict | None:
+    """TCPP0203 ACK/FLAG registers (tcpp0203.h). Note the VCONN switch ACK codes
+    are swapped relative to the control register: ACK 2 = CC1, 1 = CC2."""
+    if not v["tcpp_reads"]:
+        return None
+    a, f = v["tcpp_ack"], v["tcpp_flags"]
+    return {
+        "reads": v["tcpp_reads"] & 0x7FFFFFFF, "last_read_failed": bool(v["tcpp_reads"] >> 31),
+        "type": f"{v['tcpp_type']:#04x}",
+        "vconn_switch": {0: "open", 1: "CC2", 2: "CC1", 3: "both?"}[a & 3],
+        "gate_provider": "closed" if a >> 2 & 1 else "open",
+        "gate_consumer": "open" if a >> 3 & 1 else "closed",
+        "power_mode": {0: "hibernate", 1: "low_power", 2: "normal", 3: "?"}[(a >> 4) & 3],
+        "vbus_discharge": bool(a >> 6 & 1), "vconn_discharge": bool(a >> 7 & 1),
+        "flags": [n for b, n in ((0, "OCP_VCONN"), (1, "OCP_VBUS"), (2, "OVP_VBUS"), (3, "OVP_CC"), (4, "OTP"),
+                                 (5, "VBUS_OK"), (6, "VCONN_PWR")) if f >> b & 1],
+        "raw": {"ack": f"{a:#04x}", "flags": f"{f:#04x}"},
     }
 
 
