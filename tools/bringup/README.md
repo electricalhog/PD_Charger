@@ -28,8 +28,12 @@ permissions, and measured data sizes and timings.
 | gdb-multiarch / arm-none-eabi-gdb | `layout` | reads struct layouts from the ELF |
 | Rigol DS1054Z | `scope` | LAN recommended: set a static IP on the scope, then `resource = "tcp://<ip>:5555"`. USB needs `udev/99-bringup.rules` |
 | sigrok-cli | `la` | `sudo apt install sigrok-cli`; set `[logic].driver` for your analyzer |
+| Rust (rustup) + `thumbv7em-none-eabihf`, `thumbv6m-none-eabi` | `bench/` firmware | `rustup target add thumbv7em-none-eabihf thumbv6m-none-eabi`; flash the G431 with `STM32_Programmer_CLI` or `probe-rs`, the QT Py with `elf2uf2-rs` (`cargo install elf2uf2-rs`) |
+| udev rules (Linux) | ST-LINK, VCP, RP2040 BOOTSEL, Rigol without root | `sudo cp udev/99-bringup.rules /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger`, then replug |
 
-Machine-specific settings go in `tools/bringup/bringup.local.toml` (gitignored):
+Machine-specific settings go in `tools/bringup/bringup.local.toml` (gitignored; start from
+`bringup.local.toml.example`). With the three-board bench (two ST-LINKs), `bu doctor`'s
+`bench_devices` check lists the attached serials and says which roles are still unset:
 
 ```toml
 [scope]

@@ -153,6 +153,21 @@ def cmd_doctor(cfg, a):
     check("gdb", lambda: exe(gdb_exe()))
     check("stm32_programmer", lambda: exe(programmer_exe(cfg)))
     check("openocd", lambda: exe(shutil.which("openocd")))
+
+    def _rust():
+        # bench/ firmware: the G431 sink (thumbv7em) and the QT Py load (thumbv6m).
+        cargo = shutil.which("cargo")
+        if not cargo:
+            raise ToolError("cargo not found: install Rust from https://rustup.rs (needed for bench/ firmware)")
+        need = ["thumbv7em-none-eabihf", "thumbv6m-none-eabi"]
+        have = run(["rustup", "target", "list", "--installed"], timeout=30).stdout.split() \
+            if shutil.which("rustup") else []
+        flashers = {t: bool(shutil.which(t)) for t in ("probe-rs", "elf2uf2-rs", "picotool")}
+        missing = [t for t in need if t not in have]
+        if missing:
+            raise ToolError(f"rustup target add {' '.join(missing)}", missing=missing, flash_tools=flashers)
+        return {**exe(cargo, ["--version"]), "targets": need, "flash_tools": flashers}
+    check("rust", _rust)
     if not a.offline:
         def _probes():
             r = probe.list_probes(cfg)
@@ -161,6 +176,7 @@ def cmd_doctor(cfg, a):
             return r
         check("stlink_probes", _probes)
         check("serial_ports", serialmon.list_ports)
+        check("bench_devices", lambda: bench.devices(cfg))
         check("sigrok", lambda: logic.scan(cfg))
 
         def _scope():

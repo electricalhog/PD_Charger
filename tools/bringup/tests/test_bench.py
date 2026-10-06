@@ -91,3 +91,28 @@ def test_swd_sweep_needs_probe_serial(cfg, monkeypatch):
     monkeypatch.setattr(sink, "exchange", FakeBench(load_state="off"))
     with pytest.raises(ToolError, match="probe"):
         bench.sweep(cfg, [5000], [500], swd=True, dwell=0)
+
+
+def _ports(*serials):
+    return {"ok": True, "ports": [{"device": f"/dev/ttyACM{i}", "serial": sn, "stlink": True, "vid": "0483",
+                                   "pid": "374e", "description": "STLINK-V3"} for i, sn in enumerate(serials)]}
+
+
+def test_devices_maps_roles_by_serial(monkeypatch):
+    monkeypatch.setattr(bench, "list_ports", lambda: _ports("SRC1", "SNK2"))
+    r = bench.devices({"probe": {"serial": "SRC1"}, "sink": {"stlink_serial": "SNK2"}})
+    assert [(d["device"], d["role"]) for d in r["stlinks"]] == [
+        ("/dev/ttyACM0", "source (G474)"), ("/dev/ttyACM1", "sink (G431)")]
+
+
+def test_devices_flags_unmapped_or_missing(monkeypatch):
+    monkeypatch.setattr(bench, "list_ports", lambda: _ports("SRC1", "SNK2"))
+    with pytest.raises(ToolError) as e:
+        bench.devices({"probe": {"serial": ""}, "sink": {}})
+    assert len(e.value.details["problems"]) == 2
+    with pytest.raises(ToolError, match="not mapped") as e:
+        bench.devices({"probe": {"serial": "GONE"}, "sink": {"stlink_serial": "SNK2"}})
+    assert "GONE is not attached" in e.value.details["problems"][0]
+    # One board and nothing configured is fine.
+    monkeypatch.setattr(bench, "list_ports", lambda: _ports("ONLY"))
+    assert bench.devices({"probe": {}, "sink": {}})["stlinks"][0]["role"] is None

@@ -1,5 +1,24 @@
-# Rigol DS1000Z series (DS1054Z) access without root: raw USB (pyvisa-py)
-# and the kernel usbtmc driver node (/dev/usbtmcN, used by `resource = "usb"`).
+# Bench USB access without root (Linux).
 # Install: sudo cp 99-bringup.rules /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger
+# Then unplug/replug the boards.  TAG+="uaccess" gives the logged-in user access;
+# the GROUP lines cover headless/ssh use (add yourself: sudo usermod -aG plugdev,dialout $USER).
+
+# Rigol DS1000Z series (DS1054Z): raw USB (pyvisa-py) and the kernel usbtmc node.
 SUBSYSTEM=="usb", ATTR{idVendor}=="1ab1", ATTR{idProduct}=="04ce", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 KERNEL=="usbtmc[0-9]*", SUBSYSTEMS=="usb", ATTRS{idVendor}=="1ab1", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+
+# ST-LINK V2 / V2-1 / V3 (the NUCLEO-G474RE and NUCLEO-G431RB on-board probes):
+# SWD for STM32_Programmer_CLI, OpenOCD and probe-rs.
+SUBSYSTEM=="usb", ATTR{idVendor}=="0483", ATTR{idProduct}=="3748|374b|374d|374e|374f|3752|3753|3754|3757", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+# Their virtual COM ports (/dev/ttyACM*): the G431 sink's command port.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", MODE="0660", GROUP="dialout", TAG+="uaccess"
+
+# RP2040 in BOOTSEL mode (QT Py: hold BOOT, tap RESET) for picotool.
+# elf2uf2-rs -d only needs the RPI-RP2 mass-storage drive, no rule.
+SUBSYSTEM=="usb", ATTR{idVendor}=="2e8a", ATTR{idProduct}=="0003", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+
+# Optional stable names for the two VCPs.  Fill in the serials from
+# `tools/bringup/bu serial list`, uncomment, reload.  `bu` itself selects by
+# serial number (bringup.local.toml), so these are only for terminals.
+#SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", ATTRS{serial}=="<G474 ST-LINK SN>", SYMLINK+="pd-source"
+#SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", ATTRS{serial}=="<G431 ST-LINK SN>", SYMLINK+="pd-sink"

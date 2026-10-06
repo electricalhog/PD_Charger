@@ -1,0 +1,17 @@
+# Copy to bringup.local.toml (gitignored) and fill in.  Deep-merged over bringup.toml.
+# With the three-board bench there are two ST-LINKs; `bu doctor` says which
+# serials it sees and whether these are set (check "bench_devices").
+
+[probe]
+# G474 PD_Charger (source): the ST-LINK used by flash / mem / pd / regulator.
+# From `bu probe list` (st_link_sn) or `bu serial list` (serial).
+serial = ""
+
+[sink]
+# G431 sink: the ST-LINK whose VCP carries `bu sink` / `bu bench`.
+stlink_serial = ""
+# or a fixed device path instead, e.g. "/dev/ttyACM1" or "/dev/pd-sink" (udev symlink)
+port = ""
+
+[scope]
+resource = ""        # e.g. "tcp://192.168.1.50:5555" or "usb"

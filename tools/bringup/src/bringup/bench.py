@@ -22,6 +22,44 @@ import time
 
 from . import pd, regulator, sink
 from .config import ToolError, out_file, rel
+from .serialmon import list_ports
+
+
+def devices(cfg: dict) -> dict:
+    """Which attached ST-LINK is the source (G474) and which the sink (G431).
+
+    Roles come from bringup.local.toml: [probe].serial (source, used by
+    flash/mem/pd/regulator) and [sink].stlink_serial or [sink].port (sink VCP).
+    One ST-LINK and nothing set is fine (single-board work); two need both."""
+    stlinks = [p for p in list_ports()["ports"] if p["stlink"]]
+    src_sn = cfg.get("probe", {}).get("serial", "")
+    sc = cfg.get("sink", {})
+    sink_sn, sink_port = sc.get("stlink_serial", ""), sc.get("port", "")
+    mapped = []
+    for p in stlinks:
+        role = None
+        if src_sn and p["serial"] == src_sn:
+            role = "source (G474)"
+        elif (sink_sn and p["serial"] == sink_sn) or (sink_port and p["device"] == sink_port):
+            role = "sink (G431)"
+        mapped.append({"device": p["device"], "serial": p["serial"], "role": role})
+    problems = []
+    if len(stlinks) >= 2:
+        if not src_sn:
+            problems.append("[probe].serial unset: flash/mem/pd/regulator could talk to either board")
+        if not (sink_sn or sink_port):
+            problems.append("[sink].stlink_serial unset: bu sink/bench cannot pick the G431's VCP")
+    if src_sn and not any(p["serial"] == src_sn for p in stlinks):
+        problems.append(f"[probe].serial {src_sn} is not attached")
+    if sink_sn and not any(p["serial"] == sink_sn for p in stlinks):
+        problems.append(f"[sink].stlink_serial {sink_sn} is not attached")
+    if src_sn and src_sn == sink_sn:
+        problems.append("source and sink are set to the same ST-LINK")
+    if problems:
+        raise ToolError("bench ST-LINKs not mapped", problems=problems, stlinks=mapped,
+                        hint="copy tools/bringup/bringup.local.toml.example to bringup.local.toml "
+                             "and fill in the serials shown here")
+    return {"stlinks": mapped}
 
 
 def _one(rows: list[dict], kind: str) -> dict:
