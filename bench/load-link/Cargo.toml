@@ -1,0 +1,9 @@
+[package]
+name = "load-link"
+version = "0.1.0"
+edition = "2024"
+description = "I2C frames between the PD sink (NUCLEO-G431RB) and the buck load (QT Py RP2040)"
+license = "MIT"
+publish = false
+
+[dependencies]

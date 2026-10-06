@@ -1,0 +1,11 @@
+[package]
+name = "load-control"
+version = "0.1.0"
+edition = "2024"
+description = "Power-target control law for the buck load (pure, host-testable)"
+license = "MIT"
+publish = false
+
+[dependencies]
+load-link = { path = "../load-link" }
+libm = "0.2"
