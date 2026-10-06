@@ -26,7 +26,7 @@ hardware yet. Every bench step below is a proposal for you to review.
 | 5 | `USBPD_PWR_IF_SearchRequestedPDO` never writes `*Pdo`, so `EvaluateRequest` judged a request against an uninitialized stack variable. | Requests were accepted or rejected at random. | Yes |
 | 6 | `USBPD_PWR_IF_GetPortPDOs` never sets `*Size`. | The number of PDOs in Source_Capabilities was undefined. | Yes |
 | 7 | `USBPD_PWR_IF_SetProfile` always used PDO 1 (5 V). PS_RDY went out without waiting for VBUS. | Wrong voltage on a 9 V contract, and a PS_RDY that was never true. | Yes: it waits for ±5 % within tPSTransition. |
-| 8 | The bundled ST USB-PD core library has no EPR (no Extended_Control, no EPR_Source_Capabilities, no EPR notifications). | A sink's `EPR_Mode (Enter)` gets `Not_Supported`. No EPR traffic is possible. | **No, this needs your action** (see "Library upgrade"). |
+| 8 | The bundled ST USB-PD core library has no EPR (no Extended_Control, no EPR_Source_Capabilities, no EPR notifications). | A sink's `EPR_Mode (Enter)` gets `Not_Supported`. No EPR traffic is possible. | Yes: the V5.3 core from `jonah-bench` (ce537f5, X-CUBE-TCPP 4.2.0) is merged in (see "Library upgrade"). |
 
 ## What the branch adds
 
@@ -63,7 +63,15 @@ hardware yet. Every bench step below is a proposal for you to review.
   `USBPD/App/usbpd_dpm_core.c`. CubeMX regeneration drops it. The v5 library calls that member
   with no NULL check during EPR entry, so a regenerated table **hard-faults on EPR entry**.
 
-## Library upgrade (your decision; not done here)
+## Library upgrade
+
+**Done 2026-10-05:** merged from `jonah-bench` (ce537f5): ST USB-PD core V5.3 (X-CUBE-TCPP
+4.2.0, `PD3_FULL`, defines `USBPDCORE_EPR`) with matching TRACER_EMB and GUI_INTERFACE. The
+`#if defined(USBPDCORE_EPR)` paths now compile. The default build, `-DPD_VCONN=ON` and
+`-DPD_VBUS_PATH_CHARGER=OFF` all build with no errors. GotoMin/Ping needed no change. Not yet
+run on hardware. The original notes for v5.4.1 follow; the callback and EPR entry
+analysis was done against v5.4.1, so re-check it on the bench against V5.3 with `bu pd trace`.
+
 
 EPR requires ST `stm32-mw-usbpd-core` ≥ v5.0.0. v5.4.1 (08-May-2026) implements USB PD R3.2
 V1.1, including source EPR. The tooling sandbox refused to vendor the binary, so this is left to
@@ -98,8 +106,7 @@ What I checked against v5.4.1, from its headers and by disassembling the library
 
 What I could **not** verify:
 
-- The `#if defined(USBPDCORE_EPR)` code paths have never been compiled. The current library
-  doesn't define the macro, and the sandbox wouldn't let me build against v5.
+- ~~The `#if defined(USBPDCORE_EPR)` code paths have never been compiled.~~ They compile against V5.3 (2026-10-05).
 - v5.4.0 deprecates GotoMin and Ping. Expect compile errors in `USBPD_DPM_RequestGotoMin` /
   `RequestPing` in `usbpd_dpm_user.c` if those enum members were removed. Delete or guard
   those two functions.

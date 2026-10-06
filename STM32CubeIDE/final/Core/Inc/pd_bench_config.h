@@ -54,7 +54,7 @@
  * PD_EPR_ENABLE — Advertise EPR Mode Capable (PDO 1 bit 23) and enable the
  * EPR source state machine (DPM_Settings.PE_PD3_Support.Is_EPR_Supported_SRC).
  * Has no effect unless the USB-PD core library defines USBPDCORE_EPR
- * (STM32 USB-PD core >= v5.0.0; the library in this tree predates it).
+ * (STM32 USB-PD core >= v5.0.0; this tree has V5.3, PD3_FULL, which does).
  */
 #define PD_EPR_ENABLE               1u
 

@@ -69,6 +69,15 @@
 #include "stm32g4xx_hal.h"
 #include <string.h>         /* memset */
 
+/* PC8 is OUTPUT_EN on the power board and ENABLE on the X-NUCLEO-SRC1M1
+ * TCPP0203.  While the shield is stacked the PD stack owns the pin and holds
+ * it high (pd_power.c); the regulator must not drop it.  */
+#if OUTPUT_EN_SHARED_WITH_TCPP
+#define OUTPUT_EN_WRITE(state) ((void)(state))
+#else
+#define OUTPUT_EN_WRITE(state) HAL_GPIO_WritePin(PIN_OUTPUT_EN_PORT, PIN_OUTPUT_EN_PIN, (state))
+#endif
+
 /* Outputs of the buck switching leg (Timer A).  Both outputs are always
  * enabled: with SYNC_RECT_ENABLED 0 the low side (TA2, Q2) carries only the
  * bootstrap refresh pulse at the start of each period, never the
@@ -573,7 +582,7 @@ void regulator_init(void)
 
     /* --- Step 13: Power path GPIO — ensure both paths are disabled at init --- */
     HAL_GPIO_WritePin(PIN_INPUT_EN_PORT,  PIN_INPUT_EN_PIN,  GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(PIN_OUTPUT_EN_PORT, PIN_OUTPUT_EN_PIN, GPIO_PIN_RESET);
+    OUTPUT_EN_WRITE(GPIO_PIN_RESET);
     HAL_GPIO_WritePin(PIN_OUTPUT_DIS_PORT,PIN_OUTPUT_DIS_PIN,GPIO_PIN_SET);
 
     /* --- Step 14: Enter IDLE ---
@@ -1331,7 +1340,7 @@ void regulator_pid_tim7_isr(void)
     if (!output_switch_on && !boost_precharge && !softstart_active &&
         v_out_mv + OUTPUT_CONNECT_MARGIN_MV >= commanded_mv)
     {
-        HAL_GPIO_WritePin(PIN_OUTPUT_EN_PORT, PIN_OUTPUT_EN_PIN, GPIO_PIN_SET);
+        OUTPUT_EN_WRITE(GPIO_PIN_SET);
         output_switch_on = true;
     }
 #endif
@@ -2041,7 +2050,7 @@ static void power_path_enable(void)
     HAL_GPIO_WritePin(PIN_INPUT_EN_PORT,  PIN_INPUT_EN_PIN,  GPIO_PIN_SET);
     /* OUTPUT_EN stays low here: the PID ISR (step 4c) connects VBUS once
      * V_out is regulating, if OUTPUT_SWITCH_ENABLED (regulator_config.h). */
-    HAL_GPIO_WritePin(PIN_OUTPUT_EN_PORT, PIN_OUTPUT_EN_PIN, GPIO_PIN_RESET);
+    OUTPUT_EN_WRITE(GPIO_PIN_RESET);
     output_switch_on = false;
     HAL_GPIO_WritePin(PIN_OUTPUT_DIS_PORT,PIN_OUTPUT_DIS_PIN,GPIO_PIN_RESET);
 }
@@ -2053,7 +2062,7 @@ static void power_path_disable(void)
 {
     output_switch_on = false;
     HAL_GPIO_WritePin(PIN_INPUT_EN_PORT,  PIN_INPUT_EN_PIN,  GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(PIN_OUTPUT_EN_PORT, PIN_OUTPUT_EN_PIN, GPIO_PIN_RESET);
+    OUTPUT_EN_WRITE(GPIO_PIN_RESET);
     HAL_GPIO_WritePin(PIN_OUTPUT_DIS_PORT,PIN_OUTPUT_DIS_PIN,GPIO_PIN_SET); // discharge VBUS
 }
 

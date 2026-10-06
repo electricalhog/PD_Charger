@@ -163,6 +163,7 @@ off) the fault lines float and the firmware sits in FAULT; that's expected.
 ### 5c. USB-PD source (`PD_VBUS_PATH_CHARGER` builds)
 ```
 bu pd status     # offered PDOs, last RDO + verdict, contract, transition ms, EPR counters, last 32 events
+bu pd trace      # message-level view from the ST tracer (section 8b)
 ```
 With the CMake option `PD_VBUS_PATH_CHARGER` (default ON) the regulator
 output **is** the Type-C VBUS: it starts only on a sink attach, a contract
@@ -249,6 +250,16 @@ Returns per-channel edge counts, frequency, duty.
 bu serial list
 bu serial capture --seconds 3 [--baud 921600 --bytesize 7] [--hex] [--until 'READY']
 ```
+
+### 8b. USB PD tracer (ST TRACER_EMB on the G474 VCP)
+```
+bu pd trace --seconds 10 [--port /dev/ttyACMx]   # decode CAD, PD messages (PDO/RDO/EPR_Mode), notifications
+bu pd trace --file bringup_out/<x>_pdtrace.bin   # re-decode a capture
+```
+- The tracer and STM32CubeMonitor-UCPD share the VCP: one at a time.
+  Nothing is traced while idle; attach a sink to see traffic.
+- With the G431 sink also attached, `auto` may pick the sink's VCP: pass
+  `--port`.
 
 ## Configuration
 Defaults: `tools/bringup/bringup.toml`. Machine-specific values (scope address,

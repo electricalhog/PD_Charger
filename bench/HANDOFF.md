@@ -42,11 +42,10 @@ Bring the three-board bench up on the laptop, following the stage gates in `benc
 
 ## Open items that need the user (not decided in the cloud session)
 
-1. **ST USB-PD core v5.4.1 is not vendored.** The cloud sandbox refused to add ST's binary. The
-   steps are in `plans/epr-bringup.md` ("Library upgrade").
-   - Until it's added, all `#if defined(USBPDCORE_EPR)` code in the G474 firmware compiles out.
-   - That code has never been compiled against v5. Expect fallout around the GotoMin/Ping
-     request functions in `USBPD/Target/usbpd_dpm_user.c`.
+1. **ST USB-PD core: resolved 2026-10-05.** `jonah-bench` was merged in. Its V5.3 core,
+   tracer and GUI_INTERFACE were kept. Its separate `pd_power.c` policy module was dropped in
+   favor of this branch's `pd_vbus`/`pd_policy` (the user's choice). The EPR code now compiles,
+   and `bu pd trace` decodes the ST tracer on the G474 VCP. Still not run on hardware.
 2. **The QT Py-to-buck pin map is a guess.** Only the analog pins are inferred (from the buck
    sketch's labels); the 7 gate/fan pins in `bench/buck-load-qtpy/src/board.rs` are
    placeholders. Confirm them with the user before building with `--features power-stage`.
@@ -71,8 +70,7 @@ Bring the three-board bench up on the laptop, following the stage gates in `benc
 
 ## Bench facts the cloud session established
 
-- G474 source PDOs: 5 V and 9 V at 500 mA. EPR Mode Capable is advertised only with the v5
-  library.
+- G474 source PDOs: 5 V and 9 V at 500 mA. EPR Mode Capable is advertised (V5.3 core).
 - Sink:
   - TCPP02 at 0x34 and the load at 0x55 share I2C1 (PB8/PB9) at 100 kHz.
   - The sink's I2C must stay async (DMA), because usbpd sends GoodCRC in software.

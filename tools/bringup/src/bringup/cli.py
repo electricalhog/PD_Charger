@@ -14,7 +14,7 @@ import traceback
 from pathlib import Path
 
 from . import build as build_mod
-from . import bench, cubemx, logic, pd, probe, profile, regulator, serialmon, sink, usercode
+from . import bench, cubemx, logic, pd, pd_trace, probe, profile, regulator, serialmon, sink, usercode
 from .config import REPO_ROOT, ToolError, cubemx_exe, gdb_exe, load_config, paths, programmer_exe, rel, run
 from .ioc import Ioc, diff_ioc
 
@@ -302,6 +302,10 @@ def build_parser() -> argparse.ArgumentParser:
     # USB-PD source
     pp = sub.add_parser("pd", help="USB-PD source: offered PDOs, contract, EPR mode, event log").add_subparsers(dest="op", required=True)
     pp.add_parser("status", help="decode the firmware's pd_status block over SWD (core keeps running)")
+    g = pp.add_parser("trace", help="capture + decode the UCPD tracer on the VCP (921600 8N1); not while CubeMonitor-UCPD holds the port")
+    g.add_argument("--seconds", type=float, default=5.0); g.add_argument("--port", help="the G474's VCP (auto may pick the sink's)")
+    g.add_argument("--file", help="decode a saved capture instead of capturing")
+    g.add_argument("--show", type=int, default=200, help="decoded lines returned (all go to the .log)")
 
     # bench USB-PD sink (bench/pd-sink-g431)
     g = sub.add_parser("sink", help="send one command to the NUCLEO-G431RB PD sink over its VCP "
@@ -410,7 +414,7 @@ EFFECTS = {
     "cubemx generate": "write", "cubemx script": "write", "build": "write",
     "probe list": "read", "probe reset": "actuate", "flash": "actuate",
     "sym": "read", "layout": "read", "mem read": "read", "mem write": "actuate",
-    "profile": "read", "pd status": "read", "sink": "actuate", "bench status": "read", "bench sweep": "actuate", "regulator status": "read", "regulator clear-fault": "actuate", "regulator stop": "actuate",
+    "profile": "read", "pd status": "read", "pd trace": "read", "sink": "actuate", "bench status": "read", "bench sweep": "actuate", "regulator status": "read", "regulator clear-fault": "actuate", "regulator stop": "actuate",
     "regulator bench-pwm": "actuate", "regulator set-voltage": "actuate", "regulator sweep": "actuate", "regulator snapshot": "actuate", "regulator start": "actuate",
     "scope analyze": "read", "scope idn": "read", "scope state": "read", "scope measure": "read",
     "scope delay": "read", "scope screenshot": "read", "scope capture": "actuate",
@@ -492,6 +496,8 @@ def dispatch(cfg: dict, a) -> dict:
     if c == "profile":
         return profile.profile(cfg, a.samples, a.top, a.lines)
     if c == "pd":
+        if a.op == "trace":
+            return pd_trace.trace(cfg, a.seconds, a.port, a.file, a.show)
         return pd.status(cfg)
     if c == "sink":
         return sink.exchange(cfg, " ".join(a.words), a.timeout, a.until, a.wait)

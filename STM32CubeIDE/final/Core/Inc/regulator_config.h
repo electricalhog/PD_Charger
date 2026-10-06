@@ -428,6 +428,27 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
 #define OUTPUT_SWITCH_ENABLED 1u
 
 /**
+ * OUTPUT_EN_SHARED_WITH_TCPP — PC8 also drives the TCPP0203 ENABLE pin.
+ * Units  : boolean (0u or 1u)
+ * Value  : 0u in PD_VBUS_PATH_CHARGER builds, 1u otherwise
+ * Purpose: PD_VBUS_PATH_CHARGER (CMake option, default ON): the regulator's
+ *          output switch is the Type-C VBUS gate and pd_vbus.c reads PC8 back
+ *          as "VBUS on", so the regulator must keep driving it; the SRC1M1
+ *          BSP is out of the link and does not touch PC8.
+ *          OFF build (X-NUCLEO-SRC1M1 BSP linked, 2026-09-29 bench): the BSP
+ *          holds PC8 high so the TCPP stays enabled for attach detection,
+ *          and the regulator never writes OUTPUT_EN.  The power board's
+ *          output switch then stays on while the board is powered, so its
+ *          output must feed a switched path (the SRC1M1 VIN), never a bare
+ *          load.
+ */
+#if defined(PD_VBUS_PATH_CHARGER) && (PD_VBUS_PATH_CHARGER)
+#define OUTPUT_EN_SHARED_WITH_TCPP 0u
+#else
+#define OUTPUT_EN_SHARED_WITH_TCPP 1u
+#endif
+
+/**
  * OUTPUT_CONNECT_MARGIN_MV — How close V_out must be to the target before
  *          the PID ISR asserts OUTPUT_EN (step 4c in regulator.c).
  * Units  : mV
