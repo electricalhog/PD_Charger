@@ -79,21 +79,32 @@
  *
  * The STM32G4 UCPD cannot source VCONN; it needs a 5 V switch per CC line.
  * The bench rig wires the receptacle CC pins straight to the Nucleo UCPD
- * pins (PB6 = CC1, PB4 = CC2), so there is none.  Enabled by the CMake
- * option PD_VCONN (adds _VCONN_SUPPORT and PD_VCONN_ENABLE=1).
+ * pins (PB6 = CC1, PB4 = CC2) and adds one NPN -> PNP high-side switch per
+ * line from +5V.  Enabled by the CMake option PD_VCONN (adds _VCONN_SUPPORT
+ * and PD_VCONN_ENABLE=1).
+ *
+ * NUCLEO-G474RE header positions (Arduino names from the stm32duino
+ * NUCLEO_G474RE variant; Morpho numbering is the Nucleo-64 layout):
+ *   CC1   PB6  Arduino D10 = CN5-3,  Morpho CN10-17
+ *   CC2   PB4  Arduino D5  = CN9-6,  Morpho CN10-27
+ *   VCONN on CC1 enable  PA7  Arduino D11 = CN5-4,  Morpho CN10-15
+ *   VCONN on CC2 enable  PB5  Arduino D4  = CN9-5,  Morpho CN10-29
+ * Each enable sits on the Morpho pin next to the CC pin it switches.
+ * Neither is used in final.ioc (PB0/PB1, the old placeholders, are not:
+ * PB0 is IS_MON).
  * =========================================================================*/
 #ifndef PD_VCONN_ENABLE
 #define PD_VCONN_ENABLE             0u
 #endif
 
 #if PD_VCONN_ENABLE
-/* Active-high enables of the 5 V VCONN switches.  Placeholders: set them to
- * the pins actually wired before building with PD_VCONN=ON.              */
-#define PD_VCONN_CC1_PORT           GPIOB
-#define PD_VCONN_CC1_PIN            GPIO_PIN_0
+/* Active-high enables of the 5 V VCONN switches (GPIO high -> NPN on ->
+ * PNP on -> +5V on that CC line).  pd_vbus.c drives both low before
+ * configuring them as outputs. */
+#define PD_VCONN_CC1_PORT           GPIOA
+#define PD_VCONN_CC1_PIN            GPIO_PIN_7
 #define PD_VCONN_CC2_PORT           GPIOB
-#define PD_VCONN_CC2_PIN            GPIO_PIN_1
-#error "PD_VCONN: set PD_VCONN_CCx_PORT/PIN to the wired VCONN switch enables, then delete this line"
+#define PD_VCONN_CC2_PIN            GPIO_PIN_5
 #endif
 
 /* =========================================================================
