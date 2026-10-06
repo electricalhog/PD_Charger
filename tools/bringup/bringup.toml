@@ -40,3 +40,10 @@ baud = 115200
 
 [output]
 dir = "bringup_out"             # captures, screenshots, logs, diffs land here
+
+[sink]
+# bench/pd-sink-g431 on a NUCLEO-G431RB.  With the G474 Nucleo also plugged
+# in there are two ST-LINK VCPs: set one of these in bringup.local.toml.
+port = ""                       # e.g. "/dev/ttyACM1"
+stlink_serial = ""              # ST-LINK USB serial number (bu serial list)
+baud = 115200

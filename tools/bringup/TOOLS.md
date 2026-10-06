@@ -76,6 +76,7 @@ Times and JSON sizes are measured (typical). "Artifact" = file written to `bring
 | `mem read TARGET [--type --count --size --save]` | read | live RAM/register read by symbol or address, core keeps running | 0.2 s | ≤ 2 kB (max 256 values inline) | `mem_*.bin` if `--save` or > 1 kB (e.g. `debug_log` 12.3 kB) |
 | `mem write TARGET VALUE [--type]` | actuate | live write; aligned single bus write for 8/16/32-bit | 0.3 s | < 1 kB | – |
 | `pd status` | read | USB-PD source telemetry (`pd_status`): offered SPR/EPR PDOs, last RDO and verdict, contract, transition time, EPR entry counters, last 32 PD/CAD events with ages, diagnosis | 0.2 s (not timed on hardware) | ~2–4 kB | – |
+| `sink WORDS… [--until EVT] [--wait S] [--timeout S]` | actuate | one command to the NUCLEO-G431RB PD sink (bench/pd-sink-g431) over its VCP; parsed reply + EVT lines (`req MV [MA]`, `epr W`, `eprexit`, `getcaps`, `status`, `caps`). Port from `[sink]` | 0.1 s; `--until contract` ≤ 1 s (not timed on hardware) | < 2 kB | – |
 | `regulator status` | read | state, fault source, ADM1270 lines, HRTIM flags/IRQ/outputs, ADC, diagnosis, protection thresholds | 0.15 s | 1.3 kB (+1 kB protection table) | – |
 | `regulator clear-fault [--force]` | actuate | firmware: ADM1270 cool-down → INPUT_EN toggle → verify → FAULT→IDLE | 0.1–0.5 s | 1.5 kB | – |
 | `regulator stop` | actuate | outputs off, power path off | 0.2 s | 1.5 kB | – |
