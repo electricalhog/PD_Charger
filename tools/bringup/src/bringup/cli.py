@@ -14,7 +14,7 @@ import traceback
 from pathlib import Path
 
 from . import build as build_mod
-from . import cubemx, logic, pd, probe, profile, regulator, serialmon, sink, usercode
+from . import bench, cubemx, logic, pd, probe, profile, regulator, serialmon, sink, usercode
 from .config import REPO_ROOT, ToolError, cubemx_exe, gdb_exe, load_config, paths, programmer_exe, rel, run
 from .ioc import Ioc, diff_ioc
 
@@ -295,6 +295,21 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--until", default=None, help="after the reply, wait for this EVT (e.g. contract)")
     g.add_argument("--wait", type=float, default=0.0, help="collect events for S more seconds after the reply")
 
+    # three-board bench: G474 source, G431 sink, QT Py load
+    bb = sub.add_parser("bench", help="source + sink + load together").add_subparsers(dest="op", required=True)
+    g = bb.add_parser("status", help="snapshot: sink STATUS, load telemetry, source regulator + pd_status, readiness")
+    g.add_argument("--no-swd", action="store_true", help="skip the G474 (SWD) part")
+    g = bb.add_parser("sweep", help="per voltage: req (until contract), then step load power targets; CSV per point; "
+                                    "stops at the first fault and always ends with load off")
+    g.add_argument("--mv", required=True, help="contract voltages, e.g. 5000,9000")
+    g.add_argument("--mw", required=True, help="load power targets, e.g. 500,1000,2000")
+    g.add_argument("--ma", type=int, default=500, help="requested operating current [mA]")
+    g.add_argument("--dwell", type=float, default=2.0, help="seconds per point before sampling")
+    g.add_argument("--epr", type=int, default=None, metavar="W", help="enter EPR mode first with this PDP")
+    g.add_argument("--no-swd", action="store_true", help="skip the G474 (SWD) samples")
+    g.add_argument("--allow-no-power-stage", action="store_true",
+                   help="run the sequence with a telemetry-only load (link + renegotiation test, no power)")
+
     # regulator / input protection
     rg = sub.add_parser("regulator", help="state, ADM1270 input protection, fault recovery").add_subparsers(dest="op", required=True)
     rg.add_parser("status", help="state, fault source, protection lines, HRTIM fault/output state, diagnosis")
@@ -379,7 +394,7 @@ EFFECTS = {
     "cubemx generate": "write", "cubemx script": "write", "build": "write",
     "probe list": "read", "probe reset": "actuate", "flash": "actuate",
     "sym": "read", "layout": "read", "mem read": "read", "mem write": "actuate",
-    "profile": "read", "pd status": "read", "sink": "actuate", "regulator status": "read", "regulator clear-fault": "actuate", "regulator stop": "actuate",
+    "profile": "read", "pd status": "read", "sink": "actuate", "bench status": "read", "bench sweep": "actuate", "regulator status": "read", "regulator clear-fault": "actuate", "regulator stop": "actuate",
     "regulator bench-pwm": "actuate", "regulator set-voltage": "actuate", "regulator sweep": "actuate", "regulator snapshot": "actuate", "regulator start": "actuate",
     "scope analyze": "read", "scope idn": "read", "scope state": "read", "scope measure": "read",
     "scope delay": "read", "scope screenshot": "read", "scope capture": "actuate",
@@ -464,6 +479,12 @@ def dispatch(cfg: dict, a) -> dict:
         return pd.status(cfg)
     if c == "sink":
         return sink.exchange(cfg, " ".join(a.words), a.timeout, a.until, a.wait)
+    if c == "bench":
+        if a.op == "status":
+            return bench.status(cfg, swd=not a.no_swd)
+        return bench.sweep(cfg, [int(x) for x in a.mv.split(",")], [int(x) for x in a.mw.split(",")],
+                           a.ma, a.dwell, swd=not a.no_swd, epr_w=a.epr,
+                           allow_no_power_stage=a.allow_no_power_stage)
     if c == "regulator":
         if a.op == "status":
             return regulator.status(cfg)

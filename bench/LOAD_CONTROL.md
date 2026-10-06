@@ -1,5 +1,10 @@
 # Commanding the RP2040 buck as an electronic load
 
+> **Update:** the buck is now driven by a QT Py RP2040. The sink (NUCLEO-G431RB) talks to it over
+> I2C on the QT Py's STEMMA QT port, not USB-CDC, and both ends are implemented in this
+> directory: see [`README.md`](README.md), `buck-load-qtpy/`, `load-link/` and `load-control/`.
+> The analysis below (power through V_out, local limits, no reverse power) is what they implement.
+
 Sources reviewed:
 
 - [electricalhog/20v-buck-converter](https://github.com/electricalhog/20v-buck-converter) for the
