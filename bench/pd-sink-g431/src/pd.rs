@@ -221,7 +221,13 @@ impl DevicePolicyManager for Device {
     }
 
     async fn request(&mut self, caps: &SourceCapabilities) -> PowerSource {
-        let (target_mv, target_ma, epr) = with_state(|s| (s.target_mv, s.target_ma, s.epr_mode));
+        // New capabilities (attach, source update, EPR entry): the load is
+        // held off until the contract that follows.  No waiting here: the
+        // Request must go out within tSenderResponse.
+        let (target_mv, target_ma, epr) = with_state(|s| {
+            s.hold = true;
+            (s.target_mv, s.target_ma, s.epr_mode)
+        });
         let chosen = build_request(caps, target_mv, target_ma, epr).or_else(|| {
             emit!("EVT warn target_mv={} not offered, requesting 5000", target_mv);
             build_request(caps, 5000, target_ma, epr)
@@ -263,6 +269,7 @@ impl DevicePolicyManager for Device {
         with_state(|s| {
             s.contract = Some(contract);
             s.contracts += 1;
+            s.hold = false;
         });
         emit!(
             "EVT contract pos={} mv={} ma={} epr_mode={}",
@@ -279,6 +286,7 @@ impl DevicePolicyManager for Device {
             s.hard_resets += 1;
             s.contract = None;
             s.epr_mode = false;
+            s.hold = true;
         });
         emit!("EVT hard_reset");
     }
@@ -293,9 +301,26 @@ impl DevicePolicyManager for Device {
     }
 
     async fn get_event(&mut self, caps: &SourceCapabilities) -> Event {
+        // The PE only asks for events in Ready: any negotiation is over,
+        // including a Reject/Wait that never reaches transition_power, so an
+        // existing contract is valid again.
+        with_state(|s| {
+            if s.contract.is_some() {
+                s.hold = false;
+            }
+        });
         loop {
             // Channel::receive is cancel safe, as get_event must be.
-            match CMD.receive().await {
+            let cmd = CMD.receive().await;
+            // Every command here changes or re-requests the contract: stop
+            // the load first, so it never draws against a contract that is
+            // about to change.
+            if !crate::link::quiesce_load().await {
+                with_state(|s| s.hold = false);
+                emit!("EVT error load still running after 500 ms; command dropped");
+                continue;
+            }
+            match cmd {
                 Cmd::Request => {
                     let (mv, ma, epr) = with_state(|s| (s.target_mv, s.target_ma, s.epr_mode));
                     match build_request(caps, mv, ma, epr) {
@@ -305,7 +330,10 @@ impl DevicePolicyManager for Device {
                             self.pending = Some(contract);
                             return Event::RequestPower(source);
                         }
-                        None => emit!("EVT error target_mv={} not in current capabilities", mv),
+                        None => {
+                            with_state(|s| s.hold = false);
+                            emit!("EVT error target_mv={} not in current capabilities", mv);
+                        }
                     }
                 }
                 Cmd::EnterEpr(watts) => {
@@ -336,6 +364,9 @@ fn clear_session() {
         s.contract = None;
         s.epr_mode = false;
         s.caps = None;
+        s.hold = false;
+        // A new attach never restarts the load on its own.
+        s.load_enable = false;
     });
     while CMD.try_receive().is_ok() {}
 }

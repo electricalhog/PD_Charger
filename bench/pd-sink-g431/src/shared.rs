@@ -5,10 +5,11 @@ use core::fmt::Write;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
+use load_link::Telemetry;
 use usbpd::protocol_layer::message::data::source_capabilities::SourceCapabilities;
 
 /// One line of output to the host (without the line ending).
-pub type Line = heapless::String<120>;
+pub type Line = heapless::String<224>;
 
 /// Commands from the host that need the policy engine.
 #[derive(Clone, Copy)]
@@ -44,6 +45,28 @@ pub struct State {
     pub contracts: u32,
     pub hard_resets: u32,
     pub epr_failures: u32,
+
+    /// VBUS from the shield divider (PA0) [mV]; saturated above ~19.8 V.
+    pub vbus_mv: u32,
+    pub vbus_saturated: bool,
+    /// TCPP02 answered and is in Normal mode.
+    pub tcpp_ok: bool,
+    /// TCPP02 flag register fault bits, FLGn low, or I2C failure.
+    pub tcpp_fault: bool,
+    pub tcpp_flags: u8,
+
+    /// Renegotiation in progress: the load is held off until the next contract.
+    pub hold: bool,
+    /// Host wants the load running (`load p`); cleared by `load off`, a load
+    /// fault, and detach.
+    pub load_enable: bool,
+    pub load_p_mw: u16,
+    /// One-shot request to clear a latched load fault.
+    pub load_clear: bool,
+    pub load_online: bool,
+    pub load: Option<Telemetry>,
+    /// What the last command frame asked for.
+    pub load_armed_cmd: bool,
 }
 
 pub const DEFAULT_TARGET_MV: u32 = 5000;
@@ -61,10 +84,22 @@ pub static STATE: Mutex<CriticalSectionRawMutex, RefCell<State>> = Mutex::new(Re
     contracts: 0,
     hard_resets: 0,
     epr_failures: 0,
+    vbus_mv: 0,
+    vbus_saturated: false,
+    tcpp_ok: false,
+    tcpp_fault: false,
+    tcpp_flags: 0,
+    hold: false,
+    load_enable: false,
+    load_p_mw: 0,
+    load_clear: false,
+    load_online: false,
+    load: None,
+    load_armed_cmd: false,
 }));
 
 pub static CMD: Channel<CriticalSectionRawMutex, Cmd, 4> = Channel::new();
-pub static OUT: Channel<CriticalSectionRawMutex, Line, 32> = Channel::new();
+pub static OUT: Channel<CriticalSectionRawMutex, Line, 24> = Channel::new();
 
 pub fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
     STATE.lock(|s| f(&mut s.borrow_mut()))

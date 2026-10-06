@@ -36,6 +36,7 @@ static_cell = "2.1.1"
 embedded-io-async = "0.7.0"
 heapless = { version = "0.9.1", default-features = false }
 uom = { version = "0.36.0", default-features = false, features = ["si"] }
+load-link = { path = "../load-link" }
 
 [profile.dev]
 codegen-units = 1

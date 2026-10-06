@@ -1,16 +1,22 @@
 //! Scriptable USB-PD sink for the PD_Charger bench (NUCLEO-G431RB).
 //!
-//! CC1 = PB6, CC2 = PB4 (UCPD1), commands and events on LPUART1 (PA2/PA3,
-//! the ST-LINK virtual COM port) at 115200 8N1.  See README.md for the
-//! protocol.  LD2 (PA5) is on while a contract is active.
+//! CC1 = PB6, CC2 = PB4 (UCPD1, through the SRC1M1 shield's TCPP02),
+//! commands and events on LPUART1 (PA2/PA3, the ST-LINK virtual COM port) at
+//! 115200 8N1.  I2C1 (PB8/PB9) carries the TCPP02 and the buck load; VBUS is
+//! sensed on PA0.  See README.md for the protocol and wiring.  LD2 (PA5) is on
+//! while a contract is active.
 #![no_std]
 #![no_main]
 
+mod link;
 mod pd;
 mod shared;
 
 use embassy_executor::Spawner;
-use embassy_stm32::gpio::{Level, Output, Speed};
+use embassy_stm32::adc::Adc;
+use embassy_stm32::gpio::{Input, Level, Output, Pull, Speed};
+use embassy_stm32::i2c::{self, I2c};
+use embassy_stm32::time::Hertz;
 use embassy_stm32::usart::{self, BufferedUart, BufferedUartRx, BufferedUartTx};
 use embassy_stm32::{bind_interrupts, peripherals};
 use embedded_io_async::{Read, Write};
@@ -23,12 +29,20 @@ bind_interrupts!(struct UartIrqs {
     LPUART1 => usart::BufferedInterruptHandler<peripherals::LPUART1>;
 });
 
+bind_interrupts!(struct I2cIrqs {
+    I2C1_EV => i2c::EventInterruptHandler<peripherals::I2C1>;
+    I2C1_ER => i2c::ErrorInterruptHandler<peripherals::I2C1>;
+    DMA1_CHANNEL3 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH3>;
+    DMA1_CHANNEL4 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH4>;
+});
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let mut config = embassy_stm32::Config::default();
     config.rcc.hsi = true; // UCPD needs HSI16
+    config.rcc.mux.adc12sel = embassy_stm32::rcc::mux::Adcsel::SYS;
     let p = embassy_stm32::init(config);
 
     static TX_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
@@ -56,9 +70,24 @@ async fn main(spawner: Spawner) {
         tx_dma: p.DMA1_CH2,
     };
 
+    // I2C1 at 100 kHz: TCPP02 + load over a few tens of cm of wire.  The
+    // internal pull-ups (~40 kohm) only back up the external ones.
+    let mut i2c_config = i2c::Config::default();
+    i2c_config.frequency = Hertz::khz(100);
+    i2c_config.scl_pullup = true;
+    i2c_config.sda_pullup = true;
+    let link = link::LinkResources {
+        i2c: I2c::new(p.I2C1, p.PB8, p.PB9, p.DMA1_CH3, p.DMA1_CH4, I2cIrqs, i2c_config),
+        tcpp_enable: Output::new(p.PC8, Level::Low, Speed::Low),
+        tcpp_flg: Input::new(p.PC5, Pull::Up),
+        adc: Adc::new(p.ADC1, Default::default()),
+        vbus_pin: p.PA0,
+    };
+
     spawner.spawn(uart_tx_task(tx).unwrap());
     spawner.spawn(uart_rx_task(rx).unwrap());
     emit!("EVT boot pd-sink-g431 {}", VERSION);
+    spawner.spawn(link::link_task(link).unwrap());
     spawner.spawn(pd::ucpd_task(ucpd, led).unwrap());
 }
 
@@ -121,7 +150,7 @@ fn handle(text: &str) {
     match words.next() {
         Some("status") | Some("?") => with_state(|s| {
             emit!(
-                "STATUS attached={} epr_mode={} target_mv={} target_ma={} contract_pos={} contract_mv={} contract_ma={} contracts={} hard_resets={} epr_failures={}",
+                "STATUS attached={} epr_mode={} target_mv={} target_ma={} contract_pos={} contract_mv={} contract_ma={} contracts={} hard_resets={} epr_failures={} vbus_mv={} vbus_sat={} tcpp_ok={} tcpp_fault={} tcpp_flags=0x{:02x} hold={} load_online={}",
                 s.attached.unwrap_or("none"),
                 s.epr_mode as u8,
                 s.target_mv,
@@ -131,9 +160,17 @@ fn handle(text: &str) {
                 s.contract.map_or(0, |c| c.ma),
                 s.contracts,
                 s.hard_resets,
-                s.epr_failures
+                s.epr_failures,
+                s.vbus_mv,
+                s.vbus_saturated as u8,
+                s.tcpp_ok as u8,
+                s.tcpp_fault as u8,
+                s.tcpp_flags,
+                s.hold as u8,
+                s.load_online as u8
             )
         }),
+        Some("load") => handle_load(words.next(), words.next()),
         Some("caps") => {
             with_state(|s| match &s.caps {
                 Some(caps) => {
@@ -169,7 +206,56 @@ fn handle(text: &str) {
         Some("eprexit") => send(Cmd::ExitEpr),
         Some("getcaps") => send(Cmd::GetCaps),
         Some("version") => emit!("VERSION pd-sink-g431 {}", VERSION),
-        Some("help") => emit!("OK commands: status caps req <mV> [mA] epr <W> eprexit getcaps version"),
+        Some("help") => emit!("OK commands: status caps req <mV> [mA] epr <W> eprexit getcaps load [status|p <mW>|off|clear] version"),
         _ => emit!("ERR unknown command (help)"),
+    }
+}
+
+/// Upper bound the sink accepts for `load p`; the load clamps further to its
+/// ballast rating and the contract.
+const LOAD_P_MAX_MW: u32 = 60_000;
+
+fn handle_load(op: Option<&str>, arg: Option<&str>) {
+    match op {
+        None | Some("status") => with_state(|s| match (s.load_online, s.load) {
+            (true, Some(t)) => emit!(
+                "LOAD online=1 state={} fault={} armed_cmd={} p_target_mw={} vin_mv={} vout_mv={} iout_ma={} pout_mw={} duty_pm={} temp_mv={} seq={}",
+                t.state.name(),
+                t.fault.name(),
+                s.load_armed_cmd as u8,
+                s.load_p_mw,
+                t.vin_mv,
+                t.vout_mv,
+                t.iout_ma,
+                t.pout_mw,
+                t.duty_permille,
+                t.temp_mv,
+                t.seq
+            ),
+            _ => emit!("LOAD online=0 p_target_mw={}", s.load_p_mw),
+        }),
+        Some("p") => match parse(arg) {
+            Some(mw) if mw <= LOAD_P_MAX_MW => {
+                let armed_now = with_state(|s| {
+                    s.load_p_mw = mw as u16;
+                    s.load_enable = mw > 0;
+                    s.contract.is_some() && !s.hold
+                });
+                if armed_now { emit!("OK") } else { emit!("OK stored; arms after the next contract") }
+            }
+            _ => emit!("ERR usage: load p <mW, 0..={}>", LOAD_P_MAX_MW),
+        },
+        Some("off") => {
+            with_state(|s| {
+                s.load_enable = false;
+                s.load_p_mw = 0;
+            });
+            emit!("OK");
+        }
+        Some("clear") => {
+            with_state(|s| s.load_clear = true);
+            emit!("OK");
+        }
+        _ => emit!("ERR usage: load [status|p <mW>|off|clear]"),
     }
 }
