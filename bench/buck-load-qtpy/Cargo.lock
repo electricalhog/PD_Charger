@@ -85,17 +85,20 @@ dependencies = [
 
 [[package]]
 name = "buck-load-qtpy"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",
  "embassy-executor",
+ "embassy-futures",
  "embassy-rp",
  "embassy-sync",
  "embassy-time",
+ "embassy-usb",
  "load-control",
  "load-link",
- "panic-halt",
+ "portable-atomic",
+ "static_cell",
 ]
 
 [[package]]
@@ -359,6 +362,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "embassy-net-driver"
+version = "0.2.0"
+source = "git+https://github.com/embassy-rs/embassy?rev=930269e92e70b4a1d647bb8a14610d1a01763a5e#930269e92e70b4a1d647bb8a14610d1a01763a5e"
+
+[[package]]
+name = "embassy-net-driver-channel"
+version = "0.3.2"
+source = "git+https://github.com/embassy-rs/embassy?rev=930269e92e70b4a1d647bb8a14610d1a01763a5e#930269e92e70b4a1d647bb8a14610d1a01763a5e"
+dependencies = [
+ "embassy-futures",
+ "embassy-net-driver",
+ "embassy-sync",
+]
+
+[[package]]
 name = "embassy-rp"
 version = "0.9.0"
 source = "git+https://github.com/embassy-rs/embassy?rev=930269e92e70b4a1d647bb8a14610d1a01763a5e#930269e92e70b4a1d647bb8a14610d1a01763a5e"
@@ -437,6 +455,21 @@ version = "0.3.0"
 source = "git+https://github.com/embassy-rs/embassy?rev=930269e92e70b4a1d647bb8a14610d1a01763a5e#930269e92e70b4a1d647bb8a14610d1a01763a5e"
 dependencies = [
  "embassy-executor-timer-queue",
+ "heapless",
+]
+
+[[package]]
+name = "embassy-usb"
+version = "0.5.1"
+source = "git+https://github.com/embassy-rs/embassy?rev=930269e92e70b4a1d647bb8a14610d1a01763a5e#930269e92e70b4a1d647bb8a14610d1a01763a5e"
+dependencies = [
+ "bitflags",
+ "embassy-futures",
+ "embassy-net-driver-channel",
+ "embassy-sync",
+ "embassy-time",
+ "embassy-usb-driver",
+ "embedded-io-async",
  "heapless",
 ]
 
@@ -843,12 +876,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
-name = "panic-halt"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a513e167849a384b7f9b746e517604398518590a9142f4846a32e3c2a4de7b11"
-
-[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -954,6 +981,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "portable-atomic"
+version = "1.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
+dependencies = [
+ "critical-section",
 ]
 
 [[package]]
@@ -1194,6 +1230,15 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+
+[[package]]
+name = "static_cell"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0530892bb4fa575ee0da4b86f86c667132a94b74bb72160f58ee5a4afec74c23"
+dependencies = [
+ "portable-atomic",
+]
 
 [[package]]
 name = "string_cache"

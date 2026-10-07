@@ -1,58 +1,94 @@
 //! How the QT Py RP2040 connects to the 20 V buck converter.
 //!
-//! **Assumed, not verified.** The buck firmware in electricalhog/_20v_Buck_Converter
-//! names its analog inputs CURRENT_TAP = A0, BATTERY_TAP (V_in) = A1,
-//! OUTPUT_TAP = A2; this file assumes those labels landed on the QT Py's
-//! A0/A1/A2, with the NTC on A3.  The seven gate/fan signals have no
-//! obvious mapping onto the QT Py's seven digital pins, so the ones below
-//! are placeholders, and they are only driven in builds with the
-//! `power-stage` feature.  Check every line against your wiring first.
+//! Pin numbers are the QT Py port of the buck firmware, the code that last
+//! ran this hardware: electricalhog/_20v_Buck_Converter, branch
+//! `electronic_load`, `_20v_Buck_Converter.h` (commit 2f670d1 "Adapt pins
+//! for QTPy").  The QT Py is wired straight to the buck's controller
+//! footprint.  The Datalore-IP-rp2040 adapter in electricalhog/20v-buck-converter
+//! was never built, so its GPIO0..6 map does not apply.  Buck nets are from
+//! that repo's `20v_Buck_Converter.sch`.
 //!
-//! | Signal       | QT Py pin | RP2040 | Notes                              |
-//! |--------------|-----------|--------|------------------------------------|
-//! | I_SENSE      | A0        | GPIO29 | ADC3                               |
-//! | V_IN sense   | A1        | GPIO28 | ADC2                               |
-//! | V_OUT sense  | A2        | GPIO27 | ADC1                               |
-//! | NTC          | A3        | GPIO26 | ADC0                               |
-//! | PWM phase 1  | SDA       | GPIO24 | PWM slice 4 A (power-stage only)   |
-//! | DISABLE 1    | SCL       | GPIO25 | high = driver off (power-stage)    |
-//! | PWM phase 2  | TX        | GPIO20 | held low (power-stage)             |
-//! | DISABLE 2    | RX        | GPIO5  | held high (power-stage)            |
-//! | PWM phase 3  | SCK       | GPIO6  | held low (power-stage)             |
-//! | DISABLE 3    | MISO      | GPIO4  | held high (power-stage)            |
-//! | FAN          | MOSI      | GPIO3  | on while running (power-stage)     |
-//! | Link SDA     | STEMMA QT | GPIO22 | I2C1 target, address 0x55          |
-//! | Link SCL     | STEMMA QT | GPIO23 |                                    |
+//! | Signal       | QT Py     | RP2040    | Buck net                                   |
+//! |--------------|-----------|-----------|--------------------------------------------|
+//! | PWM phases 1+3 | MI      | GPIO4     | PWM_1 and PWM_3 paralleled (slice 2 A), parked low |
+//! | DISABLE 1+3  | RX        | GPIO5     | DISABLE_1 and DISABLE_3 paralleled, parked high |
+//! | PWM phase 2  | SCK       | GPIO6     | PWM_2 (slice 3 A), the phase this load runs|
+//! | DISABLE 2    | MO        | GPIO3     | DISABLE_2                                  |
+//! | FAN          | TX        | GPIO20    | FAN_ENABLE (Q8 -> Q7, fan on the 12 V rail)|
+//! | V tap        | A3        | GPIO26    | VIN (HV side), port INPUT_TAP, ADC0        |
+//! | V tap        | A2        | GPIO27    | +OUT (LV side), port OUTPUT_TAP, ADC1      |
+//! | I_SENSE      | A1        | GPIO28    | port: CURRENT_TAP, ADC2                    |
+//! | Temperature  | A0        | GPIO29    | port: TEMP_TAP, ADC3                       |
+//! | Link SDA/SCL | STEMMA QT | GPIO22/23 | I2C1 (was the port's rotary encoder)       |
+//! | (none)       | SDA, SCL  | GPIO24/25 | header pins unpopulated                    |
 //!
-//! One phase only: the 10 Ω / 10 W ballast never needs more than ~0.85 A.
+//! Phase 2 alone is what the port ran below 5 A (`output_enable(0b010)`).
+//! The port's table still lists phase 1 on GPIO24/25.  A PWM output on this
+//! QT Py died, and phase 1 was moved onto phase 3's pins (user, 2026-10-06):
+//! MI drives both PWM inputs and RX both DISABLE inputs, so they park and
+//! enable together.  The taps were checked on the bench (VIN back-fed to
+//! 2.65 V read on GPIO26, +OUT at 0.1 V on GPIO27).
+//!
+//! **Gate drivers.** Each phase has a TI dual driver: channel A (high side,
+//! referenced to the phase node) takes PWM, channel B (low side) takes PWM
+//! through an inverter.  PWM high = high side on, PWM low = low side on.
+//! DISABLE high turns both outputs off; DISABLE is pulled low inside the
+//! driver, so a floating or low DISABLE *enables* it.  The RP2040 resets with
+//! every pad pulled down: whenever this firmware is not driving the pins
+//! (reset, BOOTSEL, flashing) and the 12 V gate rail is up, all three low-side
+//! FETs are on and +OUT is shorted through 1 uH per phase.  The gate rail
+//! comes from VIN (IC8, L6983, about 11.9 V), so the QT Py may only reset with
+//! VIN low and +OUT discharged (see `bootsel_allowed` in main.rs).
+//!
+//! **Supplies.** The QT Py's 3V3 drives the buck's 3V3 rail (driver inputs,
+//! inverter, current amplifier) and back-feeds VIN to about 2.7 V through
+//! IC7's high-side body diode, so VIN never reads 0 while the QT Py is on USB.
 
-/// ADC reference (QT Py RP2040 ADC_AVDD = 3.3 V) [mV].
+/// The DISABLE wiring of both phases driven from MI (GPIO4) is known: RX
+/// (GPIO5), parked high with them (user, 2026-10-06).  Set false if the
+/// wiring changes again; the power-stage build then refuses to compile.
+#[cfg_attr(not(feature = "power-stage"), allow(dead_code))]
+pub const SHARED_PHASE_DISABLE_CONFIRMED: bool = true;
+
+#[cfg(feature = "power-stage")]
+const _: () = assert!(
+    SHARED_PHASE_DISABLE_CONFIRMED,
+    "power-stage: confirm the DISABLE wiring of the phases sharing MI (GPIO4) first (board.rs)"
+);
+
+/// ADC reference (QT Py RP2040 ADC_AVDD = 3.3 V) [mV], 12-bit ADC.
 pub const ADC_REF_MV: f32 = 3300.0;
 pub const ADC_FULL_SCALE: f32 = 4096.0;
 
-/// V_in / V_out divider ratio.  From the buck sketch: 31.7 counts per volt
-/// on a 10-bit, 3.3 V ADC -> 1023 / 3.3 / 31.7 = 9.78.
-pub const V_DIVIDER: f32 = 9.78;
+/// Both voltage taps: 118.5 counts per volt on the 12-bit ADC (the port's
+/// VOLTAGE_SCALE, tuned on this board; the 3.3k/330 dividers are 11.0 nominal,
+/// 124 counts/V).
+pub const V_COUNTS_PER_V: f32 = 118.5;
 
-/// Current sense: 9.77 counts per amp on 10 bits = 31.5 mV/A at the pin,
-/// with the sketch's 2.2 A offset = 69.3 mV.
-pub const I_SENSE_MV_PER_A: f32 = 31.5;
-pub const I_SENSE_OFFSET_MV: f32 = 69.3;
+/// Current sense: 36.5 counts per amp (the port's CURRENT_SCALE).  The zero
+/// is measured at run time while every driver is disabled.
+pub const I_COUNTS_PER_A: f32 = 36.5;
 
-/// 125 MHz / (TOP + 1) = 250 kHz, the sketch's FREQUENCY.
+/// PWM period TOP + 1 = 285 counts at 125 MHz = 438.6 kHz, the port's
+/// MAX_DUTY (120000 / FREQUENCY 420).
 #[cfg_attr(not(feature = "power-stage"), allow(dead_code))]
-pub const PWM_TOP: u16 = 499;
+pub const PWM_TOP: u16 = 284;
 
-pub fn pin_mv(raw: u16) -> f32 {
-    raw as f32 * ADC_REF_MV / ADC_FULL_SCALE
+/// DISABLE lines (GPIO3 phase 2, GPIO5 phases 1+3) for the panic handler's
+/// raw SIO writes.
+pub const DISABLE_MASK: u32 = (1 << 3) | (1 << 5);
+pub const DISABLE_GPIOS: [usize; 2] = [3, 5];
+
+pub fn pin_mv(raw: f32) -> f32 {
+    raw * ADC_REF_MV / ADC_FULL_SCALE
 }
 
-pub fn volts_mv(raw: u16) -> u32 {
-    (pin_mv(raw) * V_DIVIDER) as u32
+pub fn volts_mv(raw: f32) -> u32 {
+    (raw * 1000.0 / V_COUNTS_PER_V) as u32
 }
 
-pub fn amps_ma(raw: u16) -> i32 {
-    ((pin_mv(raw) - I_SENSE_OFFSET_MV) / I_SENSE_MV_PER_A * 1000.0) as i32
+pub fn amps_ma(raw: f32, zero: f32) -> i32 {
+    ((raw - zero) * 1000.0 / I_COUNTS_PER_A) as i32
 }
 
 /// Duty [0.1 %] -> PWM compare value.

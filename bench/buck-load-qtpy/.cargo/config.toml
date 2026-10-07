@@ -1,5 +1,6 @@
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
-# Hold BOOT, tap RESET: the QT Py mounts as RPI-RP2.  `cargo install elf2uf2-rs`.
+# BOOTSEL first (1200-baud touch or `bootsel` on the USB console, else hold
+# BOOT and tap RESET): the QT Py mounts as RPI-RP2.  `cargo install elf2uf2-rs`.
 runner = "elf2uf2-rs -d"
 
 [build]

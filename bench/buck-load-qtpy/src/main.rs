@@ -1,42 +1,64 @@
 //! Buck converter as a power-target load (QT Py RP2040).
 //!
-//! The bench PD sink (NUCLEO-G431RB) is the I2C controller: every 20 ms it
-//! writes a load_link::Command (arm, power target, contract limits) and reads
-//! a load_link::Telemetry.  This firmware is the I2C target on the STEMMA QT
-//! port (I2C1, GPIO22 SDA / GPIO23 SCL, address 0x55) and runs the
-//! load_control law at 1 kHz.  Pin map and scales: src/board.rs.
+//! The host (`bu load`, `bu bench`) commands the load over the QT Py's USB
+//! CDC console (src/console.rs): every `cmd` line carries a load_link::Command
+//! (arm, power target, contract limits) and gets one `TEL` telemetry line
+//! back.  The load_control law runs at 1 kHz and keeps its own limits; with
+//! no command for 250 ms it faults with every driver off.  (The I2C link to
+//! the PD sink was dropped 2026-10-06: this QT Py's STEMMA pads cannot drive
+//! low, so it could never ACK.)  Pin map, scales and the gate-driver hazard:
+//! src/board.rs.
 #![no_std]
 #![no_main]
 
 mod board;
+mod console;
 
 use core::cell::RefCell;
 
 use embassy_executor::Spawner;
 use embassy_rp::adc::{self, Adc, Channel};
-use embassy_rp::gpio::Pull;
-use embassy_rp::i2c_slave::{self, I2cSlave};
-use embassy_rp::peripherals::I2C1;
-use embassy_rp::{bind_interrupts, i2c};
+use embassy_rp::gpio::{Level, Output, Pull};
+use embassy_rp::peripherals::USB;
+use embassy_rp::{bind_interrupts, usb};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::{Duration, Instant, Ticker};
 use load_control::{Controller, Measurement, Params};
 use load_link::{Command, Telemetry};
-use panic_halt as _;
 
 bind_interrupts!(struct Irqs {
-    I2C1_IRQ => i2c::InterruptHandler<I2C1>;
     ADC_IRQ_FIFO => adc::InterruptHandler;
+    USBCTRL_IRQ => usb::InterruptHandler<USB>;
 });
 
-struct Shared {
-    cmd: Option<Command>,
-    cmd_at: Instant,
-    telemetry: Telemetry,
+/// Raw readings and link counters for the USB console and the BOOTSEL gate.
+#[derive(Clone, Copy, Default)]
+pub struct Diag {
+    /// At least one control period has run (telemetry is real).
+    pub valid: bool,
+    /// ADC averages [counts]: GPIO26, GPIO27, GPIO28, GPIO29.
+    pub raw26: f32,
+    pub raw27: f32,
+    pub raw28: f32,
+    pub raw29: f32,
+    /// Current-sense zero [counts], tracked while the drivers are disabled.
+    pub izero: f32,
+    /// The active phase's driver is enabled.
+    pub enable: bool,
+    /// Host commands accepted / rejected (unparsable).
+    pub frames: u32,
+    pub bad_frames: u32,
 }
 
-static SHARED: Mutex<CriticalSectionRawMutex, RefCell<Shared>> = Mutex::new(RefCell::new(Shared {
+pub struct Shared {
+    pub cmd: Option<Command>,
+    pub cmd_at: Instant,
+    pub telemetry: Telemetry,
+    pub diag: Diag,
+}
+
+pub static SHARED: Mutex<CriticalSectionRawMutex, RefCell<Shared>> = Mutex::new(RefCell::new(Shared {
     cmd: None,
     cmd_at: Instant::from_ticks(0),
     telemetry: Telemetry {
@@ -50,103 +72,133 @@ static SHARED: Mutex<CriticalSectionRawMutex, RefCell<Shared>> = Mutex::new(RefC
         duty_permille: 0,
         temp_mv: 0,
     },
+    diag: Diag {
+        valid: false,
+        raw26: 0.0,
+        raw27: 0.0,
+        raw28: 0.0,
+        raw29: 0.0,
+        izero: 0.0,
+        enable: false,
+        frames: 0,
+        bad_frames: 0,
+    },
 }));
+
+/// The RP2040 may reset (BOOTSEL, reflash) only while the low-side FETs it
+/// would turn on can do no harm: driver off, the higher tap under 4.5 V (no
+/// gate rail) and the lower one under 0.3 V (+OUT discharged).  Taken as
+/// higher/lower so it holds whichever tap is VIN (board.rs).
+pub fn bootsel_allowed(s: &Shared) -> Result<(), &'static str> {
+    let (a, b) = (s.telemetry.vin_mv, s.telemetry.vout_mv);
+    let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+    if !s.diag.valid {
+        Err("no measurement yet")
+    } else if s.diag.enable {
+        Err("load running")
+    } else if hi > 4500 {
+        Err("a tap is above 4.5 V: the gate rail may be live")
+    } else if lo > 300 {
+        Err("both taps above 0.3 V: +OUT may be charged")
+    } else {
+        Ok(())
+    }
+}
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
-    let mut link_config = i2c_slave::Config::default();
-    link_config.addr = load_link::ADDRESS as u16;
-    link_config.sda_pullup = true;
-    link_config.scl_pullup = true;
-    let link = I2cSlave::new(p.I2C1, p.PIN_23, p.PIN_22, Irqs, link_config);
-    spawner.spawn(link_task(link).unwrap());
+    // Every driver off before anything else: a floating DISABLE enables the
+    // driver, and a low PWM then turns its low side on (board.rs).
+    let disable2 = Output::new(p.PIN_3, Level::High);
+    let disable13 = Output::new(p.PIN_5, Level::High);
+    let pwm13 = Output::new(p.PIN_4, Level::Low);
+    let fan = Output::new(p.PIN_20, Level::Low);
+    // Phases 1 and 3 (one pin pair, board.rs) stay parked for the life of
+    // the program.
+    core::mem::forget((disable13, pwm13));
+
+    #[cfg(feature = "power-stage")]
+    let stage = power::Stage::new(p.PWM_SLICE3, p.PIN_6, disable2, fan);
+    #[cfg(not(feature = "power-stage"))]
+    let stage = power::Stage::new(Output::new(p.PIN_6, Level::Low), disable2, fan);
 
     let adc = Adc::new(p.ADC, Irqs, adc::Config::default());
     let sense = Sense {
         adc,
-        iout: Channel::new_pin(p.PIN_29, Pull::None),
-        vin: Channel::new_pin(p.PIN_28, Pull::None),
+        vin: Channel::new_pin(p.PIN_26, Pull::None),
         vout: Channel::new_pin(p.PIN_27, Pull::None),
-        ntc: Channel::new_pin(p.PIN_26, Pull::None),
+        iout: Channel::new_pin(p.PIN_28, Pull::None),
+        temp: Channel::new_pin(p.PIN_29, Pull::None),
     };
-
-    #[cfg(feature = "power-stage")]
-    let stage = power::Stage::new(
-        p.PWM_SLICE4, p.PIN_24, p.PIN_25, p.PIN_20, p.PIN_5, p.PIN_6, p.PIN_4, p.PIN_3,
-    );
-    #[cfg(not(feature = "power-stage"))]
-    let stage = power::Stage;
-
     spawner.spawn(control_task(sense, stage).unwrap());
+
+    console::start(spawner, usb::Driver::new(p.USB, Irqs));
 }
 
-/// I2C target: store each valid command, serve the latest telemetry.
-#[embassy_executor::task]
-async fn link_task(mut dev: I2cSlave<'static, I2C1>) -> ! {
-    let mut buf = [0u8; 32];
-    loop {
-        match dev.listen(&mut buf).await {
-            Ok(i2c_slave::Command::Write(len)) => {
-                if len == 1 + Command::LEN && buf[0] == load_link::REG_COMMAND {
-                    if let Ok(cmd) = Command::decode(&buf[1..len]) {
-                        SHARED.lock(|s| {
-                            let mut s = s.borrow_mut();
-                            s.cmd = Some(cmd);
-                            s.cmd_at = Instant::now();
-                        });
-                    }
-                }
-            }
-            Ok(i2c_slave::Command::WriteRead(_)) | Ok(i2c_slave::Command::Read) => {
-                // Only one readable register (REG_TELEMETRY).
-                let frame = SHARED.lock(|s| s.borrow().telemetry.encode());
-                let _ = dev.respond_and_fill(&frame, 0xFF).await;
-            }
-            Ok(i2c_slave::Command::GeneralCall(_)) | Err(_) => {}
-        }
-    }
+/// Stores a command from the host (console `cmd`); the control task picks it
+/// up on its next 1 ms period and judges its age against the watchdog.
+pub fn accept_command(cmd: Command) {
+    SHARED.lock(|s| {
+        let mut s = s.borrow_mut();
+        s.cmd = Some(cmd);
+        s.cmd_at = Instant::now();
+        s.diag.frames = s.diag.frames.wrapping_add(1);
+    });
 }
 
 struct Sense {
     adc: Adc<'static, adc::Async>,
-    iout: Channel<'static>,
     vin: Channel<'static>,
     vout: Channel<'static>,
-    ntc: Channel<'static>,
+    iout: Channel<'static>,
+    temp: Channel<'static>,
 }
 
-impl Sense {
-    /// Average of 4 conversions (~2 us each at 48 MHz ADC clock).
-    async fn read(adc: &mut Adc<'static, adc::Async>, ch: &mut Channel<'static>) -> u16 {
-        let mut sum = 0u32;
-        for _ in 0..4 {
-            sum += adc.read(ch).await.unwrap_or(0) as u32;
-        }
-        (sum / 4) as u16
+/// Average of `n` conversions (~2 us each at the 48 MHz ADC clock) [counts].
+async fn avg(adc: &mut Adc<'static, adc::Async>, ch: &mut Channel<'static>, n: u32) -> f32 {
+    let mut sum = 0u32;
+    for _ in 0..n {
+        sum += adc.read(ch).await.unwrap_or(0) as u32;
     }
+    sum as f32 / n as f32
 }
 
 #[embassy_executor::task]
 async fn control_task(mut sense: Sense, mut stage: power::Stage) -> ! {
     let mut ctrl = Controller::new(Params::BENCH_10R_10W, power::PRESENT);
     let mut ticker = Ticker::every(Duration::from_millis(1));
-    let mut ntc_raw = 0u16;
+    let mut temp_raw = 0.0f32;
+    let mut izero: Option<f32> = None;
+    let mut off_ms: u32 = 0;
     let mut tick: u32 = 0;
     loop {
         ticker.next().await;
         tick = tick.wrapping_add(1);
-        let vin = Sense::read(&mut sense.adc, &mut sense.vin).await;
-        let vout = Sense::read(&mut sense.adc, &mut sense.vout).await;
-        let iout = Sense::read(&mut sense.adc, &mut sense.iout).await;
-        if tick % 100 == 0 {
-            ntc_raw = Sense::read(&mut sense.adc, &mut sense.ntc).await;
+        let vin = avg(&mut sense.adc, &mut sense.vin, 4).await;
+        let vout = avg(&mut sense.adc, &mut sense.vout, 4).await;
+        // 16 samples: one phase of 1 uH at 438 kHz ripples by amps, and the
+        // samples are not synchronised to the PWM.
+        let iout = avg(&mut sense.adc, &mut sense.iout, 16).await;
+        if tick % 100 == 0 || tick == 1 {
+            temp_raw = avg(&mut sense.adc, &mut sense.temp, 4).await;
         }
+
+        // Current zero: with the driver disabled no current can flow, so
+        // track the amplifier's offset then and hold it while running.
+        off_ms = if stage.enabled() { 0 } else { off_ms.saturating_add(1) };
+        let zero = match izero {
+            None => iout,
+            Some(z) if off_ms > 50 => z + (iout - z) * 0.01,
+            Some(z) => z,
+        };
+        izero = Some(zero);
+
         let m = Measurement {
             vin_mv: board::volts_mv(vin),
             vout_mv: board::volts_mv(vout),
-            iout_ma: board::amps_ma(iout),
+            iout_ma: board::amps_ma(iout, zero),
         };
 
         let (cmd, age_ms) = SHARED.lock(|s| {
@@ -167,83 +219,122 @@ async fn control_task(mut sense: Sense, mut stage: power::Stage) -> ! {
                 iout_ma: m.iout_ma.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
                 pout_mw: out.pout_mw.min(u16::MAX as u32) as u16,
                 duty_permille: out.duty_permille,
-                temp_mv: board::pin_mv(ntc_raw) as u16,
+                temp_mv: board::pin_mv(temp_raw) as u16,
             };
+            let d = &mut s.diag;
+            d.valid = true;
+            d.raw26 = vin;
+            d.raw27 = vout;
+            d.raw28 = iout;
+            d.raw29 = temp_raw;
+            d.izero = zero;
+            d.enable = stage.enabled();
         });
     }
 }
 
 #[cfg(not(feature = "power-stage"))]
 mod power {
-    /// No gate-driver pins are touched in this build.
+    use embassy_rp::gpio::Output;
+
+    /// Telemetry-only build: the active phase stays parked too.
     pub const PRESENT: bool = false;
-    pub struct Stage;
+
+    pub struct Stage {
+        _pwm: Output<'static>,
+        _disable: Output<'static>,
+        _fan: Output<'static>,
+    }
+
     impl Stage {
+        pub fn new(pwm: Output<'static>, disable: Output<'static>, fan: Output<'static>) -> Self {
+            Self { _pwm: pwm, _disable: disable, _fan: fan }
+        }
+
         pub fn apply(&mut self, _enable: bool, _duty_permille: u16) {}
+
+        pub fn enabled(&self) -> bool {
+            false
+        }
     }
 }
 
 #[cfg(feature = "power-stage")]
 mod power {
     use embassy_rp::Peri;
-    use embassy_rp::gpio::{Level, Output};
-    use embassy_rp::peripherals::{PIN_3, PIN_4, PIN_5, PIN_6, PIN_20, PIN_24, PIN_25, PWM_SLICE4};
+    use embassy_rp::gpio::Output;
+    use embassy_rp::peripherals::{PIN_6, PWM_SLICE3};
     use embassy_rp::pwm::{Config, Pwm};
 
     use crate::board;
 
     pub const PRESENT: bool = true;
 
+    /// Phase 2 only: PWM on GPIO6 (slice 3 A), DISABLE on GPIO3.
     pub struct Stage {
         pwm: Pwm<'static>,
         cfg: Config,
-        disable1: Output<'static>,
+        disable: Output<'static>,
         fan: Output<'static>,
-        // Phases 2 and 3 are parked: PWM low, driver disabled.
-        _pwm2: Output<'static>,
-        _disable2: Output<'static>,
-        _pwm3: Output<'static>,
-        _disable3: Output<'static>,
+        on: bool,
     }
 
     impl Stage {
-        #[allow(clippy::too_many_arguments)]
+        /// `disable` must already be high (main parks it first).
         pub fn new(
-            slice: Peri<'static, PWM_SLICE4>,
-            pwm1: Peri<'static, PIN_24>,
-            disable1: Peri<'static, PIN_25>,
-            pwm2: Peri<'static, PIN_20>,
-            disable2: Peri<'static, PIN_5>,
-            pwm3: Peri<'static, PIN_6>,
-            disable3: Peri<'static, PIN_4>,
-            fan: Peri<'static, PIN_3>,
+            slice: Peri<'static, PWM_SLICE3>,
+            pin: Peri<'static, PIN_6>,
+            disable: Output<'static>,
+            fan: Output<'static>,
         ) -> Self {
-            // Drivers disabled before the PWM pin is claimed.
-            let disable1 = Output::new(disable1, Level::High);
-            let _disable2 = Output::new(disable2, Level::High);
-            let _disable3 = Output::new(disable3, Level::High);
-            let _pwm2 = Output::new(pwm2, Level::Low);
-            let _pwm3 = Output::new(pwm3, Level::Low);
             let mut cfg = Config::default();
             cfg.top = board::PWM_TOP;
             cfg.compare_a = 0;
-            let pwm = Pwm::new_output_a(slice, pwm1, cfg.clone());
-            Self { pwm, cfg, disable1, fan: Output::new(fan, Level::Low), _pwm2, _disable2, _pwm3, _disable3 }
+            let pwm = Pwm::new_output_a(slice, pin, cfg.clone());
+            Self { pwm, cfg, disable, fan, on: false }
         }
 
         pub fn apply(&mut self, enable: bool, duty_permille: u16) {
             if enable {
                 self.cfg.compare_a = board::compare(duty_permille);
                 self.pwm.set_config(&self.cfg);
-                self.disable1.set_low();
+                self.disable.set_low();
                 self.fan.set_high();
             } else {
                 // Both FETs off first, then park the PWM.
-                self.disable1.set_high();
+                self.disable.set_high();
                 self.cfg.compare_a = 0;
                 self.pwm.set_config(&self.cfg);
                 self.fan.set_low();
             }
+            self.on = enable;
         }
+
+        pub fn enabled(&self) -> bool {
+            self.on
+        }
+    }
+}
+
+/// Drivers off without trusting any HAL state: the three DISABLE pins to SIO,
+/// driven high, then halt.  A hung loop with the PWM running would otherwise
+/// keep switching open loop.
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    cortex_m::interrupt::disable();
+    const IO_BANK0_GPIO0_CTRL: usize = 0x4001_4004;
+    const SIO_GPIO_OUT_SET: usize = 0xd000_0014;
+    const SIO_GPIO_OE_SET: usize = 0xd000_0024;
+    const FUNCSEL_SIO: u32 = 5;
+    // SAFETY: fixed RP2040 register addresses; nothing else runs after this.
+    unsafe {
+        core::ptr::write_volatile(SIO_GPIO_OUT_SET as *mut u32, board::DISABLE_MASK);
+        core::ptr::write_volatile(SIO_GPIO_OE_SET as *mut u32, board::DISABLE_MASK);
+        for gpio in board::DISABLE_GPIOS {
+            core::ptr::write_volatile((IO_BANK0_GPIO0_CTRL + 8 * gpio) as *mut u32, FUNCSEL_SIO);
+        }
+    }
+    loop {
+        cortex_m::asm::nop();
     }
 }

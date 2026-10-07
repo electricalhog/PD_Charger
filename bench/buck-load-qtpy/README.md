@@ -6,26 +6,23 @@ over I2C on the QT Py's STEMMA QT port: I2C1, SDA1 = GPIO22, SCL1 = GPIO23, targ
 - Frames are defined in [`../load-link`](../load-link); the control law is in
   [`../load-control`](../load-control). Both are unit-tested on the host:
   `cargo test --target x86_64-unknown-linux-gnu` in each directory.
-- Status: builds both ways (13.4 kB flash, no warnings). **Not yet run on hardware.**
+- Status: builds both ways. Flashed on the bench 2026-10-05 without `power-stage`; the
+  taps read correctly (GPIO26 = VIN, GPIO27 = +OUT). The I2C link does not work yet (see
+  `../README.md`, "The bench as built").
 
-## Power-stage gating
+## Pins and gating
 
-`src/board.rs` maps the QT Py's pins to the buck:
+`src/board.rs` maps the QT Py to the buck. The pin numbers come from the QT Py port of the buck
+firmware (`_20v_Buck_Converter`, branch `electronic_load`); the QT Py is wired straight to the
+buck's controller footprint.
 
-- **Analog pins:** assumed to follow the buck sketch's labels (A0 = I_SENSE, A1 = V_in,
-  A2 = V_out, A3 = NTC).
-- **Seven gate and fan pins:** placeholders, because nothing in the repos says how they are wired.
-
-So the default build **never touches a gate pin**. It runs the I2C link and ADC telemetry and
-reports `state=no_power_stage`. After checking every line of the table in `board.rs` against
-your wiring:
-
-```sh
-cargo build --release --features power-stage
-```
-
-The power stage runs one phase (the 10 Ω ballast never needs more than about 0.85 A). Phases 2
-and 3 are parked with PWM low and DISABLE high. PWM runs at 250 kHz (125 MHz / 500).
+- **Every build drives every gate pin from its first instruction:** DISABLE high, PWM low, fan
+  off. The TI drivers enable themselves when DISABLE floats, so leaving the pins alone is not
+  safe (`board.rs` explains the reset hazard).
+- **The default build never releases them.** It runs the I2C link, ADC telemetry and the USB
+  console, and reports `state=no_power_stage`.
+- **`--features power-stage` switches phase 2** (PWM GPIO6, DISABLE GPIO3) at 438.6 kHz, the
+  port's frequency. That's the phase the port ran below 5 A. Phases 1 and 3 stay parked.
 
 ## Control
 
@@ -53,20 +50,26 @@ Faults latch with all DISABLE lines high:
 
 ## Flash
 
-Hold BOOT, tap RESET; the QT Py mounts as `RPI-RP2`. Then:
-
 ```sh
-cargo install elf2uf2-rs          # once
-cargo run --release               # or: --features power-stage
+tools/bringup/bu load flash                  # from the repo root; add --power-stage when approved
 ```
+
+It builds the firmware, sends `bootsel` on the QT Py's USB console, writes the UF2 to the RPI-RP2
+drive, and waits for the console to come back.
+- The firmware refuses BOOTSEL unless the higher buck tap reads < 4.5 V and the lower < 0.3 V,
+  so VBUS must be off and +OUT discharged.
+- The pico-sdk port firmware takes the 1200-baud touch instead.
+- Without the console, hold BOOT and tap RESET.
+
+`elf2uf2-rs` rejects ELFs from Rust 1.99's linker (OS/ABI = GNU); `bu load flash` writes the UF2
+itself.
 
 ## Calibration constants
 
-All of these are in `board.rs`:
+All of these are in `board.rs`, taken from the QT Py port (tuned on this board):
 
-- **V divider 9.78:** from the sketch's 31.7 counts/V on a 10-bit, 3.3 V ADC.
-- **Current sense:** 31.5 mV/A with a 69.3 mV offset (the sketch's 2.2 A).
-- **ADC reference:** 3.3 V.
+- **Voltage taps:** 118.5 counts/V on the 12-bit ADC. The 3.3k/330 dividers give 11.0 nominal.
+- **Current sense:** 36.5 counts/A. The zero is measured at run time while the driver is
+  disabled; about 20 counts on the bench.
 
-Check V_in and V_out against a meter. The current sense is coarse below 1 A and is used only for
-the over-current trip; power comes from V_out²/R.
+Check VIN and +OUT against a meter. The current sense is coarse below 1 A.
