@@ -89,7 +89,17 @@ async fn wait_detached<T: ucpd::Instance>(cc_phy: &mut CcPhy<'_, T>) {
     loop {
         let (cc1, cc2) = cc_phy.vstate();
         if cc1 == CcVState::LOWEST && cc2 == CcVState::LOWEST {
-            return;
+            // tPDDebounce (10..20 ms): the source's BMC traffic pulls CC low
+            // for microseconds.  Without this the sink declared a detach on
+            // every Source_Capabilities burst once the source resent them
+            // every 150 ms (2026-10-06).
+            if with_timeout(Duration::from_millis(15), cc_phy.wait_for_vstate_change())
+                .await
+                .is_err()
+            {
+                return;
+            }
+            continue;
         }
         cc_phy.wait_for_vstate_change().await;
     }
@@ -312,14 +322,9 @@ impl DevicePolicyManager for Device {
         loop {
             // Channel::receive is cancel safe, as get_event must be.
             let cmd = CMD.receive().await;
-            // Every command here changes or re-requests the contract: stop
-            // the load first, so it never draws against a contract that is
-            // about to change.
-            if !crate::link::quiesce_load().await {
-                with_state(|s| s.hold = false);
-                emit!("EVT error load still running after 500 ms; command dropped");
-                continue;
-            }
+            // Every command here changes or re-requests the contract; the
+            // host disarms the load before sending it.
+            with_state(|s| s.hold = true);
             match cmd {
                 Cmd::Request => {
                     let (mv, ma, epr) = with_state(|s| (s.target_mv, s.target_ma, s.epr_mode));
@@ -365,8 +370,6 @@ fn clear_session() {
         s.epr_mode = false;
         s.caps = None;
         s.hold = false;
-        // A new attach never restarts the load on its own.
-        s.load_enable = false;
     });
     while CMD.try_receive().is_ok() {}
 }

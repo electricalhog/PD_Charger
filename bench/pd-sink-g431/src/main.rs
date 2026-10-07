@@ -76,6 +76,11 @@ async fn main(spawner: Spawner) {
     i2c_config.frequency = Hertz::khz(100);
     i2c_config.scl_pullup = true;
     i2c_config.sda_pullup = true;
+    // The driver busy-waits (without yielding) for a free bus before each
+    // transfer, up to this timeout.  The 1 s default froze the executor, PD
+    // included, while a target held SCL low (2026-10-05); link.rs also skips
+    // transfers while the bus reads BUSY.
+    i2c_config.timeout = embassy_time::Duration::from_millis(2);
     let link = link::LinkResources {
         i2c: I2c::new(p.I2C1, p.PB8, p.PB9, p.DMA1_CH3, p.DMA1_CH4, I2cIrqs, i2c_config),
         tcpp_enable: Output::new(p.PC8, Level::Low, Speed::Low),
@@ -150,7 +155,7 @@ fn handle(text: &str) {
     match words.next() {
         Some("status") | Some("?") => with_state(|s| {
             emit!(
-                "STATUS attached={} epr_mode={} target_mv={} target_ma={} contract_pos={} contract_mv={} contract_ma={} contracts={} hard_resets={} epr_failures={} vbus_mv={} vbus_sat={} tcpp_ok={} tcpp_fault={} tcpp_flags=0x{:02x} hold={} load_online={}",
+                "STATUS attached={} epr_mode={} target_mv={} target_ma={} contract_pos={} contract_mv={} contract_ma={} contracts={} hard_resets={} epr_failures={} vbus_mv={} vbus_sat={} tcpp_ok={} tcpp_fault={} tcpp_flags=0x{:02x} tcpp_ack=0x{:02x} hold={}",
                 s.attached.unwrap_or("none"),
                 s.epr_mode as u8,
                 s.target_mv,
@@ -166,11 +171,10 @@ fn handle(text: &str) {
                 s.tcpp_ok as u8,
                 s.tcpp_fault as u8,
                 s.tcpp_flags,
-                s.hold as u8,
-                s.load_online as u8
+                s.tcpp_ack,
+                s.hold as u8
             )
         }),
-        Some("load") => handle_load(words.next(), words.next()),
         Some("caps") => {
             with_state(|s| match &s.caps {
                 Some(caps) => {
@@ -205,57 +209,38 @@ fn handle(text: &str) {
         },
         Some("eprexit") => send(Cmd::ExitEpr),
         Some("getcaps") => send(Cmd::GetCaps),
+        Some("tcpp") => match words.next() {
+            None => with_state(|s| emit!("TCPP ack=0x{:02x} flags=0x{:02x} ok={}", s.tcpp_ack, s.tcpp_flags, s.tcpp_ok as u8)),
+            Some(hex) => match u8::from_str_radix(hex.trim_start_matches("0x"), 16) {
+                Ok(ctrl) => {
+                    with_state(|s| s.tcpp_poke = Some(ctrl));
+                    emit!("OK result follows as EVT tcpp02 poke");
+                }
+                Err(_) => emit!("ERR usage: tcpp [<control register, hex>]"),
+            },
+        },
+        Some("rd") => {
+            // Bench debug: which CC pins carry this sink's Rd (UCPD CCENABLE).
+            // The PD task's next UCPD re-init restores both.
+            use embassy_stm32::pac::ucpd::vals::Ccenable;
+            let en = match words.next() {
+                Some("off") => Some(Ccenable::DISABLED),
+                Some("cc1") => Some(Ccenable::CC1),
+                Some("cc2") => Some(Ccenable::CC2),
+                Some("both") => Some(Ccenable::BOTH),
+                _ => None,
+            };
+            match en {
+                Some(en) => {
+                    embassy_stm32::pac::UCPD1.cr().modify(|w| w.set_ccenable(en));
+                    emit!("OK");
+                }
+                None => emit!("ERR usage: rd off|cc1|cc2|both"),
+            }
+        }
         Some("version") => emit!("VERSION pd-sink-g431 {}", VERSION),
-        Some("help") => emit!("OK commands: status caps req <mV> [mA] epr <W> eprexit getcaps load [status|p <mW>|off|clear] version"),
+        Some("help") => emit!("OK commands: status caps req <mV> [mA] epr <W> eprexit getcaps tcpp [<ctrl hex>] rd off|cc1|cc2|both version"),
         _ => emit!("ERR unknown command (help)"),
     }
 }
 
-/// Upper bound the sink accepts for `load p`; the load clamps further to its
-/// ballast rating and the contract.
-const LOAD_P_MAX_MW: u32 = 60_000;
-
-fn handle_load(op: Option<&str>, arg: Option<&str>) {
-    match op {
-        None | Some("status") => with_state(|s| match (s.load_online, s.load) {
-            (true, Some(t)) => emit!(
-                "LOAD online=1 state={} fault={} armed_cmd={} p_target_mw={} vin_mv={} vout_mv={} iout_ma={} pout_mw={} duty_pm={} temp_mv={} seq={}",
-                t.state.name(),
-                t.fault.name(),
-                s.load_armed_cmd as u8,
-                s.load_p_mw,
-                t.vin_mv,
-                t.vout_mv,
-                t.iout_ma,
-                t.pout_mw,
-                t.duty_permille,
-                t.temp_mv,
-                t.seq
-            ),
-            _ => emit!("LOAD online=0 p_target_mw={}", s.load_p_mw),
-        }),
-        Some("p") => match parse(arg) {
-            Some(mw) if mw <= LOAD_P_MAX_MW => {
-                let armed_now = with_state(|s| {
-                    s.load_p_mw = mw as u16;
-                    s.load_enable = mw > 0;
-                    s.contract.is_some() && !s.hold
-                });
-                if armed_now { emit!("OK") } else { emit!("OK stored; arms after the next contract") }
-            }
-            _ => emit!("ERR usage: load p <mW, 0..={}>", LOAD_P_MAX_MW),
-        },
-        Some("off") => {
-            with_state(|s| {
-                s.load_enable = false;
-                s.load_p_mw = 0;
-            });
-            emit!("OK");
-        }
-        Some("clear") => {
-            with_state(|s| s.load_clear = true);
-            emit!("OK");
-        }
-        _ => emit!("ERR usage: load [status|p <mW>|off|clear]"),
-    }
-}

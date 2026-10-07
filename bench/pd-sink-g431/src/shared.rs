@@ -5,11 +5,10 @@ use core::fmt::Write;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
-use load_link::Telemetry;
 use usbpd::protocol_layer::message::data::source_capabilities::SourceCapabilities;
 
 /// One line of output to the host (without the line ending).
-pub type Line = heapless::String<224>;
+pub type Line = heapless::String<320>;
 
 /// Commands from the host that need the policy engine.
 #[derive(Clone, Copy)]
@@ -54,19 +53,14 @@ pub struct State {
     /// TCPP02 flag register fault bits, FLGn low, or I2C failure.
     pub tcpp_fault: bool,
     pub tcpp_flags: u8,
+    /// TCPP02 ack register, read with the flags every 100 ms.
+    pub tcpp_ack: u8,
+    /// `tcpp <hex>`: control-register value for the link task to write once.
+    pub tcpp_poke: Option<u8>,
 
-    /// Renegotiation in progress: the load is held off until the next contract.
+    /// Renegotiation in progress (set by `req`/`epr`/caps/Hard Reset, cleared
+    /// by the next contract).  Reported only: the host disarms the load.
     pub hold: bool,
-    /// Host wants the load running (`load p`); cleared by `load off`, a load
-    /// fault, and detach.
-    pub load_enable: bool,
-    pub load_p_mw: u16,
-    /// One-shot request to clear a latched load fault.
-    pub load_clear: bool,
-    pub load_online: bool,
-    pub load: Option<Telemetry>,
-    /// What the last command frame asked for.
-    pub load_armed_cmd: bool,
 }
 
 pub const DEFAULT_TARGET_MV: u32 = 5000;
@@ -89,13 +83,9 @@ pub static STATE: Mutex<CriticalSectionRawMutex, RefCell<State>> = Mutex::new(Re
     tcpp_ok: false,
     tcpp_fault: false,
     tcpp_flags: 0,
+    tcpp_ack: 0,
+    tcpp_poke: None,
     hold: false,
-    load_enable: false,
-    load_p_mw: 0,
-    load_clear: false,
-    load_online: false,
-    load: None,
-    load_armed_cmd: false,
 }));
 
 pub static CMD: Channel<CriticalSectionRawMutex, Cmd, 4> = Channel::new();
