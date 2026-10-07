@@ -27,6 +27,7 @@
 #include "regulator.h"
 #include "pd_interface.h"
 #include "pd_vbus.h"
+#include "usbpd_dpm_core.h"
 #include "adc_monitor.h"
 #include "debug_log.h"
 /* USER CODE END Includes */
@@ -1146,7 +1147,15 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
-
+  if (htim->Instance == TIM2)
+  {
+    /* USB-PD policy-engine and protocol-layer timers, 1 ms.  ST's stack only
+     * counts them down here; FreeRTOS owns SysTick and there is no tick hook,
+     * so without this call no PE timer ever expired (2026-10-06 bench: one
+     * Source_Capabilities burst and no resends, and after Accept no PS_RDY:
+     * the PE waited forever for tSrcTransition).                           */
+    USBPD_DPM_TimerCounter();
+  }
   /* USER CODE END Callback 1 */
 }
 

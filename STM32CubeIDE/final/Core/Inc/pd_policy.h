@@ -95,6 +95,9 @@ extern volatile PdStatus pd_status;
 #define PD_EV_FAULT_HARDRESET 0x200u
 #define PD_EV_TRANSITION_TIMEOUT 0x201u
 #define PD_EV_VBUS_ON_FAILED  0x202u
+#define PD_EV_SETUP_POWER     0x203u  /* PE called USBPD_DPM_SetupNewPower */
+#define PD_EV_SETUP_POWER_ERR 0x204u  /* ... and it returned an error */
+#define PD_EV_POWER_NOT_READY 0x205u  /* IsPowerReady answered DISABLE */
 
 /** Build the PDO tables; call once before the PD stack runs. */
 void pd_policy_init(void);

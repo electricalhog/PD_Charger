@@ -61,6 +61,13 @@ option(PD_VBUS_PATH_CHARGER "USB-PD VBUS through the regulator and output switch
 # VCONN switches on GPIOs (pins in Core/Inc/pd_bench_config.h).  Needed for
 # EPR entry: the source must power the cable e-marker to read it over SOP'.
 option(PD_VCONN "Source VCONN through GPIO-driven switches" OFF)
+# Bench dry run: the PD stack is told VBUS follows the contract, but the
+# regulator never starts (Core/Src/pd_vbus.c).  For protocol tests (VCONN,
+# SOP' cable discovery, EPR messages) with nothing taking power.
+option(PD_BENCH_DRY_RUN "PD protocol without VBUS (regulator never starts)" OFF)
+# Bench: be VCONN source at every attach, as if the CAD had seen the cable's
+# Ra (ATTEMC).  For a cable whose e-marker shows no Ra at this end.
+option(PD_BENCH_FORCE_VCONN "VCONN source at every attach (needs PD_VCONN)" OFF)
 
 if(PD_VBUS_PATH_CHARGER)
     target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE PD_VBUS_PATH_CHARGER=1)
@@ -71,6 +78,12 @@ if(PD_VBUS_PATH_CHARGER)
         DIRECTORY ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/cmake/stm32cubemx
         PROPERTIES HEADER_FILE_ONLY ON)
 endif()
+if(PD_BENCH_DRY_RUN)
+    if(NOT PD_VBUS_PATH_CHARGER)
+        message(FATAL_ERROR "PD_BENCH_DRY_RUN needs PD_VBUS_PATH_CHARGER")
+    endif()
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE PD_BENCH_DRY_RUN=1)
+endif()
 if(PD_VCONN)
     if(NOT PD_VBUS_PATH_CHARGER)
         message(FATAL_ERROR "PD_VCONN needs PD_VBUS_PATH_CHARGER")
@@ -78,6 +91,12 @@ if(PD_VCONN)
     # _VCONN_SUPPORT also gates the VCONN calls in the USBPD device driver
     # (usbpd_pwr_hw_if.c), which builds from the stm32cubemx interface.
     target_compile_definitions(stm32cubemx INTERFACE _VCONN_SUPPORT PD_VCONN_ENABLE=1)
+endif()
+if(PD_BENCH_FORCE_VCONN)
+    if(NOT PD_VCONN)
+        message(FATAL_ERROR "PD_BENCH_FORCE_VCONN needs PD_VCONN")
+    endif()
+    target_compile_definitions(stm32cubemx INTERFACE PD_BENCH_FORCE_VCONN=1)
 endif()
 
 # Add include paths

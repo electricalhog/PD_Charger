@@ -28,6 +28,23 @@
 #include "usbpd_dpm_user.h"
 #include "usbpd_pwr_user.h"
 
+/* Bench dry run (CMake option PD_BENCH_DRY_RUN): the PD stack is told VBUS
+ * follows the contract, but the regulator never starts and the output
+ * switch stays open.  For protocol tests (VCONN, SOP' cable discovery, EPR
+ * messages) while nothing can or should take power: 2026-10-05, a sink whose
+ * TCPP02 sat unconfigured showed only its dead-battery Rd, and the source
+ * started VBUS 1355 times (about every 6 s, ending in a light-load SW_OVP)
+ * with nobody answering on SOP.                                           */
+#if defined(PD_BENCH_DRY_RUN) && (PD_BENCH_DRY_RUN)
+#define DRY_RUN 1u
+#else
+#define DRY_RUN 0u
+#endif
+/* Read by `bu pd status`. */
+__attribute__((used)) const volatile uint32_t pd_bench_dry_run = DRY_RUN;
+/* Dry run: the VBUS the stack is told about [mV], 0 when off. */
+static volatile uint32_t dry_vbus_mv;
+
 /* HAL tick at which the output switch was last seen opening. */
 static volatile uint32_t vbus_off_tick;
 static bool              vbus_seen_on;
@@ -40,6 +57,10 @@ static bool output_switch_closed(void)
 
 uint32_t pd_vbus_get_mv(void)
 {
+    if (DRY_RUN)
+    {
+        return dry_vbus_mv;
+    }
     if (output_switch_closed())
     {
         return adc_measurements.v_out_mv;
@@ -54,6 +75,12 @@ uint32_t pd_vbus_wait_in_range(uint32_t target_mv, uint32_t timeout_ms)
     const uint32_t tol_mv = target_mv * PD_VBUS_TOLERANCE_PCT / 100u;
     const uint32_t start  = HAL_GetTick();
     uint32_t in_range = 0u;
+
+    if (DRY_RUN)
+    {
+        (void)timeout_ms;
+        return (dry_vbus_mv + tol_mv >= target_mv && dry_vbus_mv <= target_mv + tol_mv) ? 0u : UINT32_MAX;
+    }
 
     for (;;)
     {
@@ -80,6 +107,10 @@ uint32_t pd_vbus_wait_in_range(uint32_t target_mv, uint32_t timeout_ms)
 
 void pd_vbus_poll(void)
 {
+    if (pd_bench_dry_run)   /* the read keeps the symbol in the link */
+    {
+        return;     /* no output switch, no regulator faults to act on */
+    }
     bool closed = output_switch_closed();
     if (vbus_seen_on && !closed)
     {
@@ -151,6 +182,12 @@ int32_t BSP_USBPD_PWR_VBUSOn(uint32_t Instance)
 {
     if (Instance >= USBPD_PWR_INSTANCES_NBR) { return BSP_ERROR_WRONG_PARAM; }
 
+    if (DRY_RUN)
+    {
+        dry_vbus_mv = 5000u;
+        return BSP_ERROR_NONE;
+    }
+
     /* Attach or the end of a Hard Reset: vSafe5V. */
     pd_interface_notify_voltage_contract(5000u);
     if (regulator_get_state() == REGULATOR_STATE_IDLE)
@@ -170,6 +207,11 @@ int32_t BSP_USBPD_PWR_VBUSOff(uint32_t Instance)
 {
     if (Instance >= USBPD_PWR_INSTANCES_NBR) { return BSP_ERROR_WRONG_PARAM; }
 
+    if (DRY_RUN)
+    {
+        dry_vbus_mv = 0u;
+        return BSP_ERROR_NONE;
+    }
     pd_interface_notify_disconnect();   /* target 0, regulator_stop(): switch open, OUTPUT_DIS on */
     vbus_off_tick = HAL_GetTick();
     vbus_seen_on  = false;
@@ -179,7 +221,7 @@ int32_t BSP_USBPD_PWR_VBUSOff(uint32_t Instance)
 int32_t BSP_USBPD_PWR_VBUSIsOn(uint32_t Instance, uint8_t *pState)
 {
     if (Instance >= USBPD_PWR_INSTANCES_NBR || pState == NULL) { return BSP_ERROR_WRONG_PARAM; }
-    *pState = output_switch_closed() ? 1u : 0u;
+    *pState = DRY_RUN ? (dry_vbus_mv != 0u) : (output_switch_closed() ? 1u : 0u);
     return BSP_ERROR_NONE;
 }
 
@@ -197,6 +239,11 @@ int32_t BSP_USBPD_PWR_VBUSSetVoltage_Fixed(uint32_t Instance,
     {
         return BSP_ERROR_WRONG_PARAM;
     }
+    if (DRY_RUN)
+    {
+        dry_vbus_mv = VbusTargetInmv;
+        return BSP_ERROR_NONE;
+    }
     pd_interface_notify_voltage_contract(VbusTargetInmv);
     return BSP_ERROR_NONE;
 }
@@ -211,7 +258,7 @@ int32_t BSP_USBPD_PWR_VBUSGetVoltage(uint32_t Instance, uint32_t *pVoltage)
 int32_t BSP_USBPD_PWR_VBUSGetCurrent(uint32_t Instance, int32_t *pCurrent)
 {
     if (Instance >= USBPD_PWR_INSTANCES_NBR || pCurrent == NULL) { return BSP_ERROR_WRONG_PARAM; }
-    *pCurrent = output_switch_closed() ? (int32_t)adc_measurements.i_out_ma : 0;
+    *pCurrent = (!DRY_RUN && output_switch_closed()) ? (int32_t)adc_measurements.i_out_ma : 0;
     return BSP_ERROR_NONE;
 }
 
@@ -258,12 +305,15 @@ static void vconn_gpio_init(void)
 static int32_t vconn_set(uint32_t CCPinId, GPIO_PinState level)
 {
     if (!vconn_gpio_ready) { vconn_gpio_init(); }
+    /* Never both: VCONN on the other line would sit on the PD (CC) wire. */
     if (CCPinId == USBPD_PWR_TYPE_C_CC1)
     {
+        if (level == GPIO_PIN_SET) { HAL_GPIO_WritePin(PD_VCONN_CC2_PORT, PD_VCONN_CC2_PIN, GPIO_PIN_RESET); }
         HAL_GPIO_WritePin(PD_VCONN_CC1_PORT, PD_VCONN_CC1_PIN, level);
     }
     else if (CCPinId == USBPD_PWR_TYPE_C_CC2)
     {
+        if (level == GPIO_PIN_SET) { HAL_GPIO_WritePin(PD_VCONN_CC1_PORT, PD_VCONN_CC1_PIN, GPIO_PIN_RESET); }
         HAL_GPIO_WritePin(PD_VCONN_CC2_PORT, PD_VCONN_CC2_PIN, level);
     }
     else

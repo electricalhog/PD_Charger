@@ -302,6 +302,19 @@ void USBPD_DPM_UserCableDetection(uint8_t PortNum, USBPD_CAD_EVENT State)
   case USBPD_CAD_EVENT_ATTEMC:
     {
     pd_status.attach_count++;
+#if PD_VCONN_ENABLE
+    /* ATTEMC: the CAD saw the cable's Ra on the other CC line (VconnCCIs),
+     * so power the e-marker now.  The core only sets VconnStatus.  An
+     * unpowered e-marker loads the CC wire: on the bench (2026-10-06, Apple
+     * 240 W cable, e-marker at this end) DC attach worked but no BMC message
+     * got through in either direction until VCONN was on.                  */
+    if (State == USBPD_CAD_EVENT_ATTEMC &&
+        DPM_Params[PortNum].PE_PowerRole == USBPD_PORTPOWERROLE_SRC &&
+        DPM_Params[PortNum].VconnCCIs != DPM_Params[PortNum].ActiveCCIs)
+    {
+      (void)USBPD_DPM_PE_VconnPwr(PortNum, USBPD_ENABLE);
+    }
+#endif /* PD_VCONN_ENABLE */
     if (DPM_Params[PortNum].PE_PowerRole == USBPD_PORTPOWERROLE_SRC)
     {
       /* A failure (regulator FAULT, no input) leaves VBUS off; the PE then
@@ -316,6 +329,12 @@ void USBPD_DPM_UserCableDetection(uint8_t PortNum, USBPD_CAD_EVENT State)
   case USBPD_CAD_EVENT_EMC :
   default :
     pd_status.detach_count++;
+#if PD_VCONN_ENABLE
+    /* VCONN off on both lines at every detach (the core only clears its
+     * flags).                                                            */
+    (void)USBPD_PWR_IF_Disable_VConn(PortNum, CC1);
+    (void)USBPD_PWR_IF_Disable_VConn(PortNum, CC2);
+#endif /* PD_VCONN_ENABLE */
     pd_status.contract_mv = 0u;
     pd_status.contract_ma = 0u;
     pd_status.contract_position = 0u;
@@ -374,6 +393,23 @@ void USBPD_DPM_Notification(uint8_t PortNum, USBPD_NotifyEventValue_TypeDef Even
       pd_status.contract_ma = 0u;
       pd_status.contract_position = 0u;
       pd_status.epr_mode = 0u;
+      break;
+    case USBPD_NOTIFY_POWER_EXPLICIT_CONTRACT:
+#if defined(PD_BENCH_FORCE_VCONN) && (PD_BENCH_FORCE_VCONN) && PD_VCONN_ENABLE
+      /* Bench (CMake PD_BENCH_FORCE_VCONN): become VCONN source on the other
+       * CC line once a contract proves which line carries PD.  The bench's
+       * e-marked cable shows no Ra at this end, so the CAD never reports
+       * ATTEMC and EPR entry stopped at a VCONN_Swap the sink cannot answer.
+       * Enabling it at attach instead put VCONN on the CC wire once, when the
+       * CAD had picked the wrong line (2026-10-06).                          */
+      if (DPM_Params[PortNum].PE_PowerRole == USBPD_PORTPOWERROLE_SRC &&
+          DPM_Params[PortNum].VconnStatus == USBPD_FALSE &&
+          DPM_Params[PortNum].VconnCCIs != DPM_Params[PortNum].ActiveCCIs &&
+          USBPD_OK == USBPD_DPM_PE_VconnPwr(PortNum, USBPD_ENABLE))
+      {
+        DPM_Params[PortNum].VconnStatus = USBPD_TRUE;
+      }
+#endif /* PD_BENCH_FORCE_VCONN */
       break;
 #if defined(USBPDCORE_EPR)
     case USBPD_NOTIFY_EPRMODE_ACK:
@@ -443,7 +479,12 @@ USBPD_StatusTypeDef USBPD_DPM_SetupNewPower(uint8_t PortNum)
   /* USBPD_PWR_IF_SetProfile sets the regulator target from
    * DPM_RequestedVoltage (set by USBPD_DPM_EvaluateRequest) and, with
    * PD_OWNS_VBUS, returns only once VBUS is in range, so PS_RDY is honest. */
+  pd_status_event(PD_EV_SETUP_POWER);
   USBPD_StatusTypeDef status = USBPD_PWR_IF_SetProfile(PortNum);
+  if (status != USBPD_OK)
+  {
+    pd_status_event(PD_EV_SETUP_POWER_ERR);
+  }
 
   if (status == USBPD_OK)
   {
@@ -754,7 +795,12 @@ USBPD_StatusTypeDef USBPD_DPM_EvaluateDataRoleSwap(uint8_t PortNum)
 USBPD_FunctionalState USBPD_DPM_IsPowerReady(uint8_t PortNum, USBPD_VSAFE_StatusTypeDef Vsafe)
 {
 /* USER CODE BEGIN USBPD_DPM_IsPowerReady */
-  return ((USBPD_OK == USBPD_PWR_IF_SupplyReady(PortNum, Vsafe)) ? USBPD_ENABLE : USBPD_DISABLE);
+  if (USBPD_OK == USBPD_PWR_IF_SupplyReady(PortNum, Vsafe))
+  {
+    return USBPD_ENABLE;
+  }
+  pd_status_event(PD_EV_POWER_NOT_READY);
+  return USBPD_DISABLE;
 /* USER CODE END USBPD_DPM_IsPowerReady */
 }
 
