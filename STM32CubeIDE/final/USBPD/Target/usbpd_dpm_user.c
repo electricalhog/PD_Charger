@@ -158,6 +158,7 @@ static USBPD_StatusTypeDef DPM_TurnOffPower(uint8_t PortNum, USBPD_PortPowerRole
 uint32_t USBPD_DPM_RequestDPMWhatToDo(uint8_t PortNum, uint32_t IDAction)
 {
   (void)PortNum;
+  pd_status_event(PD_EV_DPM_WHAT_TO_DO | (IDAction & 0xFu));
   switch (IDAction)
   {
     case USBPD_ACTION_REPLY_ENTER_MODE:
@@ -204,6 +205,13 @@ USBPD_StatusTypeDef USBPD_DPM_UserInit(void)
     DPM_Settings[USBPD_PORT_0].PE_SupportedSOP = USBPD_SUPPORTED_SOP_SOP | USBPD_SUPPORTED_SOP_SOP1 | USBPD_SUPPORTED_SOP_SOP2;
   }
 #endif /* USBPDCORE_EPR */
+#if defined(_VCONN_SUPPORT)
+  /* Registers the VDM callbacks with the PE (ST's VCONN-only pattern). */
+  if (USBPD_OK != USBPD_VDM_UserInit(USBPD_PORT_0))
+  {
+    return USBPD_ERROR;
+  }
+#endif /* _VCONN_SUPPORT */
   return USBPD_OK;
 /* USER CODE END USBPD_DPM_UserInit */
 }

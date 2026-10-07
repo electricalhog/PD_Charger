@@ -155,9 +155,19 @@ USBPD_StatusTypeDef USBPD_PWR_IF_SetProfile(uint8_t PortNum)
   }
 #if PD_OWNS_VBUS
   /* PS_RDY goes out when this returns USBPD_OK, so wait for VBUS to be in
-   * range (vSrcNew) within the sink's tPSTransition. */
-  uint32_t _budget_ms = (DPM_Ports[PortNum].DPM_RDOPosition >= PD_POLICY_FIRST_EPR_POS)
-                          ? PD_EPR_TRANSITION_BUDGET_MS : PD_SPR_TRANSITION_BUDGET_MS;
+   * range (vSrcNew) within the sink's tPSTransition.  That is the EPR
+   * value for every request made in EPR mode, SPR positions included. */
+  uint32_t _budget_ms = PD_SPR_TRANSITION_BUDGET_MS;
+  if (DPM_Ports[PortNum].DPM_RDOPosition >= PD_POLICY_FIRST_EPR_POS)
+  {
+    _budget_ms = PD_EPR_TRANSITION_BUDGET_MS;
+  }
+#if defined(USBPDCORE_EPR)
+  if (DPM_Params[PortNum].PowerRange == USBPD_EPR_MODE)
+  {
+    _budget_ms = PD_EPR_TRANSITION_BUDGET_MS;
+  }
+#endif /* USBPDCORE_EPR */
   uint32_t _elapsed = pd_vbus_wait_in_range(_mv, _budget_ms);
   if (_elapsed == UINT32_MAX)
   {

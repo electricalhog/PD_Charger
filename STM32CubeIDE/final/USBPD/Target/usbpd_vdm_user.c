@@ -445,7 +445,10 @@ static USBPD_StatusTypeDef USBPD_VDM_ReceiveUVDM(uint8_t PortNum, USBPD_UVDMHead
 USBPD_StatusTypeDef USBPD_VDM_UserInit(uint8_t PortNum)
 {
 /* USER CODE BEGIN USBPD_VDM_UserInit */
-    return USBPD_OK;
+  /* Without this the PE has no VDM callbacks: EPR entry sent Discover
+   * Identity SOP', took the cable's ACK and stalled (bench 2026-10-07). */
+  USBPD_PE_InitVDM_Callback(PortNum, (USBPD_VDM_Callbacks *)&vdmCallbacks);
+  return USBPD_OK;
 /* USER CODE END USBPD_VDM_UserInit */
 }
 

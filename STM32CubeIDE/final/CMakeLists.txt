@@ -68,6 +68,10 @@ option(PD_BENCH_DRY_RUN "PD protocol without VBUS (regulator never starts)" OFF)
 # Bench: be VCONN source at every attach, as if the CAD had seen the cable's
 # Ra (ATTEMC).  For a cable whose e-marker shows no Ra at this end.
 option(PD_BENCH_FORCE_VCONN "VCONN source at every attach (needs PD_VCONN)" OFF)
+# Bench: offer 15 V (the buck load's gate drive needs 12-15 V).  5 -> 15 V
+# misses the SPR transition budget at the current up-slew, so it is reached
+# from 9 V or in EPR mode (Core/Inc/pd_bench_config.h).
+option(PD_BENCH_15V "Offer the 15 V PDO, reached via 9 V or in EPR mode" OFF)
 
 if(PD_VBUS_PATH_CHARGER)
     target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE PD_VBUS_PATH_CHARGER=1)
@@ -97,6 +101,12 @@ if(PD_BENCH_FORCE_VCONN)
         message(FATAL_ERROR "PD_BENCH_FORCE_VCONN needs PD_VCONN")
     endif()
     target_compile_definitions(stm32cubemx INTERFACE PD_BENCH_FORCE_VCONN=1)
+endif()
+if(PD_BENCH_15V)
+    if(NOT PD_VBUS_PATH_CHARGER)
+        message(FATAL_ERROR "PD_BENCH_15V needs PD_VBUS_PATH_CHARGER")
+    endif()
+    target_compile_definitions(stm32cubemx INTERFACE PD_BENCH_15V=1)
 endif()
 
 # Add include paths
