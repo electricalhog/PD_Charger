@@ -18,6 +18,71 @@
 | `load-control/` | The load's control law: power → V_out, limits, faults (host-tested). |
 | `LOAD_CONTROL.md` | Why the load is controlled this way. |
 
+## The bench as built (2026-10-05)
+
+The diagram above was the plan. The bench on the laptop differs:
+
+- **Source:** the G474 drives the PD_Charger power board. There is no shield on the G474.
+  - A 24 V bench supply feeds the power board.
+  - The power board's output goes straight to the buck's HV input (VIN), not through any
+    Type-C VBUS.
+- **CC and VCONN:** the G474's CC1/CC2 (PB6/PB4) are wired to the SRC1M1 on the G431, with
+  the NPN→PNP VCONN switches on PA7/PB5 (active high, `pd_bench_config.h`). The shield's power
+  path is unused, so the sink's VBUS sense (PA0) reads 0 V.
+- **Load link:** the QT Py's STEMMA QT (GPIO22 SDA / GPIO23 SCL) goes to the G431's I2C1
+  (PB9/PB8), on the same bus as the TCPP02. The rotary encoder that used to sit on that port
+  is removed.
+- **QT Py:** wired straight to the buck's controller footprint. The Datalore-IP-rp2040 adapter
+  was never built. Pins follow the QT Py port of the buck firmware; see
+  `buck-load-qtpy/src/board.rs`.
+- **Direction:** the old electronic-load setup ran the converter as a boost, with its load
+  resistor (0.332 Ω per that firmware) on the HV side. On this bench it runs as a buck, HV to
+  LV, taking power from VBUS. What sits on +OUT (the LV side, with the 8400 µF bank) is still to
+  be confirmed.
+- **Scope:** CH2 = TP3, CH3 = TP4, CH4 = TP2 on the power board. TP2 is V_out and TP3 the
+  buck-leg switch node, per the 2026-09-27/28 run notes in `regulator_config.h`. CH1 is free.
+
+**Things found on the hardware:**
+
+- **Buck gate drivers enable when not driven.** DISABLE is pulled low inside the TI drivers,
+  and the RP2040 resets with every pad pulled down. Whenever the QT Py is not driving its pins
+  and VIN is high enough for the 12 V gate rail, all three low-side FETs are on and +OUT is
+  shorted through 1 µH per phase. The firmware therefore:
+  - drives DISABLE high from its first instruction;
+  - refuses BOOTSEL unless the higher tap reads < 4.5 V and the lower < 0.3 V.
+- **VIN never reads 0 V.** The QT Py's 3V3 back-feeds VIN to about 2.65 V through the buck's
+  3V3 regulator (IC7). With the G474's output switch closed, this shows on TP2.
+- **The buck can't switch at 5 V.** Its 12 V gate rail comes from VIN (IC8, about 11.9 V), so
+  expect no switching at a 5 V contract.
+- **TCPP02 ack register.** It echoes the control bits (Normal = 0x10), not the bit-reversed
+  codes in `tcpp0203.h`. The sink's check is fixed; expect `EVT tcpp02 ok ack=0x18`.
+- **A wedged I2C bus froze the sink, PD included.** embassy-stm32's I2C busy-waits for a free
+  bus without yielding (1 s default). The sink now:
+  - caps that wait at 2 ms;
+  - skips I2C while I2C1 reads BUSY, with `EVT i2c stuck busy` and `EVT i2c free`;
+  - retries the TCPP02 setup until it takes.
+- **Load link not working yet.**
+  - The QT Py's I2C1 target never ACKs 0x55. `bu load sniff`/`edges`/`glitch` show a clean
+    100 kHz bus, and the block flags itself addressed (STOP_DET with STOP_DET_IFADDRESSED).
+  - Changes so far: pad drive raised from embassy's 2 mA to 12 mA; pico-sdk's 100 kHz timing
+    registers; general call off.
+  - Open; see `bu load sartest`.
+
+**Load link moved to USB (2026-10-06).** The I2C link is dropped and the STEMMA cable is
+unplugged.
+- The QT Py takes `cmd seq= arm= clear= p_mw= limit_ma= contract_mv= vin_min_mv=` on its USB
+  console and answers with `TEL ...`.
+- The sink no longer talks to the load: no `load` commands, no load fields in STATUS.
+- **Not done yet:** the laptop side, i.e. a 20 Hz sender in `bu load run` and `bu bench`.
+  `bu bench status/sweep` still call the removed sink `load` commands and fail until then.
+
+**QT Py tools.** The load firmware has its own USB console. `bu load status | pins | sniff |
+edges | glitch | i2c | i2cpoll | sartest | bootsel | flash [--power-stage]` all use it.
+- `bu load flash` builds the firmware, asks it for BOOTSEL, writes the UF2 to the RPI-RP2
+  drive, and waits for the console to come back. The pico-sdk port firmware takes the 1200-baud
+  touch instead.
+- The bench Rust crates pin Rust 1.99.0 (`rust-toolchain.toml`).
+
 ## Wiring
 
 **G431 ↔ SRC1M1 shield.** Plugged onto the Arduino headers these connect by themselves.

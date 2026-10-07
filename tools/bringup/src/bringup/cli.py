@@ -14,7 +14,7 @@ import traceback
 from pathlib import Path
 
 from . import build as build_mod
-from . import bench, cubemx, logic, pd, pd_trace, probe, profile, regulator, serialmon, sink, usercode
+from . import bench, cubemx, load, logic, pd, pd_trace, probe, profile, regulator, serialmon, sink, usercode
 from .config import REPO_ROOT, ToolError, cubemx_exe, gdb_exe, load_config, paths, programmer_exe, rel, run
 from .ioc import Ioc, diff_ioc
 
@@ -307,6 +307,24 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--file", help="decode a saved capture instead of capturing")
     g.add_argument("--show", type=int, default=200, help="decoded lines returned (all go to the .log)")
 
+    # bench buck load (bench/buck-load-qtpy), its own USB console
+    lo = sub.add_parser("load", help="QT Py buck load over its USB console: status, pins, bootsel, flash").add_subparsers(dest="op", required=True)
+    lo.add_parser("status", help="state, taps, current, raw ADC counts, I2C link counters")
+    lo.add_parser("pins", help="link pins (GPIO22/23) idle level and edges over 50 ms")
+    lo.add_parser("sniff", help="software I2C decode of the link pins (30 ms): addresses seen and ACK/NACK")
+    lo.add_parser("i2c", help="I2C1 target register snapshot and link-pin function select")
+    lo.add_parser("edges", help="transition record (96 ns samples) from one START")
+    lo.add_parser("sartest", help="bench test: answer the TCPP02's address 0x34 for 120 ms, report bytes received")
+    lo.add_parser("sarscan", help="bench test: step the I2C1 target address 0x08..0x77 (~5 s), list where it flags itself addressed")
+    lo.add_parser("drivetest", help="bench test: drive SDA/SCL low ~3 us in an idle gap and read the pads back (dead output driver?)")
+    lo.add_parser("padtest", help="control for drivetest: read back driven pins, toggle the unpopulated GPIO24/25")
+    lo.add_parser("i2cpoll", help="busy-poll I2C1 raw interrupts/status for 100 ms (bypasses the driver)")
+    lo.add_parser("glitch", help="50 ms of link transitions: START/STOP vs glitch (SDA edge with SCL high, < 4 us before SCL falls)")
+    lo.add_parser("bootsel", help="reboot into the RP2040 bootloader (refused unless VBUS off and +OUT discharged)")
+    g = lo.add_parser("flash", help="build, BOOTSEL, write the UF2, wait for the console")
+    g.add_argument("--power-stage", action="store_true", help="build with the gate drivers live (phase 2)")
+    g.add_argument("--no-build", action="store_true", help="flash the existing ELF")
+
     # bench USB-PD sink (bench/pd-sink-g431)
     g = sub.add_parser("sink", help="send one command to the NUCLEO-G431RB PD sink over its VCP "
                                     "(status, caps, req MV [MA], epr W, eprexit, getcaps, version)")
@@ -414,7 +432,7 @@ EFFECTS = {
     "cubemx generate": "write", "cubemx script": "write", "build": "write",
     "probe list": "read", "probe reset": "actuate", "flash": "actuate",
     "sym": "read", "layout": "read", "mem read": "read", "mem write": "actuate",
-    "profile": "read", "pd status": "read", "pd trace": "read", "sink": "actuate", "bench status": "read", "bench sweep": "actuate", "regulator status": "read", "regulator clear-fault": "actuate", "regulator stop": "actuate",
+    "profile": "read", "pd status": "read", "pd trace": "read", "sink": "actuate", "load status": "read", "load pins": "read", "load sniff": "read", "load i2c": "read", "load edges": "read", "load glitch": "read", "load i2cpoll": "read", "load sartest": "actuate", "load sarscan": "actuate", "load drivetest": "actuate", "load padtest": "actuate", "load bootsel": "actuate", "load flash": "actuate", "bench status": "read", "bench sweep": "actuate", "regulator status": "read", "regulator clear-fault": "actuate", "regulator stop": "actuate",
     "regulator bench-pwm": "actuate", "regulator set-voltage": "actuate", "regulator sweep": "actuate", "regulator snapshot": "actuate", "regulator start": "actuate",
     "scope analyze": "read", "scope idn": "read", "scope state": "read", "scope measure": "read",
     "scope delay": "read", "scope screenshot": "read", "scope capture": "actuate",
@@ -499,6 +517,10 @@ def dispatch(cfg: dict, a) -> dict:
         if a.op == "trace":
             return pd_trace.trace(cfg, a.seconds, a.port, a.file, a.show)
         return pd.status(cfg)
+    if c == "load":
+        if a.op == "flash":
+            return load.flash(cfg, a.power_stage, not a.no_build)
+        return load.exchange(cfg, a.op, timeout=10.0 if a.op == "sarscan" else 2.0)
     if c == "sink":
         return sink.exchange(cfg, " ".join(a.words), a.timeout, a.until, a.wait)
     if c == "bench":

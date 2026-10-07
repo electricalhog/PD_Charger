@@ -175,6 +175,28 @@ decision. The OFF build (old bench firmware) starts the regulator at
 `DEFAULT_TASK_TEST_VOLTAGE_MV` on boot: only with the receptacle unplugged.
 Plan and stage gates: `plans/epr-bringup.md`.
 
+`-DPD_BENCH_DRY_RUN=ON` (needs `PD_VBUS_PATH_CHARGER`) runs the PD stack without VBUS: the
+regulator never starts and the stack is told VBUS follows the contract. Use it for VCONN, SOP'
+and EPR message tests when nothing should take power; `bu pd status` shows `dry_run`. Configure
+`build/Debug` itself (`cmake -S . -B build/Debug -D...`) so `bu` reads the flashed ELF's
+symbols, and set it back before real VBUS work.
+
+### 5d. Bench buck load (QT Py RP2040, `bench/buck-load-qtpy`)
+```
+bu load status            # state, VIN/+OUT taps (GPIO26/27), current, raw ADC, I2C link counters
+bu load flash             # build, BOOTSEL, UF2, wait for the console (no gate drivers)
+bu load flash --power-stage   # ASK FIRST: phase 2 of the buck switches when the sink arms it
+```
+- **Reset hazard.** The buck's TI gate drivers enable when DISABLE floats or is low, and a
+  low PWM then turns the low-side FET on. The RP2040 resets with every pad pulled down.
+  - So any QT Py reset (BOOTSEL, reflash, RESET button) with the 12 V gate rail up (VIN above
+    ~5-9 V) turns on all three low-side FETs. If +OUT holds charge, that shorts it.
+  - The firmware refuses `bootsel` unless the higher tap reads < 4.5 V and the lower < 0.3 V.
+    Never work around that.
+- Console diagnostics block the QT Py's executor, so they refuse while the driver is enabled.
+- Any I2C1 reconfiguration must go through `i2c1_disable` (main.rs). A disable that waits
+  while a controller is reading leaves SCL stretched low until the QT Py is reset.
+
 ### 6. Measure: Rigol DS1054Z (reports as DS1104Z)
 **Analyse sample data, not pictures.** `scope capture` saves a CSV and returns
 per-channel levels, frequency, duty, period jitter and interpolated edge

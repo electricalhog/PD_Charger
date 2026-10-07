@@ -112,6 +112,75 @@ What I could **not** verify:
   those two functions.
 - Utilities/GUI_INTERFACE and TRACER_EMB compatibility with v5. Build and read the errors.
 
+## Bench log 2026-10-05/06 (local session)
+
+- **VBUS start loop against a dead sink.** The G474 PD build was flashed while the sink's TCPP02
+  sat unconfigured (its I2C bus was wedged by the QT Py). Its hibernate dead-battery Rd showed
+  on CC1, so the source attached, started VBUS and cycled 1355 times, about every 6 s.
+  - It ended in a latched SW_OVP: V_out 5529 mV against the 5500 mV trip (110 % of 5 V), at
+    VIN 20 V, into only the buck's input capacitors.
+  - That's a light-load overshoot of about +10.6 %. Expect it again at 5 V with no load.
+  - Don't flash or reset the G474 with a real-VBUS build while the sink's TCPP02 is not in
+    Normal mode.
+- **Dry run.** CMake `-DPD_BENCH_DRY_RUN=ON` (`pd_vbus.c`) tells the stack VBUS follows the
+  contract but never starts the regulator.
+  - Use it for protocol work (VCONN, SOP', EPR messages) when nothing should take power.
+  - `bu pd status` reports `dry_run` and the VCONN switch outputs (`cc1_pa7`, `cc2_pb5`).
+- **E-marked cable.** The G474 ↔ SRC1M1 link is an e-marked cable.
+  - With `PD_VCONN=ON` the CAD reported ATTACHED, not ATTEMC: no Ra on CC2 at the G474 end.
+    So VCONN stayed off and no SOP' discovery ran.
+  - Likely the cable's e-marker is in the plug at the SRC1M1 end. Swap the cable ends, or
+    check which plug carries it.
+  - The tracer on the G474 VCP works (`bu pd trace --port <G474 VCP>`, reset inside the
+    window to catch an attach).
+
+- **PD timers never ran (fixed 2026-10-06).** Nothing called `USBPD_DPM_TimerCounter()`:
+  FreeRTOS owns SysTick and the tick hook is off. So no PE or protocol-layer timer ever
+  expired.
+  - Symptoms: one Source_Capabilities burst and no resends; after Accept, no PS_RDY, so the
+    sink sent a Hard Reset 500 ms later.
+  - Now called from the 1 ms TIM2 time base (`main.c`, USER CODE Callback 1).
+  - `pd_status` has SETUP_POWER / SETUP_POWER_ERR / POWER_NOT_READY events for this path.
+- **First contracts (dry run, e-marked cable, sink TCPP02 in Normal mode).** 5 V/500 mA on the
+  first attempt; then 9 V (position 2) and back to 5 V, with no Hard Resets.
+- **First EPR entry attempt.** Sink EPR_Mode Enter (10 W) → G474 Enter_Acknowledged → G474
+  VCONN_Swap, because it is not VCONN source.
+  - No Ra was seen at attach, so there was no ATTEMC and VCONN was never turned on.
+  - The usbpd sink answers VCONN_Swap with Soft_Reset, which aborts the entry; both sides
+    renegotiate 5 V SPR.
+  - To get past VCONN, the G474 must see the e-marker's Ra on its CC2 at attach: swap the cable
+    ends, or add a bench option that forces VCONN on at attach.
+- **QT Py pads.** GPIO22/23 (STEMMA I2C) cannot drive low; GPIO24/25 cannot drive high. Pins
+  the firmware drives (GPIO3/4/5/6/20) read back correctly. The I2C load link cannot work on
+  this QT Py.
+
+- **Later the same day (2026-10-06, evening):**
+  - **Sink detach debounce.** Once the PE timers ran, the source resent Source_Capabilities
+    every 159 ms. The sink, with no debounce, declared a detach on each burst. It now waits
+    15 ms (tPDDebounce).
+  - **VCONN on ATTEMC.** When the CAD sees the cable's Ra, the DPM now powers the e-marker on
+    that line (`usbpd_dpm_user.c`). ST's core only sets VconnStatus.
+  - **VCONN switch measured** at 4.06 V on CC1, about 0.9 V under the 5 V rail.
+  - **`PD_BENCH_FORCE_VCONN`** makes the source VCONN source when no Ra is seen.
+    - The first version enabled it at attach. Once, the CAD had picked CC1 while PD ran on CC2,
+      so VCONN went onto the CC wire. It was switched off over SWD (GPIOB BSRR) within about a
+      minute.
+    - It now enables only after an explicit contract has proven which line carries PD. VCONN
+      never goes on both lines (`vconn_set`).
+  - **Cable orientation (Apple 240 W):**
+
+    | E-marker at | G474 attach | PD |
+    |---|---|---|
+    | far end | ATTACHED, no Ra | contracts work; EPR stops at VCONN_Swap |
+    | G474 end | ATTEMC, VCONN on | no message decoded in either direction, though DC attach looked right on both sides |
+
+    In the second orientation the G474 at times saw Rd on both lines (a debug accessory) and
+    refused to attach.
+  - **State at push:** the G474 cycles attach without a contract and the sink has about 17,000
+    Hard Resets. Scope CH2 (CC1) / CH3 (CC2): about 0.2 V / 0.1 V DC with common-mode spikes
+    on every channel and no BMC captured. The CH1 and CH2 probes were intermittent. SOP' cable
+    discovery is untested.
+
 ## Bench plan
 
 Stop and report on any surprise. A FAULT is information; read `bu regulator status` before any

@@ -38,7 +38,8 @@ _FIELDS = (
 SIZE = 4 * len(_FIELDS)
 
 RDO_RESULTS = {0: "ACCEPT", 1: "BAD_POSITION", 2: "EPR_PDO_OUTSIDE_EPR_MODE", 3: "NOT_FIXED", 4: "OVER_CURRENT"}
-PD_EVENTS = {0x200: "FAULT_HARD_RESET", 0x201: "TRANSITION_TIMEOUT", 0x202: "VBUS_ON_FAILED"}
+PD_EVENTS = {0x200: "FAULT_HARD_RESET", 0x201: "TRANSITION_TIMEOUT", 0x202: "VBUS_ON_FAILED",
+             0x203: "SETUP_POWER", 0x204: "SETUP_POWER_ERR", 0x205: "POWER_NOT_READY"}
 REG_STATES = {0: "INIT", 1: "IDLE", 2: "RUNNING", 3: "FAULT"}
 
 
@@ -139,6 +140,9 @@ def diagnose(s: dict) -> list[str]:
     return out
 
 
+GPIOA_ODR, GPIOB_ODR = 0x48000014, 0x48000414
+
+
 def status(cfg: dict) -> dict:
     syms = probe.symbols(cfg)
     if "pd_status" not in syms:
@@ -147,11 +151,14 @@ def status(cfg: dict) -> dict:
     if size != SIZE:
         raise ToolError(f"pd_status is {size} bytes, this tool expects {SIZE}: firmware and tool disagree")
     regions = [(addr, SIZE)]
-    names = [n for n in ("uwTick", "regulator_state", "adc_measurements") if n in syms]
+    names = [n for n in ("uwTick", "regulator_state", "adc_measurements", "pd_bench_dry_run") if n in syms]
     regions += [syms[n] for n in names]
+    # VCONN switch enables (pd_bench_config.h): PA7 -> CC1, PB5 -> CC2 (GPIOx_ODR).
+    regions += [(GPIOA_ODR, 4), (GPIOB_ODR, 4)]
     data = probe.read_regions(cfg, regions)
     words = list(struct.unpack(f"<{len(_FIELDS)}I", data[0]))
-    extra = dict(zip(names, data[1:]))
+    extra = dict(zip(names, data[1:1 + len(names)]))
+    odr_a, odr_b = (int.from_bytes(d[:4], "little") for d in data[1 + len(names):])
     now = int.from_bytes(extra.get("uwTick", b"\0\0\0\0")[:4], "little")
     notify, cad = _names(cfg)
     out = {"ok": True, **decode(words, now, notify, cad)}
@@ -159,4 +166,7 @@ def status(cfg: dict) -> dict:
         out["regulator_state"] = REG_STATES.get(extra["regulator_state"][0], extra["regulator_state"][0])
     if "adc_measurements" in extra:
         out["v_out_mv"] = int.from_bytes(extra["adc_measurements"][:4], "little")
+    if "pd_bench_dry_run" in extra:
+        out["dry_run"] = bool(int.from_bytes(extra["pd_bench_dry_run"][:4], "little"))
+    out["vconn_switch"] = {"cc1_pa7": odr_a >> 7 & 1, "cc2_pb5": odr_b >> 5 & 1}
     return out
