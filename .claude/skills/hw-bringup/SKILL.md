@@ -185,7 +185,9 @@ symbols, and set it back before real VBUS work.
 ```
 bu load status            # state, VIN/+OUT taps (GPIO26/27), current, raw ADC, I2C link counters
 bu load flash             # build, BOOTSEL, UF2, wait for the console (no gate drivers)
-bu load flash --power-stage   # ASK FIRST: phase 2 of the buck switches when the sink arms it
+bu load flash --power-stage   # ASK FIRST: phase 2 of the buck switches when `load run` arms it
+bu load run --p 500,2000,3000 --seconds 4 --limit-ma 500 --vin-min-mv 11500
+                          # ASK FIRST: runs the buck; needs a 12-15 V contract on VIN
 ```
 - **Reset hazard.** The buck's TI gate drivers enable when DISABLE floats or is low, and a
   low PWM then turns the low-side FET on. The RP2040 resets with every pad pulled down.

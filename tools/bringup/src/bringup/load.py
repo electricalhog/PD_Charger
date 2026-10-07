@@ -17,7 +17,7 @@ import struct
 import time
 from pathlib import Path
 
-from .config import REPO_ROOT, ToolError, rel, run, tail
+from .config import REPO_ROOT, ToolError, out_file, rel, run, tail
 from .serialmon import list_ports
 from .sink import parse_line
 
@@ -74,6 +74,95 @@ def exchange(cfg: dict, command: str, timeout: float = 2.0) -> dict:
         raise ToolError(f"no reply to {command!r} from {port}")
     reply = parse_line(line)
     return {"ok": reply.get("kind") not in ("ERR",), "port": port, "reply": reply, "line": line}
+
+
+TEL_FIELDS = ("vin_mv", "vout_mv", "iout_ma", "pout_mw", "duty_pm", "temp_mv")
+
+
+def run_load(cfg: dict, p_mw: list[int], seconds: float, limit_ma: int = 500, contract_mv: int = 0,
+             vin_min_mv: int = 0, clear: bool = False, period_s: float = 0.05) -> dict:
+    """Hold the load at each power target in ``p_mw`` for ``seconds``.
+
+    Sends ``cmd`` every 50 ms (the firmware faults after 250 ms without one),
+    stepping the target without disarming in between, and keeps every
+    ``TEL`` reply tagged with the target in force.  Always ends with a few
+    ``arm=0`` frames, on a fault or an exception too, so the load never waits
+    on its watchdog.  Per-step stats cover the second half of each step,
+    after the 5 mV/ms V_out ramp.
+    """
+    import json
+
+    import serial
+    port = _port(cfg)
+    try:
+        ser = serial.Serial(port, 115200, timeout=0, write_timeout=1.0)
+    except serial.SerialException as e:
+        raise ToolError(f"cannot open {port}: {e}", hint="user must be in the 'dialout' group") from e
+    tel: list[dict] = []
+    seq = 0
+    buf = b""
+    target = p_mw[0]
+    t0 = time.monotonic()
+
+    def send(arm: bool, clear_fault: bool = False) -> None:
+        nonlocal seq
+        seq = (seq + 1) & 0xFF
+        ser.write((f"cmd seq={seq} arm={int(arm)} clear={int(clear_fault)} p_mw={target if arm else 0} "
+                   f"limit_ma={limit_ma} contract_mv={contract_mv} vin_min_mv={vin_min_mv}\n").encode())
+
+    def drain(armed: bool) -> None:
+        nonlocal buf
+        buf += ser.read(4096)
+        while b"\n" in buf:
+            raw, buf = buf.split(b"\n", 1)
+            line = raw.decode(errors="replace").strip()
+            if line:
+                r = parse_line(line)
+                r["t_s"] = round(time.monotonic() - t0, 3)
+                r["p_target"] = target if armed else 0
+                tel.append(r)
+
+    total = seconds * len(p_mw)
+    with ser:
+        ser.reset_input_buffer()
+        try:
+            if clear:
+                for _ in range(3):
+                    send(False, clear_fault=True)
+                    time.sleep(period_s)
+            t0 = time.monotonic()
+            next_t = t0
+            while (el := time.monotonic() - t0) < total:
+                target = p_mw[min(int(el // seconds), len(p_mw) - 1)]
+                send(True)
+                drain(True)
+                if tel and tel[-1].get("state") == "fault":
+                    break
+                next_t += period_s
+                time.sleep(max(0.0, next_t - time.monotonic()))
+        finally:
+            for _ in range(3):
+                send(False)
+                time.sleep(period_s)
+            drain(False)
+
+    frames = [r for r in tel if r.get("kind") == "TEL"]
+    f = out_file(cfg, "load_run", "json")
+    f.write_text(json.dumps(frames))
+    steps = []
+    for i, p in enumerate(p_mw):
+        a, b = seconds * (i + 0.5), seconds * (i + 1)
+        sel = [r for r in frames if a <= r["t_s"] < b and r.get("state") == "running"]
+        st = {"p_mw": p, "frames": len(sel)}
+        for k in TEL_FIELDS:
+            v = [r[k] for r in sel if isinstance(r.get(k), int)]
+            if v:
+                st[k] = {"min": min(v), "max": max(v), "mean": round(sum(v) / len(v))}
+        steps.append(st)
+    faults = [r for r in frames if r.get("fault") not in (None, "none")]
+    return {"ok": not faults and all(s["frames"] for s in steps), "port": port, "frames": len(frames),
+            "fault": faults[0] if faults else None, "last": frames[-1] if frames else None,
+            "steps": steps, "other_lines": [r for r in tel if r.get("kind") != "TEL"][:5], "file": rel(f)}
 
 
 def elf_flash_segments(elf: bytes) -> list[tuple[int, bytes]]:

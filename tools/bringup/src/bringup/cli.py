@@ -321,6 +321,14 @@ def build_parser() -> argparse.ArgumentParser:
     lo.add_parser("i2cpoll", help="busy-poll I2C1 raw interrupts/status for 100 ms (bypasses the driver)")
     lo.add_parser("glitch", help="50 ms of link transitions: START/STOP vs glitch (SDA edge with SCL high, < 4 us before SCL falls)")
     lo.add_parser("bootsel", help="reboot into the RP2040 bootloader (refused unless VBUS off and +OUT discharged)")
+    g = lo.add_parser("run", help="hold a power target: cmd at 20 Hz, TEL collected, disarmed at the end")
+    g.add_argument("--p", required=True, dest="p_mw",
+                   help="output power target [mW]; a comma list steps through them without disarming")
+    g.add_argument("--seconds", type=float, default=5.0, help="per step")
+    g.add_argument("--limit-ma", type=int, default=500, help="input current limit, the PD contract [mA]")
+    g.add_argument("--contract-mv", type=int, default=0)
+    g.add_argument("--vin-min-mv", type=int, default=0, help="fault if VIN stays below this [mV]")
+    g.add_argument("--clear", action="store_true", help="clear a latched fault first")
     g = lo.add_parser("flash", help="build, BOOTSEL, write the UF2, wait for the console")
     g.add_argument("--power-stage", action="store_true", help="build with the gate drivers live (phase 2)")
     g.add_argument("--no-build", action="store_true", help="flash the existing ELF")
@@ -432,7 +440,7 @@ EFFECTS = {
     "cubemx generate": "write", "cubemx script": "write", "build": "write",
     "probe list": "read", "probe reset": "actuate", "flash": "actuate",
     "sym": "read", "layout": "read", "mem read": "read", "mem write": "actuate",
-    "profile": "read", "pd status": "read", "pd trace": "read", "sink": "actuate", "load status": "read", "load pins": "read", "load sniff": "read", "load i2c": "read", "load edges": "read", "load glitch": "read", "load i2cpoll": "read", "load sartest": "actuate", "load sarscan": "actuate", "load drivetest": "actuate", "load padtest": "actuate", "load bootsel": "actuate", "load flash": "actuate", "bench status": "read", "bench sweep": "actuate", "regulator status": "read", "regulator clear-fault": "actuate", "regulator stop": "actuate",
+    "profile": "read", "pd status": "read", "pd trace": "read", "sink": "actuate", "load status": "read", "load pins": "read", "load sniff": "read", "load i2c": "read", "load edges": "read", "load glitch": "read", "load i2cpoll": "read", "load sartest": "actuate", "load sarscan": "actuate", "load drivetest": "actuate", "load padtest": "actuate", "load bootsel": "actuate", "load flash": "actuate", "load run": "actuate", "bench status": "read", "bench sweep": "actuate", "regulator status": "read", "regulator clear-fault": "actuate", "regulator stop": "actuate",
     "regulator bench-pwm": "actuate", "regulator set-voltage": "actuate", "regulator sweep": "actuate", "regulator snapshot": "actuate", "regulator start": "actuate",
     "scope analyze": "read", "scope idn": "read", "scope state": "read", "scope measure": "read",
     "scope delay": "read", "scope screenshot": "read", "scope capture": "actuate",
@@ -520,6 +528,9 @@ def dispatch(cfg: dict, a) -> dict:
     if c == "load":
         if a.op == "flash":
             return load.flash(cfg, a.power_stage, not a.no_build)
+        if a.op == "run":
+            return load.run_load(cfg, [int(x) for x in a.p_mw.split(",")], a.seconds, a.limit_ma,
+                                 a.contract_mv, a.vin_min_mv, a.clear)
         return load.exchange(cfg, a.op, timeout=10.0 if a.op == "sarscan" else 2.0)
     if c == "sink":
         return sink.exchange(cfg, " ".join(a.words), a.timeout, a.until, a.wait)

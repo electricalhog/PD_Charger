@@ -40,6 +40,8 @@ SIZE = 4 * len(_FIELDS)
 RDO_RESULTS = {0: "ACCEPT", 1: "BAD_POSITION", 2: "EPR_PDO_OUTSIDE_EPR_MODE", 3: "NOT_FIXED", 4: "OVER_CURRENT"}
 PD_EVENTS = {0x200: "FAULT_HARD_RESET", 0x201: "TRANSITION_TIMEOUT", 0x202: "VBUS_ON_FAILED",
              0x203: "SETUP_POWER", 0x204: "SETUP_POWER_ERR", 0x205: "POWER_NOT_READY"}
+PD_EV_DPM_WHAT_TO_DO = 0x210  # | USBPD_CORE_ActionType_TypeDef
+DPM_ACTIONS = {1: "ENTER_USB", 2: "DATA_RESET", 3: "ENTER_MODE", 4: "CHECK_PDO"}
 REG_STATES = {0: "INIT", 1: "IDLE", 2: "RUNNING", 3: "FAULT"}
 
 
@@ -85,6 +87,8 @@ def decode(words: list[int], now_ms: int, notify: dict[int, str], cad: dict[int,
     def ev_name(code: int) -> str:
         if code in PD_EVENTS:
             return PD_EVENTS[code]
+        if code & ~0xF == PD_EV_DPM_WHAT_TO_DO:
+            return "DPM_WHAT_TO_DO_" + DPM_ACTIONS.get(code & 0xF, str(code & 0xF))
         if code & 0x100:
             return "CAD_" + cad.get(code & 0xFF, str(code & 0xFF))
         return notify.get(code, f"NOTIFY_{code}")
