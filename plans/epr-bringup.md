@@ -181,6 +181,67 @@ What I could **not** verify:
     on every channel and no BMC captured. The CH1 and CH2 probes were intermittent. SOP' cable
     discovery is untested.
 
+## Bench log 2026-10-07
+
+Results, figures and raw captures: `bench/results/2026-10-07/`.
+
+- **Bad CC jumper.** The G474's CC1 (PB6) reached the cable through about 60 kΩ. The sink's CC1
+  sat at 0.19 V, just under its 0.2 V attach threshold, and the G474 read CC1 as open.
+  - That explains the 2026-10-06 symptoms put down to cable orientation. At a few kΩ the DC
+    attach still worked but no BMC got through, and the e-marker's Ra seen through it looked
+    like Rd.
+  - The jumpers were replaced; attach, contracts and VCONN then worked first time.
+- **EPR entry works end to end.** It took two fixes:
+  - **G474:** `USBPD_VDM_UserInit` never called `USBPD_PE_InitVDM_Callback`. The PE took the
+    cable's Discover Identity ACK and stalled, with no Enter_Succeeded or Enter_Failed. It now
+    registers the callbacks at init, ST's pattern for VCONN without VDM (`usbpd_dpm_user.c`,
+    `usbpd_vdm_user.c`). `PE_VDMSupport` stays off; turning it on changed nothing.
+  - **Sink:** usbpd calls `request()` without `inform()` after attach and after EPR entry. So
+    the sink answered EPR_Source_Capabilities with a plain Request, and the G474 Hard Reset as
+    the spec requires. The sink now decides EPR mode from the capabilities themselves
+    (`pd.rs`, `caps_are_epr`).
+  - Result, in dry run and at 15 V real VBUS: Enter → Enter_Succeeded in 13 ms with the SOP'
+    cable check, then EPR_Request → Accept → PS_RDY. EPR_KeepAlive repeats every 378 ms.
+- **USB-PD core v5.4.1** from ST's GitHub, replacing v5.3.0.
+  - The G4 device driver (v5.3.1) and the tracer (V1.12.1) are code-identical to what we had.
+  - `usbpd_dpm_core.c` stays our CubeMX FreeRTOS copy, not the generic one the core now ships.
+- **VCONN on CC2 measured.** These are the benchmark for the CC1 switch (results folder):
+  - 5.04 V with the e-marker powered;
+  - on with the attach, off about 35 ms after a detach;
+  - a 0.75 ms soft rise.
+
+  The 4.06 V seen on 2026-10-06 was most likely the bad jumper.
+- **Real VBUS:** 5, 9 and 15 V contracts with no faults; 5 → 9 V took 182 ms and 9 → 15 V took
+  268 ms.
+  - 15 V is the bench option `-DPD_BENCH_15V=ON` (`pd_bench_config.h`). At 20 V/s, 5 → 15 V
+    takes 500 ms, so 15 V is reached from 9 V or in EPR mode.
+  - The source now uses the EPR transition budget for every request made in EPR mode
+    (`usbpd_pwr_if.c`).
+- **VBUS reads 11 % low at TP2.**
+
+  | Reading at the 15 V contract | Value |
+  |---|---|
+  | TP2, scope at 0.5 V/div | 13.29 V |
+  | QT Py | 12.95 V |
+  | VD_MON (board ADC) | 15.03 V |
+  | VS_MON on the 24 V supply | 20.1 V |
+
+  - The gap is the same at 0 and 3 W, so it is the sensing.
+  - Likely cause: the divider loading changed when the SRC1M1 shield came off; it had put its
+    VBUS divider on PA0 = VD_MON.
+  - Recalibrate `VD_MON_FULL_SCALE_MV` and `VS_MON_FULL_SCALE_MV` against a meter.
+- **vSafe0V is out of reach.** With VBUS off, the QT Py back-feeds the buck input to about 2.8 V
+  through IC7. After a Hard Reset the source waits for vSafe0V, gives up (POWER_NOT_READY),
+  detaches and re-attaches.
+- **`bu sink rd off` leaves the sink stale.** Its PD loop logs Hard Resets while detached and
+  sends one at the next attach. For clean attach tests, reset the G474 (`bu probe reset`).
+- **First buck load runs.** The QT Py was flashed with `--features power-stage` (BOOTSEL with
+  VBUS off). At the 15 V contract it ran 0.5, 2 and 3 W into the 11 Ω ballast.
+  - Then a 0.5 → 2 → 3 W staircase under the EPR contract:
+    `bu load run --p 500,2000,3000 --seconds 4 --limit-ma 500 --vin-min-mv 11500`.
+  - VBUS at TP2 held 13.3 V, with no faults.
+  - The buck needs 12–15 V on VIN for its gate drive, so it cannot run at 5 or 9 V.
+
 ## Bench plan
 
 Stop and report on any surprise. A FAULT is information; read `bu regulator status` before any

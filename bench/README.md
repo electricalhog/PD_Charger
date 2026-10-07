@@ -37,8 +37,8 @@ The diagram above was the plan. The bench on the laptop differs:
   `buck-load-qtpy/src/board.rs`.
 - **Direction:** the old electronic-load setup ran the converter as a boost, with its load
   resistor (0.332 Ω per that firmware) on the HV side. On this bench it runs as a buck, HV to
-  LV, taking power from VBUS. What sits on +OUT (the LV side, with the 8400 µF bank) is still to
-  be confirmed.
+  LV, taking power from VBUS. +OUT (the LV side, with the 8400 µF bank) carries an 11 Ω / 10 W
+  ballast.
 - **Scope:** CH2 = TP3, CH3 = TP4, CH4 = TP2 on the power board. TP2 is V_out and TP3 the
   buck-leg switch node, per the 2026-09-27/28 run notes in `regulator_config.h`. CH1 is free.
 
@@ -52,8 +52,9 @@ The diagram above was the plan. The bench on the laptop differs:
   - refuses BOOTSEL unless the higher tap reads < 4.5 V and the lower < 0.3 V.
 - **VIN never reads 0 V.** The QT Py's 3V3 back-feeds VIN to about 2.65 V through the buck's
   3V3 regulator (IC7). With the G474's output switch closed, this shows on TP2.
-- **The buck can't switch at 5 V.** Its 12 V gate rail comes from VIN (IC8, about 11.9 V), so
-  expect no switching at a 5 V contract.
+- **The buck needs 12–15 V on VIN.** Its 12 V gate rail comes from VIN (IC8, about 11.9 V), so
+  it cannot switch at a 5 V or 9 V contract. Load runs use the 15 V contract (G474 built with
+  `-DPD_BENCH_15V=ON`; request 9 V first, or enter EPR mode).
 - **TCPP02 ack register.** It echoes the control bits (Normal = 0x10), not the bit-reversed
   codes in `tcpp0203.h`. The sink's check is fixed; expect `EVT tcpp02 ok ack=0x18`.
 - **A wedged I2C bus froze the sink, PD included.** embassy-stm32's I2C busy-waits for a free
@@ -73,11 +74,14 @@ unplugged.
 - The QT Py takes `cmd seq= arm= clear= p_mw= limit_ma= contract_mv= vin_min_mv=` on its USB
   console and answers with `TEL ...`.
 - The sink no longer talks to the load: no `load` commands, no load fields in STATUS.
-- **Not done yet:** the laptop side, i.e. a 20 Hz sender in `bu load run` and `bu bench`.
-  `bu bench status/sweep` still call the removed sink `load` commands and fail until then.
+- `bu load run --p MW[,MW…] --seconds S [--limit-ma --contract-mv --vin-min-mv --clear]` is the
+  laptop side (2026-10-07): `cmd` at 20 Hz, steps without disarming, disarms at the end.
+- `bu bench status/sweep` still call the removed sink `load` commands and fail until they move
+  to `bu load run`.
 
-**QT Py tools.** The load firmware has its own USB console. `bu load status | pins | sniff |
-edges | glitch | i2c | i2cpoll | sartest | bootsel | flash [--power-stage]` all use it.
+**QT Py tools.** The load firmware has its own USB console. `bu load status | run | bootsel |
+flash [--power-stage]` use it. The I2C diagnostics (`pins | sniff | edges | glitch | i2c |
+i2cpoll | sartest | sarscan`) went with the I2C link; the firmware answers them with `ERR`.
 - `bu load flash` builds the firmware, asks it for BOOTSEL, writes the UF2 to the RPI-RP2
   drive, and waits for the console to come back. The pico-sdk port firmware takes the 1200-baud
   touch instead.

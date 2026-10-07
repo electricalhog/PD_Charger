@@ -1,14 +1,15 @@
 # buck-load-qtpy: the 20 V buck as a power-target load (QT Py RP2040)
 
-This firmware turns the buck converter into a power-target load, commanded by the bench PD sink
-over I2C on the QT Py's STEMMA QT port: I2C1, SDA1 = GPIO22, SCL1 = GPIO23, target address 0x55.
+This firmware turns the buck converter into a power-target load, commanded from the laptop over
+the QT Py's USB console (`cmd ...` at 20 Hz; `bu load run`). The I2C link to the PD sink was
+dropped on 2026-10-06: this QT Py's STEMMA pads cannot drive the bus.
 
 - Frames are defined in [`../load-link`](../load-link); the control law is in
   [`../load-control`](../load-control). Both are unit-tested on the host:
   `cargo test --target x86_64-unknown-linux-gnu` in each directory.
-- Status: builds both ways. Flashed on the bench 2026-10-05 without `power-stage`; the
-  taps read correctly (GPIO26 = VIN, GPIO27 = +OUT). The I2C link does not work yet (see
-  `../README.md`, "The bench as built").
+- Status: the `power-stage` build runs on the bench (2026-10-07): 0.5, 2 and 3 W into the
+  11 Ω ballast at a 15 V contract, and a 0.5 → 2 → 3 W staircase under an EPR contract
+  (`../results/2026-10-07`). The buck needs 12–15 V on VIN for its gate drive.
 
 ## Pins and gating
 
@@ -19,8 +20,8 @@ buck's controller footprint.
 - **Every build drives every gate pin from its first instruction:** DISABLE high, PWM low, fan
   off. The TI drivers enable themselves when DISABLE floats, so leaving the pins alone is not
   safe (`board.rs` explains the reset hazard).
-- **The default build never releases them.** It runs the I2C link, ADC telemetry and the USB
-  console, and reports `state=no_power_stage`.
+- **The default build never releases them.** It runs the ADC telemetry and the USB console,
+  and reports `state=no_power_stage`.
 - **`--features power-stage` switches phase 2** (PWM GPIO6, DISABLE GPIO3) at 438.6 kHz, the
   port's frequency. That's the phase the port ran below 5 A. Phases 1 and 3 stay parked.
 
@@ -40,13 +41,20 @@ Faults latch with all DISABLE lines high:
 | Fault | Trigger |
 |---|---|
 | watchdog | no command for 250 ms |
-| vin_sag | V_in below 90 % of the contract for more than 5 ms |
+| vin_sag | V_in below the host's `vin_min_mv` for more than 5 ms |
 | vbus_lost | V_in below 4 V |
 | input_over_current | estimated I_in more than 15 % over the contract for more than 20 ms |
 | output_over_current | I_out above 1.5 A |
 | output_over_voltage | V_out above 8.4 V + 1.5 V |
 
-`load clear` from the sink, sent with arm low, releases a latched fault.
+A command with `clear=1` and `arm=0` releases a latched fault (`bu load run --clear`).
+
+```sh
+tools/bringup/bu load run --p 500,2000,3000 --seconds 4 --limit-ma 500 --vin-min-mv 11500
+```
+
+holds each target for 4 s without disarming in between, then disarms; the `TEL` frames land in
+`bringup_out/`.
 
 ## Flash
 

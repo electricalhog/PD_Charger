@@ -1,0 +1,122 @@
+{
+ "epr_sequence": [
+  [
+   0,
+   "EPR_Mode Enter (10 W)"
+  ],
+  [
+   2,
+   "EPR_Mode Enter_Acknowledged"
+  ],
+  [
+   6,
+   "Discover Identity (SOP')"
+  ],
+  [
+   10,
+   "Discover Identity ACK: Apple 5 A / 50 V, EPR capable"
+  ],
+  [
+   13,
+   "EPR_Mode Enter_Succeeded"
+  ],
+  [
+   17,
+   "EPR_Source_Capabilities (chunk 0): 5 V, 9 V, 15 V @ 0.5 A"
+  ],
+  [
+   20,
+   "chunk request"
+  ],
+  [
+   21,
+   "EPR_Source_Capabilities (chunk 1)"
+  ],
+  [
+   45,
+   "EPR_Request: PDO 3 (15 V), 500 mA"
+  ],
+  [
+   46,
+   "Accept"
+  ],
+  [
+   83,
+   "PS_RDY"
+  ],
+  [
+   460,
+   "EPR_KeepAlive"
+  ],
+  [
+   461,
+   "EPR_KeepAlive_Ack"
+  ],
+  [
+   838,
+   "EPR_KeepAlive"
+  ],
+  [
+   839,
+   "EPR_KeepAlive_Ack"
+  ]
+ ],
+ "vbus_levels": {
+  "9000": [
+   4.96,
+   8.08
+  ],
+  "15000": [
+   9.44,
+   13.44
+  ]
+ },
+ "vbus_reg": [
+  {
+   "contract_mv": 5000,
+   "adc_vout_mv": 5076,
+   "adc_vin_mv": 20176
+  },
+  {
+   "contract_mv": 9000,
+   "adc_vout_mv": 9032,
+   "adc_vin_mv": 20176
+  },
+  {
+   "contract_mv": 15000,
+   "adc_vout_mv": 14935,
+   "adc_vin_mv": 20176
+  }
+ ],
+ "load_steps": [
+  {
+   "target_mw": 500,
+   "vout_v": 2.2356500000000006,
+   "p_w": 0.49932499999999996,
+   "p11_w": 0.45393181818181816,
+   "duty_pct": 17.1025,
+   "vin_v": 12.960749999999999,
+   "vbus_tp2_v": 13.309999999999999
+  },
+  {
+   "target_mw": 2000,
+   "vout_v": 4.472799999999999,
+   "p_w": 2.0000750000000003,
+   "p11_w": 1.8182500000000004,
+   "duty_pct": 34.9525,
+   "vin_v": 12.965524999999996,
+   "vbus_tp2_v": 13.33
+  },
+  {
+   "target_mw": 3000,
+   "vout_v": 5.475682926829268,
+   "p_w": 2.997951219512195,
+   "p11_w": 2.725410199556541,
+   "duty_pct": 42.78048780487805,
+   "vin_v": 12.961560975609755,
+   "vbus_tp2_v": 13.32
+  }
+ ],
+ "vbus_idle_tp2": 13.33,
+ "scope_run_start_s": -7.2
+}

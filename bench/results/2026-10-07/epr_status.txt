@@ -1,0 +1,2 @@
+G474 in_epr_mode True contract {'mv': 15000, 'ma': 500, 'position': 3, 'last_transition_ms': 4} vconn {'cc1_pa7': 0, 'cc2_pb5': 1}
+sink {'attached': 'CC1', 'contract_pos': 3, 'contract_mv': 15000, 'contract_ma': 500, 'epr_mode': 1, 'hard_resets': 6}
