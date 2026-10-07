@@ -202,6 +202,16 @@ fn build_request(
     None
 }
 
+/// True for EPR_Source_Capabilities.  Those always carry the 7 SPR slots,
+/// zero-filled when unused, then the EPR PDOs (USB PD R3.2 §6.5.15.1);
+/// Source_Capabilities has at most 7 PDOs and no zero entry.  Only a full
+/// set of exactly 7 is ambiguous, and `epr_hint` (entry pending or already
+/// in EPR mode) decides it.
+fn caps_are_epr(caps: &SourceCapabilities, epr_hint: bool) -> bool {
+    let pdos = caps.pdos();
+    pdos.len() > 7 || (pdos.len() == 7 && (epr_hint || pdos.iter().any(|p| p.is_zero_padding())))
+}
+
 #[derive(Default)]
 struct Device {
     /// EnterEprMode sent, waiting for EPR capabilities or a failure.
@@ -210,16 +220,17 @@ struct Device {
     pending: Option<Contract>,
 }
 
-impl DevicePolicyManager for Device {
-    async fn inform(&mut self, caps: &SourceCapabilities) {
-        // EPR_Source_Capabilities can carry only the 7 SPR slots (no EPR
-        // PDO), so caps.is_epr_capabilities() alone does not prove EPR mode.
-        let epr = if self.epr_pending {
-            self.epr_pending = false;
-            true
-        } else {
-            with_state(|s| s.epr_mode) || caps.is_epr_capabilities()
-        };
+impl Device {
+    /// Record new capabilities and whether they put us in EPR mode.  The PE
+    /// calls inform() only after Get_Source_Cap; after attach and after EPR
+    /// entry it goes straight to request() (usbpd 72008c4), so both call
+    /// this.  Deciding from the caps, not from epr_pending alone, keeps the
+    /// SPR caps that follow a Soft_Reset during entry from being taken as
+    /// EPR ones.
+    fn note_caps(&mut self, caps: &SourceCapabilities) -> bool {
+        let hint = self.epr_pending || with_state(|s| s.epr_mode);
+        self.epr_pending = false;
+        let epr = caps_are_epr(caps, hint);
         with_state(|s| {
             s.epr_mode = epr;
             s.caps = Some(caps.clone());
@@ -228,15 +239,23 @@ impl DevicePolicyManager for Device {
         for (i, pdo) in caps.pdos().iter().enumerate() {
             emit_pdo("EVT pdo", i + 1, pdo);
         }
+        epr
+    }
+}
+
+impl DevicePolicyManager for Device {
+    async fn inform(&mut self, caps: &SourceCapabilities) {
+        self.note_caps(caps);
     }
 
     async fn request(&mut self, caps: &SourceCapabilities) -> PowerSource {
         // New capabilities (attach, source update, EPR entry): the load is
         // held off until the contract that follows.  No waiting here: the
         // Request must go out within tSenderResponse.
-        let (target_mv, target_ma, epr) = with_state(|s| {
+        let epr = self.note_caps(caps);
+        let (target_mv, target_ma) = with_state(|s| {
             s.hold = true;
-            (s.target_mv, s.target_ma, s.epr_mode)
+            (s.target_mv, s.target_ma)
         });
         let chosen = build_request(caps, target_mv, target_ma, epr).or_else(|| {
             emit!("EVT warn target_mv={} not offered, requesting 5000", target_mv);
