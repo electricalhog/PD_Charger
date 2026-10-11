@@ -1031,8 +1031,15 @@ _Static_assert(PULSE_SKIP_ABOVE_MV * 100u < SETPOINT_MIN_MV * (OVP_RELATIVE_PCT 
  * cause is the sample capacitor's charge draw through the ~5.5 kOhm divider
  * at that rate (about 10 uA), a gain error that did not show at 12.5 kHz.
  * Recalibrate if the ADC1 sampling time, ratio or trigger rate changes. */
-#define VD_MON_FULL_SCALE_MV 80600u   /* was 78400 (60000 x 1.306) */
-#define VS_MON_FULL_SCALE_MV 56800u   /* 60000 × 0.947 */
+/* 2026-10-10: recalibrated against a meter after the X-NUCLEO-SRC1M1 came
+ * off the G474, which changed the loading on PA0 and PA4 (Arduino A0, A2).
+ * At a 15 V PD contract with no load, VBUS at TP2 read 13.32 V on the meter
+ * while VD_MON averaged 15002 mV over 12 reads, and the supply read 24.56 V
+ * while VS_MON averaged 20071 mV.  Both channels now sit near 1.16 x
+ * nominal, VD_MON about 3 percent more (the sampling draw above).
+ * Recalibrate whenever the wiring on PA0 or PA4 changes. */
+#define VD_MON_FULL_SCALE_MV 71560u   /* 80600 x 13.32 / 15.002 */
+#define VS_MON_FULL_SCALE_MV 69500u   /* 56800 x 24.56 / 20.071 */
 
 /**
  * ADC_IL_FULL_SCALE_MA — Full-scale physical current for IL_MON / IS_MON.
