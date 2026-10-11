@@ -13,6 +13,7 @@ enables the gate drivers with the low-side FETs on.
 
 from __future__ import annotations
 
+import signal
 import struct
 import time
 from pathlib import Path
@@ -123,6 +124,15 @@ def run_load(cfg: dict, p_mw: list[int], seconds: float, limit_ma: int = 500, co
                 tel.append(r)
 
     total = seconds * len(p_mw)
+    stopped = False
+
+    def stop(*_):
+        # SIGTERM or Ctrl-C ends the run early; it still disarms and reports.
+        nonlocal stopped
+        stopped = True
+
+    old_term = signal.signal(signal.SIGTERM, stop)
+    t0_unix = time.time()
     with ser:
         ser.reset_input_buffer()
         try:
@@ -131,27 +141,36 @@ def run_load(cfg: dict, p_mw: list[int], seconds: float, limit_ma: int = 500, co
                     send(False, clear_fault=True)
                     time.sleep(period_s)
             t0 = time.monotonic()
+            t0_unix = time.time()
             next_t = t0
-            while (el := time.monotonic() - t0) < total:
+            while not stopped and (el := time.monotonic() - t0) < total:
                 target = p_mw[min(int(el // seconds), len(p_mw) - 1)]
                 send(True)
                 drain(True)
                 if tel and tel[-1].get("state") == "fault":
                     break
                 next_t += period_s
-                time.sleep(max(0.0, next_t - time.monotonic()))
+                try:
+                    time.sleep(max(0.0, next_t - time.monotonic()))
+                except KeyboardInterrupt:
+                    stopped = True
         finally:
             for _ in range(3):
                 send(False)
                 time.sleep(period_s)
             drain(False)
+            signal.signal(signal.SIGTERM, old_term)
 
     frames = [r for r in tel if r.get("kind") == "TEL"]
     f = out_file(cfg, "load_run", "json")
     f.write_text(json.dumps(frames))
     steps = []
+    # A run stopped early holds its last target for less than `seconds`.
+    run_s = max((r["t_s"] for r in frames if r.get("p_target")), default=0.0)
+    step_s = min(seconds, run_s - seconds * (len(p_mw) - 1)) if stopped else seconds
     for i, p in enumerate(p_mw):
-        a, b = seconds * (i + 0.5), seconds * (i + 1)
+        a = seconds * i + (step_s if i == len(p_mw) - 1 else seconds) / 2
+        b = seconds * i + (step_s if i == len(p_mw) - 1 else seconds)
         sel = [r for r in frames if a <= r["t_s"] < b and r.get("state") == "running"]
         st = {"p_mw": p, "frames": len(sel)}
         for k in TEL_FIELDS:
@@ -161,6 +180,7 @@ def run_load(cfg: dict, p_mw: list[int], seconds: float, limit_ma: int = 500, co
         steps.append(st)
     faults = [r for r in frames if r.get("fault") not in (None, "none")]
     return {"ok": not faults and all(s["frames"] for s in steps), "port": port, "frames": len(frames),
+            "t0_unix": round(t0_unix, 3), "stopped_early": stopped,
             "fault": faults[0] if faults else None, "last": frames[-1] if frames else None,
             "steps": steps, "other_lines": [r for r in tel if r.get("kind") != "TEL"][:5], "file": rel(f)}
 
