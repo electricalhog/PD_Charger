@@ -1,0 +1,13 @@
+{
+ "fs": 50000000.0,
+ "points": 600000,
+ "record_ms": 12.0,
+ "vbus_spike_events": 676,
+ "with_vconn_spike": 369,
+ "fraction": 0.5458579881656804,
+ "window_ns": 60.0,
+ "vbus_hp2mhz_rms_mv": 9.679817631441434,
+ "vconn_hp2mhz_rms_mv": 23.39985695154267,
+ "corr_hp2mhz": 0.09650948130768323,
+ "median_event_interval_us": 14.8
+}

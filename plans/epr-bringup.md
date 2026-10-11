@@ -242,6 +242,45 @@ Results, figures and raw captures: `bench/results/2026-10-07/`.
   - VBUS at TP2 held 13.3 V, with no faults.
   - The buck needs 12–15 V on VIN for its gate drive, so it cannot run at 5 or 9 V.
 
+## Bench log 2026-10-10
+
+Results, methods and tables: `bench/results/2026-10-10/`. The raw captures stay on the bench
+machine.
+
+- **VBUS sense recalibrated.** At the 15 V contract a meter read 13.32 V at TP2 and 24.56 V on
+  the supply, against 15.00 V on VD_MON and 20.07 V on VS_MON.
+  - `VD_MON_FULL_SCALE_MV` is now 71560 (was 80600) and `VS_MON_FULL_SCALE_MV` 69500 (was 56800),
+    in `regulator_config.h`.
+  - It is a gain-only correction, so redo it whenever the wiring on PA0 or PA4 changes.
+- **20 V PDO** with `-DPD_BENCH_20V=ON`, which needs `PD_BENCH_15V`. In SPR mode 20 V is reached
+  from 15 V (250 ms at 20 V/s). 5 → 20 V takes 750 ms, which only the EPR budget covers.
+- **Regulation** (scope at TP2, and the board ADC):
+  - At 9, 15 and 20 V: +0.11 to +0.38 % by the scope, −0.18 to +0.10 % by the ADC.
+  - At 5 V the scope reads 5.132 V and the ADC 4.998 V. A meter reading at 5 V is still needed.
+  - 0 → 3 W raises VBUS by 15.2 mV at 15 V and 20.2 mV at 20 V (−0.10 %).
+- **Voltage loop: stable, lightly damped.**
+  - After the load's start-up step, VBUS rings at 263 Hz (15 V) and 429 Hz (20 V), ζ ≈ 0.2.
+  - The low-frequency noise has a hump at 233–524 Hz at every contract. It grows with load, up to
+    +24 dB over the 20–60 Hz floor at 20 V, 3 W.
+  - Releasing 3 W overshoots +2.3 %, back in band in 8.3 ms (15 V) and 3.6 ms (20 V).
+- **Noise at TP2** (20 MHz bandwidth):
+  - The 200 kHz ripple is 13 mV p-p at 5 V, up to 155 mV (15 V, 3 W) and 210 mV (20 V, 3 W).
+  - Vpp is 687–916 mV, set by spikes. 55 % of them coincide with spikes on the VCONN probe, so a
+    good part is pickup; this needs a tip-and-barrel re-measurement.
+  - Lines appear at 2.1–2.6 kHz with the source alone, and at 0.40 and 1.39 kHz with the load
+    running, up to 23.8 mV rms.
+- **The load jumps at start-up.** Its output goes from about 0.1 V to 0.8–1.3 V between two
+  telemetry frames, instead of following its 5 V/s ramp. That is the −343 mV (15 V) and −214 mV
+  (20 V) step VBUS sees.
+- **Scope traps** (DS1104Z):
+  - At 100 kSa/s the 200 kHz ripple aliases to a 5 Hz beat (the clocks differ by 25 ppm). It
+    looked like a loop oscillation.
+  - HRES at 2 MSa/s is aliased above about 30 kHz, so the spectra are stitched at 10 kHz.
+  - RAW reads after `:SINGle` need an explicit `:STOP`.
+  - `:TFORce` is ignored until the pre-trigger memory fills.
+- **`bu load run`** now stops on SIGTERM or Ctrl-C, disarms the load, and reports
+  `stopped_early`.
+
 ## Bench plan
 
 Stop and report on any surprise. A FAULT is information; read `bu regulator status` before any
@@ -323,7 +362,10 @@ an 830 ms minimum tPSTransition.
    above V_in is boost, so 28 V EPR waits for that to be closed.
 4. **Downward transitions.** A buck in DCM can't pull V_out down. With a light load, a step
    down (or EPR exit) may miss the ±5 % window and end in a Hard Reset, which is safe but noisy.
-5. **CC pin exposure.** The receptacle CC pins sit next to VBUS. A tilted plug can short CC to
+5. **Voltage-loop damping.** On 2026-10-10 a load step rang at 263–429 Hz with ζ ≈ 0.2, and the
+   noise peaking near 400 Hz grew with load. Measure the loop gain and phase margin, and retune,
+   before raising `PD_SRC_MAX_CURRENT_MA`.
+6. **CC pin exposure.** The receptacle CC pins sit next to VBUS. A tilted plug can short CC to
    VBUS. The G474 UCPD pins are FT I/O, rated for about 5 V, not 20–48 V. ST's answer is TCPP-class
    protection on CC. Before EPR voltages, put CC/VBUS short protection between the receptacle
    and PB4/PB6.

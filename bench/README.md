@@ -53,8 +53,12 @@ The diagram above was the plan. The bench on the laptop differs:
 - **VIN never reads 0 V.** The QT Py's 3V3 back-feeds VIN to about 2.65 V through the buck's
   3V3 regulator (IC7). With the G474's output switch closed, this shows on TP2.
 - **The buck needs 12–15 V on VIN.** Its 12 V gate rail comes from VIN (IC8, about 11.9 V), so
-  it cannot switch at a 5 V or 9 V contract. Load runs use the 15 V contract (G474 built with
-  `-DPD_BENCH_15V=ON`; request 9 V first, or enter EPR mode).
+  it cannot switch at a 5 V or 9 V contract. Load runs use the 15 V or 20 V contract (G474 built
+  with `-DPD_BENCH_15V=ON`, plus `-DPD_BENCH_20V=ON` for 20 V). In SPR mode step up through 9 V
+  and 15 V, or enter EPR mode.
+- **The VBUS sense depends on the wiring.** Taking the SRC1M1 shield off the G474 changed the
+  loading on PA0 and PA4 (VD_MON, VS_MON), and TP2 read 11 % below the ADC. It was recalibrated
+  against a meter on 2026-10-10 (`regulator_config.h`). Redo that whenever this wiring changes.
 - **TCPP02 ack register.** It echoes the control bits (Normal = 0x10), not the bit-reversed
   codes in `tcpp0203.h`. The sink's check is fixed; expect `EVT tcpp02 ok ack=0x18`.
 - **A wedged I2C bus froze the sink, PD included.** embassy-stm32's I2C busy-waits for a free
