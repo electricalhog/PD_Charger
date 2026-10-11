@@ -8,7 +8,8 @@
  * what the port can do.  The defaults are deliberately conservative:
  *
  *   - 5 V and 9 V fixed PDOs at PD_SRC_MAX_CURRENT_MA (500 mA); 15 V too
- *     with CMake -DPD_BENCH_15V=ON (see the stepped-transition checks).
+ *     with CMake -DPD_BENCH_15V=ON, and 20 V with -DPD_BENCH_20V=ON (see the
+ *     stepped-transition checks).
  *   - EPR Mode Capable advertised (only when the linked USB-PD core library
  *     implements EPR, i.e. USBPDCORE_EPR is defined), but no EPR PDO above
  *     20 V: a sink can enter EPR mode and exchange EPR_Source_Capabilities,
@@ -51,7 +52,12 @@
 #else
 #define PD_SRC_PDO_15V_ENABLE       0u
 #endif
+#if defined(PD_BENCH_20V) && (PD_BENCH_20V)
+/* CMake -DPD_BENCH_20V=ON (needs PD_BENCH_15V): reached from 15 V. */
+#define PD_SRC_PDO_20V_ENABLE       1u
+#else
 #define PD_SRC_PDO_20V_ENABLE       0u
+#endif
 
 /* =========================================================================
  * SECTION 2: EPR
@@ -168,13 +174,23 @@ _Static_assert(PD_EPR_28V_CURRENT_MA >= 100u && PD_EPR_28V_CURRENT_MA <= 5000u,
 #if defined(PD_BENCH_15V) && (PD_BENCH_15V)
 /* Bench only: 5 -> 15 V takes 500 ms at 20 V/s, over the SPR budget.  15 V
  * is reached from 9 V in SPR mode, or from any contract in EPR mode.  A
- * direct SPR 5 -> 15 V request times out into a Hard Reset (VBUS off). */
-_Static_assert(PD_SRC_PDO_9V_ENABLE && !PD_SRC_PDO_20V_ENABLE,
-               "PD_BENCH_15V needs the 9 V step and no 20 V PDO");
+ * direct SPR 5 -> 15 V request times out into a Hard Reset (VBUS off).
+ * 20 V (PD_BENCH_20V) is reached from 15 V the same way: 5 -> 20 V takes
+ * 750 ms, which only the EPR budget covers. */
+_Static_assert(PD_SRC_PDO_9V_ENABLE,
+               "PD_BENCH_15V needs the 9 V step");
 _Static_assert((15000u - 9000u) / PD_SLEW_MV_PER_MS <= PD_SPR_TRANSITION_BUDGET_MS,
                "PD_BENCH_15V: 9 -> 15 V must fit the SPR transition budget");
 _Static_assert(PD_EPR_ENABLE && PD_RAMP_FROM_5V_MS(15000u) <= PD_EPR_TRANSITION_BUDGET_MS,
                "PD_BENCH_15V: 5 -> 15 V must fit the EPR transition budget");
+_Static_assert(!PD_SRC_PDO_20V_ENABLE ||
+               (20000u - 15000u) / PD_SLEW_MV_PER_MS <= PD_SPR_TRANSITION_BUDGET_MS,
+               "PD_BENCH_20V: 15 -> 20 V must fit the SPR transition budget");
+_Static_assert(!PD_SRC_PDO_20V_ENABLE ||
+               PD_RAMP_FROM_5V_MS(20000u) <= PD_EPR_TRANSITION_BUDGET_MS,
+               "PD_BENCH_20V: 5 -> 20 V must fit the EPR transition budget");
+#elif defined(PD_BENCH_20V) && (PD_BENCH_20V)
+#error "PD_BENCH_20V needs PD_BENCH_15V"
 #else
 _Static_assert(PD_RAMP_FROM_5V_MS(PD_SPR_MAX_MV) <= PD_SPR_TRANSITION_BUDGET_MS,
                "highest SPR PDO cannot be reached from 5 V within tPSTransition at "

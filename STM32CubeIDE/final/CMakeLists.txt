@@ -72,6 +72,8 @@ option(PD_BENCH_FORCE_VCONN "VCONN source at every attach (needs PD_VCONN)" OFF)
 # misses the SPR transition budget at the current up-slew, so it is reached
 # from 9 V or in EPR mode (Core/Inc/pd_bench_config.h).
 option(PD_BENCH_15V "Offer the 15 V PDO, reached via 9 V or in EPR mode" OFF)
+# Bench: offer 20 V as well, reached from 15 V (or in EPR mode).
+option(PD_BENCH_20V "Offer the 20 V PDO, reached via 15 V (needs PD_BENCH_15V)" OFF)
 
 if(PD_VBUS_PATH_CHARGER)
     target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE PD_VBUS_PATH_CHARGER=1)
@@ -107,6 +109,12 @@ if(PD_BENCH_15V)
         message(FATAL_ERROR "PD_BENCH_15V needs PD_VBUS_PATH_CHARGER")
     endif()
     target_compile_definitions(stm32cubemx INTERFACE PD_BENCH_15V=1)
+endif()
+if(PD_BENCH_20V)
+    if(NOT PD_BENCH_15V)
+        message(FATAL_ERROR "PD_BENCH_20V needs PD_BENCH_15V")
+    endif()
+    target_compile_definitions(stm32cubemx INTERFACE PD_BENCH_20V=1)
 endif()
 
 # Add include paths
