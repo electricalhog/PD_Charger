@@ -44,6 +44,15 @@ The diagram above was the plan. The bench on the laptop differs:
 
 **Things found on the hardware:**
 
+- **Output switch gate drive (rework 2026-09-28, R27 changed 2026-10-12).** Q5/Q6 are
+  SiR5607DP P-FETs (-60 V, Vgs +-20 V), back to back with a common source. The trace from
+  the Q9 pull-down to their gates is cut and replaced by R27 (10 kohm, 0603; 5.1 kohm until
+  2026-10-12), and a 13 V zener (1/8 W) sits across the 51 kohm gate pull-up R13.
+  - Switch on: Vgs = -0.84 x V_out up to about 15.5 V (-4.2 V at 5 V), then clamped at -13 V.
+  - R27 dissipates 23 mW at 28 V, 53 mW at 36 V and 123 mW at 48 V, which is about a
+    quarter over an 0603's 0.1 W: fine for test runs, use a 1206 for sustained 48 V. The
+    zener takes 42 mW at 48 V.
+  - Turn-off discharges the gates through 51 kohm only: about 0.5 ms per time constant.
 - **Buck gate drivers enable when not driven.** DISABLE is pulled low inside the TI drivers,
   and the RP2040 resets with every pad pulled down. Whenever the QT Py is not driving its pins
   and VIN is high enough for the 12 V gate rail, all three low-side FETs are on and +OUT is

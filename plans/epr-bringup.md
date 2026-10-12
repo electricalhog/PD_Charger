@@ -281,6 +281,73 @@ machine.
 - **`bu load run`** now stops on SIGTERM or Ctrl-C, disarms the load, and reports
   `stopped_early`.
 
+## EPR plan (decided 2026-10-11)
+
+Goal: the most capable DC-DC PD source we can build. The input is 2-8S LiPo (6.0-33.6 V); the
+bench has a fixed 24 V supply only.
+
+**Contracts.**
+- Fixed EPR PDOs at 28, 36 and 48 V. No AVS for now.
+- They are enabled in that order, each behind its own compile-time gate.
+- The power board was designed with parts rated at least 60 V; the part numbers are not
+  verified.
+- 28 V must negotiate directly from 5 V, with no intermediate steps.
+
+**Slew.**
+- Up: 4 mV/cycle (80 V/s). 5 -> 28 / 36 / 48 V takes 288 / 388 / 538 ms, inside the 750 ms
+  EPR budget.
+- Down: a separate constant, also 80 V/s.
+- OVP is referenced to the higher of the old target and VD_MON while a downward transition
+  runs, so a slow decay does not trip it.
+
+**Downward transitions: timed reverse pulses.** The INA281 sense is unidirectional, so the
+reverse current is set by timing, not measured.
+- In buck, the low side is held on for t_rev, so I = -V_out * t_rev / L. A per-pulse cap
+  (about -2 A) and an energy budget per ms bound it.
+- Pulses run only while VBUS sits above the slewed setpoint, and only while VS_MON stays below
+  (V_in at the start of the transition) + 4 V. Otherwise VBUS decays passively.
+- Energy check: 48 -> 5 V on < 300 uF of VBUS capacitance is about 0.34 J. Into the supply's
+  4000 uF that is about +3 V, so the bench needs no input bleed.
+- Full bidirectional sync-rect CCM is deferred. Peak-current control is already out because of
+  the current-sense amplifier's bandwidth.
+- OUTPUT_DIS (a few hundred ohms through a SOT-23-6 FET) is only an emergency clamp for severe
+  overshoot: few-ms pulses with a duty limit, never a normal down-ramp.
+
+**Task 1: boost stability.** At 24 V in, 5 -> 28 V directly at 80 V/s, at 0, 0.5, 2 and 3 W:
+1. no OVP or backstop trip;
+2. overshoot at most +5 % (29.4 V), at the end of the ramp and at the buck -> boost handover;
+3. inside +-5 % within 650 ms of the request;
+4. zeta >= 0.4 on a 0 -> 3 W step, measured with the 2026-10-10 method. This includes retuning
+   the loop, which rang at zeta ~0.2 at SPR;
+5. ripple and noise reported in the 2026-10-10 tables.
+
+Scope: CH2 and CH3 on the inductor switch nodes, CH4 on TP2.
+
+**Protocol: PD 3.2 conformance as an EPR source**, verified on the bench:
+- Get_Revision answers 3.2. `usbpd_dpm_user.h` overrides the core's 3.2 with 3.1 and must be
+  fixed.
+- Get_Source_Info returns the right PDP.
+- The EPR flow at 28, 36 and 48 V: EPR_Source_Capabilities with the EPR PDOs at position 8 and
+  up, EPR_Request, EPR_KeepAlive, and EPR exit back to SPR (using the down-transition above).
+- Negative cases:
+  - an EPR request without EPR mode -> Hard Reset;
+  - a missed KeepAlive -> exit;
+  - a cable without a 50 V e-marker -> no EPR PDOs.
+  The sink firmware gets test hooks for these.
+- CC1 is checked with the cable flipped (2026-10-11).
+
+**Output switch above 28 V.** The Q5/Q6 gate drive clamps Vgs at -13 V (13 V zener across the
+51 kohm pull-up, 10 kohm R27 in the pull-down since 2026-10-12; bench/README.md). R27 is an 0603
+that dissipates 123 mW at 48 V: fine for test runs, upsize it for sustained 48 V.
+
+**Load above 32 V (risk accepted: the load board is already damaged and spares exist).**
+- The buck load stays on VBUS at 36 and 48 V, behind an explicit bench flag in the sink
+  firmware.
+- IC8 (L6983, 38 V) and the QT Py VIN tap (9.78:1, about 32 V for 3.3 V) are over their limits
+  there. A 10 kohm series resistor on the tap is recommended.
+- Before the first 36 V contract with the load attached, check that the G474's overcurrent and
+  backstop limits are armed, in case IC8 fails short and +OUT shorts VBUS.
+
 ## Bench plan
 
 Stop and report on any surprise. A FAULT is information; read `bu regulator status` before any
