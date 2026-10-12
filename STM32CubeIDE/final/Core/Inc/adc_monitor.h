@@ -10,8 +10,8 @@
  *   - VS_MON (PA4 / ADC2_IN17) — V_in [mV]
  *
  * ADC1 channels are read via DMA into a 4-element circular buffer.
- * ADC2 (VS_MON) is triggered by the PID ISR as a single software-triggered
- * conversion.
+ * ADC2 (VS_MON) is triggered by the PID ISR as one software-triggered,
+ * 16x oversampled conversion (adc_monitor_init), read the next PID cycle.
  *
  * All scaling constants are derived from the hardware parameters in
  * regulator_config.h (§3.3, §3.4, §14.2).
@@ -22,6 +22,7 @@
 #ifndef ADC_MONITOR_H
 #define ADC_MONITOR_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include "regulator_config.h"
 #include "stm32g4xx.h"   /* ADC1 registers for adc_monitor_awd_window */
@@ -78,7 +79,7 @@ extern "C" {
  * AdcMeasurements — latest scaled measurements from all five channels.
  *
  * Updated atomically from the DMA complete callback (ADC1) and from
- * adc_monitor_trigger_vin_and_wait() (ADC2).
+ * adc_monitor_poll_vin_result() / adc_monitor_read_vin_result() (ADC2).
  *
  * All values are in millivolts or milliamps (as labelled).  A value of 0
  * indicates the channel has not yet been sampled (e.g., at startup).
@@ -100,7 +101,7 @@ typedef struct
  * adc_measurements — latest scaled measurement results.
  *
  * Written from HAL_ADC_ConvCpltCallback (ADC1, DMA completion, priority 2)
- * and from the TIM7 PID ISR (ADC2 trigger+read, priority 2).
+ * and from the TIM7 PID ISR (ADC2 poll and trigger, priority 2).
  * Read from any context.
  *
  * All fields are uint32_t; 32-bit aligned writes on Cortex-M4 are atomic.
@@ -178,30 +179,30 @@ void adc_monitor_init(void);
 void adc_monitor_start_adc1_dma(void);
 
 /**
- * adc_monitor_trigger_vin — Trigger a single ADC2 conversion for V_in.
+ * adc_monitor_trigger_vin — Start one ADC2 conversion for V_in.
  *
- * Non-blocking: starts the software-triggered ADC2 conversion.  The result
- * is read by adc_monitor_read_vin_result() once the conversion completes.
- *
- * Called from the TIM7 PID ISR at the start of each PID cycle.
- *
- * TODO(hardware): For better accuracy, consider HRTIM-triggered injected
- *                 conversion synchronised to the switching period midpoint
- *                 (§8.5 recommendation).
+ * Non-blocking.  The conversion is 16 samples averaged in hardware, 13.9 us
+ * spread over 2.8 switching periods (adc_monitor_init), so the TIM7 PID ISR
+ * reads the result the next cycle (adc_monitor_poll_vin_result) and then
+ * starts the next one.
  */
 void adc_monitor_trigger_vin(void);
 
 /**
- * adc_monitor_read_vin_result — Read the ADC2 result and update v_in_mv.
+ * adc_monitor_poll_vin_result — Take the ADC2 result if it is ready.
  *
- * Reads the ADC2 data register directly (no HAL overhead) and scales the
- * raw count to millivolts.  Must be called after adc_monitor_trigger_vin()
- * and after the conversion complete flag is set.
+ * Non-blocking.  When ADC2's end of conversion is set, scales the result
+ * into adc_measurements.v_in_mv and returns true; otherwise leaves it
+ * unchanged and returns false.
+ */
+bool adc_monitor_poll_vin_result(void);
+
+/**
+ * adc_monitor_read_vin_result — Wait for the ADC2 result and update v_in_mv.
  *
- * In practice, at 170 MHz SYSCLK with ADC clocked at PCLK/4 = 42.5 MHz and
- * 2.5-cycle sampling time, the total conversion time ≈ 330 ns.  The PID ISR
- * may call trigger at the start of its execution and read at the end (~3 µs
- * later) — conversion will be complete by then.
+ * Blocking (a bounded spin, the conversion takes 13.9 us), for task context:
+ * regulator_start() after adc_monitor_trigger_vin().  On a timeout v_in_mv
+ * keeps its last value.
  */
 void adc_monitor_read_vin_result(void);
 

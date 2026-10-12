@@ -109,13 +109,19 @@ typedef enum
  * =========================================================================*/
 
 /**
- * pid_kp, pid_ki, pid_kd — PID tuning coefficients.
- * Defaults: Kp=1.0, Ki=100.0, Kd=0.0 (§8.7).
- * Hot-swappable: yes (new values take effect on next PID cycle).
+ * pid_kp, pid_ki, pid_kd — Voltage-loop gains in use (telemetry since
+ * 2026-10-12): kp [mA/mV], ki [mA/(mV s)], recomputed every PID cycle from
+ * the loop crossover and the output capacitance.  Tune these instead:
+ *   regulator_loop_fc_hz  crossover [Hz]      (LOOP_CROSSOVER_HZ)
+ *   regulator_c_int_uf    C before the output switch [uF] (LOOP_C_INT_UF)
+ *   regulator_c_ext_uf    C after it, counted once it is on (LOOP_C_EXT_UF)
  */
 extern float pid_kp;
 extern float pid_ki;
 extern float pid_kd;
+extern volatile float regulator_loop_fc_hz;
+extern volatile float regulator_c_int_uf;
+extern volatile float regulator_c_ext_uf;
 
 /**
  * max_consecutive_backstops — Consecutive backstop events before fault.
@@ -154,11 +160,18 @@ extern RegulatorFaultSource regulator_last_fault_source;
 extern volatile uint32_t regulator_fault_tick_ms;
 
 /**
- * regulator_pid_output_dac_counts — latest PID output in DAC counts.
- * Telemetry: updated by TIM7 ISR.
+ * regulator_pid_output_dac_counts — peak-current comparator threshold in DAC
+ * counts (a protection level since 2026-10-12; the on-time ends pulses).
+ * regulator_on_time_ns — charge-pulse on-time this PID period.
+ * regulator_i_cmd_ma / regulator_i_pk_ma / regulator_i_max_ma — the loop's
+ * average output-current command, the peak current it asks of the mode,
+ * and the most the mode can deliver now.  Telemetry, updated by the TIM7 ISR.
  */
 extern volatile uint16_t regulator_pid_output_dac_counts;
 extern volatile uint16_t regulator_on_time_ns;
+extern volatile float regulator_i_cmd_ma;
+extern volatile float regulator_i_pk_ma;
+extern volatile float regulator_i_max_ma;
 
 /**
  * regulator_pid_error_mv — latest PID error (setpoint − V_out) in mV.
@@ -311,7 +324,8 @@ extern volatile bool regulator_bench_pwm_active;
 
 /**
  * RegulatorSetResult — outcome of the SET_VOLTAGE and START mailbox commands.
- * While running, a new target is followed at SETPOINT_SLEW_MV_PER_CYCLE.
+ * While running, a new target is followed at SETPOINT_SLEW_UP_MV_PER_CYCLE
+ * or SETPOINT_SLEW_DOWN_MV_PER_CYCLE.
  */
 typedef enum
 {

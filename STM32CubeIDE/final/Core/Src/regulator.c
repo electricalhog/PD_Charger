@@ -68,6 +68,7 @@
 #include "main.h"           /* hhrtim1, hdac3, htim6, htim7, hcomp1 handles */
 #include "stm32g4xx_hal.h"
 #include <string.h>         /* memset */
+#include <math.h>           /* sqrtf: the current-command modulator (PID ISR step 6) */
 
 /* PC8 is OUTPUT_EN on the power board and ENABLE on the X-NUCLEO-SRC1M1
  * TCPP0203.  While the shield is stacked the PD stack owns the pin and holds
@@ -172,17 +173,14 @@ extern ADC_HandleTypeDef hadc1;
  *  frozen when a software fault latches (the DMA ring keeps running).     */
 volatile uint16_t regulator_fault_trace[ADC1_DMA_SCANS];
 
-/* Boost precharge (2026-09-28, runs 32 and 33).  Starting boost directly
- * turns Q1, the input leg's static switch, fully on into an empty output:
- * V_in steps across L1 and C_out, the tank rings toward 2 * V_in, and Q3's
- * reverse conduction (diode emulation, SYNC_RECT_ENABLED 0) holds the
- * peak.  Run 33's period trace read 0, 1.0, 8.6 and then 38 V within
- * 25 us of the start (20260928-085222), over the 30.8 V relative OVP of a
- * 28 V target.  So a boost start runs the buck leg first, ramping to
- * BOOST_PRECHARGE_BELOW_VIN_MV under V_in, and the PID ISR (step 4b) hands
- * over to boost once the output is there; the step Q1 then applies is
- * that margin, and the ring on it at most twice that.                    */
-static volatile bool boost_precharge = false;
+/* Boost starts (2026-09-28, runs 32 and 33).  Starting boost directly turns
+ * Q1, the input leg's static switch, fully on into an empty output: V_in
+ * steps across L1 and C_out, the tank rings toward 2 * V_in, and Q3's
+ * reverse conduction holds the peak (run 33: 0, 1.0, 8.6, then 38 V within
+ * 25 us).  Since 2026-10-12 the regulator never enters boost unless V_out
+ * is already above V_in + BB_ABOVE_VIN_MV (determine_mode_from_voltages):
+ * buck-boost carries the output across V_in, which replaced the buck
+ * precharge that used to stand in for it.                                 */
 
 /** PID cycles in a row with V_in outside the mode's range (see the V_in
  *  range check in software_safety_checks_pass). */
@@ -284,82 +282,28 @@ static volatile RegulatorMode  regulator_mode  = REGULATOR_MODE_BUCK;
  * DAC count per PID period.  kp 0.1 is a loop gain per step of 0.25; ki
  * 300 (0.015 counts per mV per step) is a 1.3 ms integrator time constant
  * against it.                                                             */
-float   pid_kp = 0.1f;
-float   pid_ki = 300.0f;
+/* Since 2026-10-12 the loop commands output current (PID ISR step 5) and
+ * its gains follow from the capacitance on the output, every cycle (step 2,
+ * regulator_config.h LOOP_CROSSOVER_HZ): pid_kp [mA/mV] and pid_ki
+ * [mA/(mV s)] report the values in use, and writing them has no effect.
+ * Tune regulator_loop_fc_hz and regulator_c_int_uf / regulator_c_ext_uf.
+ * The notes above are the history of the peak-current loop it replaced.   */
+float   pid_kp = 0.0f;
+float   pid_ki = 0.0f;
 float   pid_kd = 0.0f;
+volatile float regulator_loop_fc_hz = LOOP_CROSSOVER_HZ;
+volatile float regulator_c_int_uf   = LOOP_C_INT_UF;
+volatile float regulator_c_ext_uf   = LOOP_C_EXT_UF;
 
-/** Peak-current floor applied on the last PID cycle (DAC counts); telemetry. */
-volatile uint16_t regulator_peak_floor_counts = 0u;
+/** Loop telemetry (steps 5 and 6): the average output-current command, the
+ *  peak current it asks of this mode, and the most this mode can deliver at
+ *  the present operating point (the command's ceiling).                    */
+volatile float regulator_i_cmd_ma = 0.0f;
+volatile float regulator_i_pk_ma  = 0.0f;
+volatile float regulator_i_max_ma = 0.0f;
 
-/**
- * peak_current_floor_counts — Lowest peak-current command that keeps the
- * average inductor current above −PEAK_FLOOR_NEG_MARGIN_MA.
- *
- * In peak-current mode the average inductor current is I_peak − ΔI/2, with
- * ΔI the ripple set by the voltages, the period and the inductor:
- *   buck : ΔI = (V_in − V_out) · (V_out / V_in) · T / L
- *   boost: ΔI = V_in · (1 − V_in / V_out) · T / L
- * mV × ns / nH gives mA directly.  Returns DAC counts clamped to
- * [PID_OUTPUT_MIN, PID_OUTPUT_MAX / 2].
- */
-static uint32_t peak_current_floor_counts(uint32_t v_in_mv, uint32_t v_out_mv,
-                                          RegulatorMode mode)
-{
-    const uint64_t period_ns = 1000000000ull / (uint64_t)HRTIM_SWITCHING_FREQ_HZ;
-    uint64_t ripple_ma = 0u;
-
-    if (mode == REGULATOR_MODE_BUCK)
-    {
-        if (v_in_mv > v_out_mv && v_in_mv > 0u)
-        {
-            ripple_ma = ((uint64_t)(v_in_mv - v_out_mv) * v_out_mv / v_in_mv)
-                        * period_ns / (uint64_t)INDUCTOR_VALUE_NH;
-        }
-    }
-    else
-    {
-        if (v_out_mv > v_in_mv && v_out_mv > 0u)
-        {
-            ripple_ma = ((uint64_t)v_in_mv * (v_out_mv - v_in_mv) / v_out_mv)
-                        * period_ns / (uint64_t)INDUCTOR_VALUE_NH;
-        }
-    }
-
-    int64_t floor_ma     = (int64_t)(ripple_ma / 2u) - (int64_t)PEAK_FLOOR_NEG_MARGIN_MA;
-    int64_t floor_counts = floor_ma * (int64_t)DAC_COUNTS_PER_AMP / 1000;
-    if (floor_counts < (int64_t)PID_OUTPUT_MIN)     { floor_counts = (int64_t)PID_OUTPUT_MIN; }
-    if (floor_counts > (int64_t)PID_OUTPUT_MAX / 2) { floor_counts = (int64_t)PID_OUTPUT_MAX / 2; }
-    return (uint32_t)floor_counts;
-}
-
-/** Trip-delay compensation applied on the last PID cycle (DAC counts); telemetry. */
-volatile uint16_t regulator_trip_delay_comp_counts = 0u;
-/** Charge-pulse on-time commanded this PID period, ns (buck, DCM). */
+/** Charge-pulse on-time commanded this PID period, ns (DCM, every mode). */
 volatile uint16_t regulator_on_time_ns = 0u;
-
-/**
- * trip_delay_comp_counts — How far the real peak overshoots the DAC threshold
- * because of PEAK_TRIP_DELAY_NS, in DAC counts (regulator_config.h).
- * di/dt during the on-time is (V_in − V_out)/L in buck and V_in/L in boost;
- * mV / nH is mA per ns.
- */
-static uint32_t trip_delay_comp_counts(uint32_t v_in_mv, uint32_t v_out_mv,
-                                       RegulatorMode mode)
-{
-    /* 32-bit: dv <= 65 V * 200 ns fits easily, and a 64-bit divide
-     * (__udivmoddi4) in the PID ISR was 6 % of the CPU (bu profile).     */
-    uint32_t dv_mv;
-    if (mode == REGULATOR_MODE_BUCK)
-    {
-        dv_mv = (v_in_mv > v_out_mv) ? (v_in_mv - v_out_mv) : 0u;
-    }
-    else
-    {
-        dv_mv = v_in_mv;
-    }
-    uint32_t overshoot_ma = dv_mv * PEAK_TRIP_DELAY_NS / INDUCTOR_VALUE_NH;
-    return overshoot_ma * DAC_COUNTS_PER_AMP / 1000u;
-}
 
 uint8_t max_consecutive_backstops          = (uint8_t)MAX_CONSECUTIVE_BACKSTOPS_DEFAULT;
 uint8_t pid_integrator_reset_threshold_pct = 20u;
@@ -407,16 +351,39 @@ _Static_assert(DCM_PULSE_START_TICKS + HRTIM_NS_TO_TICKS(DCM_ON_TIME_CEIL_NS) +
                "DCM_ON_TIME_CEIL_NS does not fit in the period");
 
 /** The target the loop regulates to: target_voltage_mv followed at
- *  SETPOINT_SLEW_MV_PER_CYCLE (PID ISR step 4a).  Telemetry for bu.      */
+ *  SETPOINT_SLEW_UP_MV_PER_CYCLE / SETPOINT_SLEW_DOWN_MV_PER_CYCLE (PID ISR
+ *  step 4a).  Telemetry for bu.                                           */
 volatile uint32_t regulator_commanded_mv = 0u;
+
+/** What the relative OVP is measured against (PID ISR step 4a): the
+ *  commanded setpoint, except during a downward transition, when it holds
+ *  the level the transition started from until the setpoint is there and
+ *  V_out is within OVP_HOLD_RELEASE_PCT of it.  Telemetry for bu.         */
+volatile uint32_t regulator_ovp_ref_mv = 0u;
 
 /** V_in low-passed for mode selection (VIN_FILTER_SHIFT).                */
 volatile uint32_t regulator_vin_filt_mv = 0u;
 
-/** Peak-current clamp for the PID output, DAC counts (DCM_MAX_PEAK_MA).  */
-#define PEAK_CMD_MAX_COUNTS ((DCM_MAX_PEAK_MA * DAC_COUNTS_PER_AMP) / 1000u)
-#define PEAK_CMD_MAX_COUNTS_BB ((DCM_MAX_PEAK_MA_BB * DAC_COUNTS_PER_AMP) / 1000u)
-_Static_assert(PEAK_CMD_MAX_COUNTS_BB <= PID_OUTPUT_MAX, "DCM_MAX_PEAK_MA_BB over PID_OUTPUT_MAX");
+/** The last three ADC2 V_in results (PID ISR step 1): the modulator, the
+ *  checks and the filter above use their median, so one bad conversion
+ *  cannot set a PID cycle's on-time.                                       */
+static uint32_t vin_hist_mv[3];
+static uint8_t  vin_hist_next = 0u;
+
+static inline uint32_t median3(uint32_t a, uint32_t b, uint32_t c)
+{
+    if (a > b) { const uint32_t t = a; a = b; b = t; }
+    if (b > c) { b = c; }
+    return (a > b) ? a : b;
+}
+
+/** Peak-current comparator thresholds, DAC counts: protection only
+ *  (PEAK_PROTECT_PCT above the mode's commanded peak limit; step 6).       */
+#define PEAK_PROTECT_COUNTS    ((DCM_MAX_PEAK_MA * PEAK_PROTECT_PCT / 100u) * DAC_COUNTS_PER_AMP / 1000u)
+#define PEAK_PROTECT_COUNTS_BB ((DCM_MAX_PEAK_MA_BB * PEAK_PROTECT_PCT / 100u) * DAC_COUNTS_PER_AMP / 1000u)
+_Static_assert(PEAK_PROTECT_COUNTS_BB <= PID_OUTPUT_MAX, "PEAK_PROTECT_COUNTS_BB over the DAC range");
+_Static_assert(BUCK_BOOST_ENABLED, "mode selection relies on buck-boost to cross V_in (2026-10-12)");
+_Static_assert(!SYNC_RECT_ENABLED, "the current-command modulator (PID ISR step 6) is DCM-only");
 
 /** ISR cost in CPU cycles (DWT CYCCNT, 170 MHz), bring-up instrumentation
  *  (2026-09-28 evening: uwTick ran at 0.02 of real time in boost, the PID
@@ -477,8 +444,9 @@ static void hrtim_configure_adc_trigger(void);
  *  buck does.                                                             */
 static inline uint32_t skip_outputs(RegulatorMode mode)
 {
-    return (mode == REGULATOR_MODE_BOOST) ? (HRTIM_OUTPUT_TB2 | HRTIM_OUTPUT_TA2)
-                                          : (HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TB2);
+    if (mode == REGULATOR_MODE_BOOST)      { return HRTIM_OUTPUT_TB2 | HRTIM_OUTPUT_TA2; }
+    if (mode == REGULATOR_MODE_BUCK_BOOST) { return HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TB2; }
+    return HRTIM_OUTPUT_TA1;   /* buck: phase 2 is off (mode_switching_outputs) */
 }
 
 /** Pulsing, with the watchdog window [0, on] (outputs already enabled). */
@@ -490,14 +458,17 @@ static void skip_state_reset_pulsing(void)
 }
 static uint32_t mode_switching_outputs(RegulatorMode mode);
 static void hrtim_disable_all_outputs(void);
+
 static void change_mode_while_running(RegulatorMode new_mode, uint32_t v_out_mv,
                                       uint32_t voltage_mv);
 static void power_path_enable(void);
 static void power_path_disable(void);
-static RegulatorMode determine_mode_from_voltages(uint32_t v_in_mv, uint32_t v_setpoint_mv);
+static RegulatorMode determine_mode_from_voltages(uint32_t v_in_mv, uint32_t v_setpoint_mv,
+                                                   uint32_t v_out_mv);
 static void enter_fault(RegulatorFaultSource source);
 static bool software_safety_checks_pass(uint32_t v_out_mv, uint32_t v_in_mv,
-                                         uint32_t v_setpoint_mv, RegulatorMode mode);
+                                         uint32_t v_setpoint_mv, uint32_t ovp_ref_mv,
+                                         RegulatorMode mode);
 
 /* =========================================================================
  * regulator_init
@@ -552,15 +523,13 @@ void regulator_init(void)
     HAL_NVIC_EnableIRQ(TIM7_DAC_IRQn);
 
     /* --- Step 8: Initialise PID state and default coefficients (§8.7) --- */
-    pid_config.kp          = pid_kp;
-    pid_config.ki          = pid_ki;
-    pid_config.kd          = pid_kd;
+    /* Gains and output limits are recomputed every PID cycle (steps 2, 5). */
+    pid_config.kp          = 0.0f;
+    pid_config.ki          = 0.0f;
+    pid_config.kd          = 0.0f;
     pid_config.dt_seconds  = 1.0f / (float)PID_EXECUTION_RATE_HZ;  /* 50 µs */
-    pid_config.output_min  = (float)PID_OUTPUT_MIN;
-    pid_config.output_max  = (float)PEAK_CMD_MAX_COUNTS;
-
-    /* TODO(debug): Kp/Ki/Kd defaults are in regulator_config.h.  Tune via
-     * debugger watch on pid_kp/pid_ki/pid_kd (live-writeable) (§8.7). */
+    pid_config.output_min  = 0.0f;
+    pid_config.output_max  = 0.0f;
     pid_init(&pid_state, &pid_config);
 
     /* --- Step 9: Enable HRTIM period (Timer A REP) interrupt; route the
@@ -657,11 +626,16 @@ void regulator_start(void)
     /* --- Determine operating mode based on V_in vs setpoint (§5.1) --- */
     uint32_t v_in_mv = (uint32_t)adc_measurements.v_in_mv;
     regulator_vin_filt_mv  = v_in_mv;
+    vin_hist_mv[0] = vin_hist_mv[1] = vin_hist_mv[2] = v_in_mv;
+    adc_monitor_trigger_vin();   /* the first PID cycle reads this one */
     regulator_commanded_mv = voltage_mv;
-    RegulatorMode wanted_mode = determine_mode_from_voltages(v_in_mv, voltage_mv);
-    boost_precharge = (wanted_mode == REGULATOR_MODE_BOOST);
+    regulator_ovp_ref_mv   = voltage_mv;
+    /* Start in buck below the buck-boost band, otherwise in buck-boost, and
+     * never in boost (see "Boost starts"): step 3b moves on to boost once
+     * V_out is above V_in + BB_ABOVE_VIN_MV.                              */
     vin_range_cycles = 0u;
-    regulator_mode  = boost_precharge ? REGULATOR_MODE_BUCK : wanted_mode;
+    regulator_mode = (voltage_mv + BB_HYSTERESIS_MV + BB_BELOW_VIN_MV < v_in_mv)
+                         ? REGULATOR_MODE_BUCK : REGULATOR_MODE_BUCK_BOOST;
 
     /* --- Reset PID integrator (§8.8) --- */
     pid_reset_integrator(&pid_state);
@@ -1200,8 +1174,19 @@ void regulator_pid_tim7_isr(void)
         ADC1->IER |= ADC_IER_AWD1IE;   /* see regulator_start */
     }
 
-    /* --- 1. Trigger and read ADC conversions --- */
+    /* --- 1. ADC conversions ---
+     * V_in: the result of the conversion the previous cycle started (16
+     * oversampled, 13.9 us, adc_monitor_init), then the next one.  The
+     * cycle uses the median of the last three results.                     */
+    const uint32_t cyc_poll = DWT->CYCCNT;
+    if (adc_monitor_poll_vin_result())
+    {
+        vin_hist_mv[vin_hist_next] = adc_measurements.v_in_mv;
+        vin_hist_next = (uint8_t)((vin_hist_next + 1u) % 3u);
+    }
     adc_monitor_trigger_vin();
+    cyc_record(regulator_cyc_vin_poll, DWT->CYCCNT - cyc_poll);
+    uint32_t v_in_mv = median3(vin_hist_mv[0], vin_hist_mv[1], vin_hist_mv[2]);
 
     /* V_out as the trimmed mean of the last VOUT_MEDIAN_SAMPLES VD_MON
      * samples (see "V_out sensing and pulse skipping"): the PID, soft-start,
@@ -1213,22 +1198,22 @@ void regulator_pid_tim7_isr(void)
     uint32_t i_l_ma    = adc_measurements.i_inductor_ma;
     (void)i_l_ma;   /* telemetry only */
 
-    /* Read V_in result from the ADC2 conversion triggered at the start;
-     * at 20 kHz period (50 µs), ADC2 conversion (~354 ns) is complete.    */
-    const uint32_t cyc_poll = DWT->CYCCNT;
-    adc_monitor_read_vin_result();
-    cyc_record(regulator_cyc_vin_poll, DWT->CYCCNT - cyc_poll);
-    uint32_t v_in_mv = adc_measurements.v_in_mv;
-
     /* TODO(debug): If v_out_mv or v_in_mv reads zero, check ADC1/ADC2 DMA
      * init in stm32g4xx_hal_msp.c and confirm INPUT_EN is asserted before
      * regulator_start() powers the voltage-divider network (§5.1). */
 
-    /* --- 2. Refresh PID config from runtime-mutable variables ---
-     * This allows Kp/Ki/Kd to be tuned at runtime without restart (§8.7). */
-    pid_config.kp = pid_kp;
-    pid_config.ki = pid_ki;
-    pid_config.kd = pid_kd;
+    /* --- 2. Loop gains from the capacitance on the output (regulator_config.h,
+     * LOOP_CROSSOVER_HZ): kp = 2 pi fc C [mA/mV], PI zero at fc / 4.  The
+     * VBUS side counts once the output switch is on (step 4c).            */
+    {
+        const float c_uf = regulator_c_int_uf + (output_switch_on ? regulator_c_ext_uf : 0.0f);
+        const float w_c  = 6.2831853f * regulator_loop_fc_hz;
+        pid_kp = w_c * c_uf * 1e-6f;
+        pid_ki = pid_kp * w_c * 0.25f;
+        pid_config.kp = pid_kp;
+        pid_config.ki = pid_ki;
+        pid_config.kd = 0.0f;
+    }
 
     /* V_in low-pass for mode selection (VIN_FILTER_SHIFT). */
     {
@@ -1244,56 +1229,38 @@ void regulator_pid_tim7_isr(void)
      * resets it (change_mode_while_running).                              */
     regulator_integrator_reset_requested = false;
 
-    /* --- 4a. Setpoint slew (SETPOINT_SLEW_MV_PER_CYCLE) --- */
+    /* --- 4a. Setpoint slew and the relative-OVP reference ---
+     * Rising, the OVP reference follows the setpoint.  Falling, V_out trails
+     * the setpoint by as much as the load allows (DCM, no reverse flow), so
+     * the reference holds the level the transition started from until the
+     * setpoint is at the target and V_out is back within
+     * OVP_HOLD_RELEASE_PCT of it (regulator_config.h).  A real overshoot
+     * above the old level still trips.                                     */
     {
         uint32_t tgt = target_voltage_mv;
         uint32_t cmd = regulator_commanded_mv;
-        if (cmd + SETPOINT_SLEW_MV_PER_CYCLE < tgt)      { cmd += SETPOINT_SLEW_MV_PER_CYCLE; }
-        else if (cmd > tgt + SETPOINT_SLEW_MV_PER_CYCLE) { cmd -= SETPOINT_SLEW_MV_PER_CYCLE; }
-        else                                             { cmd = tgt; }
+        if (tgt < cmd && regulator_ovp_ref_mv < cmd) { regulator_ovp_ref_mv = cmd; }
+        if (cmd + SETPOINT_SLEW_UP_MV_PER_CYCLE < tgt)        { cmd += SETPOINT_SLEW_UP_MV_PER_CYCLE; }
+        else if (cmd > tgt + SETPOINT_SLEW_DOWN_MV_PER_CYCLE) { cmd -= SETPOINT_SLEW_DOWN_MV_PER_CYCLE; }
+        else                                                  { cmd = tgt; }
         regulator_commanded_mv = cmd;
+        if (regulator_ovp_ref_mv < cmd ||
+            (cmd == tgt && v_out_mv * 100u <= cmd * (100u + OVP_HOLD_RELEASE_PCT)))
+        {
+            regulator_ovp_ref_mv = cmd;
+        }
     }
     const uint32_t commanded_mv = regulator_commanded_mv;
 
-    /* --- 3b. Mode selection (§5.1), every cycle on the slewed setpoint and
-     * filtered V_in.  While precharging for boost step 4b owns the
-     * handover; the precharge is dropped if the target leaves boost.     */
-    if (boost_precharge)
-    {
-        if (determine_mode_from_voltages(regulator_vin_filt_mv, commanded_mv) !=
-            REGULATOR_MODE_BOOST)
-        {
-            boost_precharge = false;
-        }
-    }
-    else
+    /* --- 3b. Mode selection (§5.1), every cycle: where the slewed setpoint
+     * is headed, gated by where V_out is (determine_mode_from_voltages).
+     * The loop's current command carries over unchanged (step 5).       */
     {
         RegulatorMode new_mode = determine_mode_from_voltages(regulator_vin_filt_mv,
-                                                              commanded_mv);
+                                                              commanded_mv, v_out_mv);
         if (new_mode != regulator_mode)
         {
-            /* Never enter boost with V_out far under V_in: Q1 turning fully
-             * on rings the output toward 2 * V_in (runs 32 and 33).  This
-             * was checked only from buck until a start at V_in 24.5 V put a
-             * 28 V target on the buck-boost/boost edge: the precharge was
-             * dropped (target in the buck-boost band), buck went to
-             * buck-boost and on the next cycle to boost at V_out 6.6 V, which
-             * rang to 35.8 V (SW_OVP, 2026-09-28 evening).                  */
-            const bool output_low = (v_out_mv + BOOST_PRECHARGE_BELOW_VIN_MV < v_in_mv);
-            if (new_mode == REGULATOR_MODE_BOOST && output_low)
-            {
-                if (regulator_mode == REGULATOR_MODE_BUCK)
-                {
-                    /* Stay in buck until the output is precharged (see
-                     * boost_precharge); step 4b hands over.                  */
-                    boost_precharge = true;
-                }
-                /* else buck-boost: stays, and raises V_out at any ratio */
-            }
-            else
-            {
-                change_mode_while_running(new_mode, v_out_mv, commanded_mv);
-            }
+            change_mode_while_running(new_mode, v_out_mv, commanded_mv);
         }
     }
 
@@ -1314,30 +1281,10 @@ void regulator_pid_tim7_isr(void)
         effective_setpoint_mv = commanded_mv;
     }
 
-    /* --- 4b. Boost precharge (see boost_precharge) ---
-     * The buck ramp is capped under V_in; once it is at the cap and V_out
-     * has followed, switch to boost, which restarts the ramp from V_out.  */
-    if (boost_precharge)
-    {
-        uint32_t cap_mv = (v_in_mv > BOOST_PRECHARGE_BELOW_VIN_MV)
-                              ? (v_in_mv - BOOST_PRECHARGE_BELOW_VIN_MV) : 0u;
-        if (effective_setpoint_mv >= cap_mv)
-        {
-            effective_setpoint_mv = cap_mv;
-            if (v_out_mv + BOOST_PRECHARGE_DONE_MARGIN_MV >= cap_mv)
-            {
-                boost_precharge = false;
-                change_mode_while_running(REGULATOR_MODE_BOOST, v_out_mv,
-                                          commanded_mv);
-                effective_setpoint_mv = softstart_setpoint_mv;
-            }
-        }
-    }
-
     /* --- 4c. Connect the output (see OUTPUT_CONNECT_MARGIN_MV) ---
-     * Only in the final mode, after soft-start, with V_out near target.  */
+     * After soft-start, with V_out near the target.                       */
 #if OUTPUT_SWITCH_ENABLED
-    if (!output_switch_on && !boost_precharge && !softstart_active &&
+    if (!output_switch_on && !softstart_active &&
         v_out_mv + OUTPUT_CONNECT_MARGIN_MV >= commanded_mv)
     {
         OUTPUT_EN_WRITE(GPIO_PIN_SET);
@@ -1345,125 +1292,108 @@ void regulator_pid_tim7_isr(void)
     }
 #endif
 
-    /* --- 5. PID computation ---
-     * Floor the peak-current command at half the inductor ripple minus
-     * PEAK_FLOOR_NEG_MARGIN_MA, so the average inductor current the loop can
-     * ask for is bounded below (regulator_config.h, peak_current_floor_counts).
-     * The floor is also the integrator's lower bound inside pid_update.     */
-    uint32_t comp_counts  = trip_delay_comp_counts(v_in_mv, v_out_mv, regulator_mode);
-#if SYNC_RECT_ENABLED
-    uint32_t floor_counts = peak_current_floor_counts(v_in_mv, v_out_mv, regulator_mode);
-#else
-    /* Discontinuous conduction: the average inductor current cannot go
-     * negative, so the ripple/2 floor does not apply and the PID may ask
-     * for the minimum pulse.                                              */
-    uint32_t floor_counts = 0u;
-#endif
-    /* The trip-delay compensation below subtracts comp_counts from the PID
-     * output, so any PID output below comp_counts is a DAC of 0: a dead zone
-     * the integrator had to wind through for 1.1 ms in run 3.  Bounding the
-     * PID output at comp_counts removes it; the floor still applies above.  */
-    if (floor_counts < comp_counts) { floor_counts = comp_counts; }
-    pid_config.output_min = (float)floor_counts;
-    pid_config.output_max = (float)((regulator_mode == REGULATOR_MODE_BUCK_BOOST)
-                                        ? PEAK_CMD_MAX_COUNTS_BB : PEAK_CMD_MAX_COUNTS);
-    regulator_peak_floor_counts = (uint16_t)pid_config.output_min;
-
-    float setpoint_f    = (float)effective_setpoint_mv;
-    float measurement_f = (float)v_out_mv;
-    float pid_out_f     = pid_update(&pid_state, &pid_config,
-                                     setpoint_f, measurement_f);
-
-    /* --- 5b. Trip-delay compensation ---
-     * The PID output is the peak inductor current that should happen.  The
-     * hardware reaches the DAC threshold and then keeps rising for
-     * PEAK_TRIP_DELAY_NS, so the threshold handed to the DAC is lowered by
-     * that overshoot (regulator_config.h, trip_delay_comp_counts).  Run 2 on
-     * the bench (2026-09-27) showed about 1 A more average current than the
-     * command allowed, which is this term at 24 V in and 4.7 uH.           */
-    uint32_t peak_cmd_counts = (uint32_t)pid_out_f;
-    regulator_trip_delay_comp_counts = (uint16_t)comp_counts;
-    uint32_t dac_counts = (peak_cmd_counts > comp_counts) ? (peak_cmd_counts - comp_counts) : 0u;
-    if (dac_counts > (uint32_t)PID_OUTPUT_MAX)
+    /* --- 5. Voltage loop: average output-current command ---
+     * The PID's output is the average current into the output node, I_cmd
+     * [mA] (2026-10-12).  Step 6 turns it into this mode's DCM peak current
+     * and on-time, so the plant the loop sees is C dV/dt = I_cmd - I_load
+     * in every mode and at every V_in: a mode change, or V_in moving during
+     * a ramp, leaves the command where it was.  Its ceiling is what the mode
+     * can deliver at this operating point, so the integrator cannot wind
+     * past it.
+     *
+     * Inductor charging and discharging voltages per mode (both legs DCM,
+     * see HRTIM_BOOST_SWITCHING_OUTPUTS; Vd a body-diode drop):
+     *   buck        charge V_in - V_out, discharge V_out + Vd (Q2)
+     *   boost       charge V_in,         discharge V_out - V_in + Vd (Q3)
+     *   buck-boost  charge V_in,         discharge V_out + 2 Vd (Q2, Q3)
+     * A pulse to peak current I delivers Q = L I^2 k / 2 to the output, with
+     * k = 1/charge + 1/discharge in buck (the output takes the current while
+     * L charges and while it discharges) and k = 1/discharge in boost and
+     * buck-boost (only while it discharges).                               */
+    uint32_t chg_mv, dis_mv;
+    if (regulator_mode == REGULATOR_MODE_BUCK)
     {
-        dac_counts = (uint32_t)PID_OUTPUT_MAX;
+        chg_mv = (v_in_mv > v_out_mv + 1000u) ? (v_in_mv - v_out_mv) : 1000u;
+        dis_mv = v_out_mv + DCM_DIODE_DROP_MV;
+    }
+    else if (regulator_mode == REGULATOR_MODE_BOOST)
+    {
+        chg_mv = v_in_mv;
+        dis_mv = ((v_out_mv > v_in_mv) ? (v_out_mv - v_in_mv) : 0u) + DCM_DIODE_DROP_MV;
+    }
+    else
+    {
+        chg_mv = v_in_mv;
+        dis_mv = v_out_mv + 2u * DCM_DIODE_DROP_MV;
+    }
+    if (chg_mv < 1000u) { chg_mv = 1000u; }
+    if (dis_mv < 500u)  { dis_mv = 500u; }
+    const float chg_v   = (float)chg_mv * 1e-3f;
+    const float dis_v   = (float)dis_mv * 1e-3f;
+    const float k_per_v = (regulator_mode == REGULATOR_MODE_BUCK) ? (1.0f / chg_v + 1.0f / dis_v)
+                                                                  : (1.0f / dis_v);
+    const float l_h     = (float)INDUCTOR_VALUE_NH * 1e-9f;
+    const float t_sw_s  = 1.0f / (float)HRTIM_SWITCHING_FREQ_HZ;
+
+    /* Longest pulse: the current must reach zero inside the window after
+     * the pulse start, t_on + t_off <= window, so
+     * t_on <= window * discharge / (charge + discharge); and at most
+     * DCM_ON_TIME_CEIL_NS.  With the mode's peak limit that sets the ceiling. */
+    const uint32_t window_ns = (uint32_t)(1000000000ull / HRTIM_SWITCHING_FREQ_HZ)
+                               - (BOOTSTRAP_REFRESH_NS + DCM_REFRESH_DEADTIME_NS)
+                               - DCM_WINDOW_MARGIN_NS;
+    uint32_t t_lim_ns = (window_ns * dis_mv) / (chg_mv + dis_mv);   /* < 5000 * 70000 */
+    if (t_lim_ns > DCM_ON_TIME_CEIL_NS) { t_lim_ns = DCM_ON_TIME_CEIL_NS; }
+    const float peak_max_a = (float)((regulator_mode == REGULATOR_MODE_BUCK_BOOST)
+                                         ? DCM_MAX_PEAK_MA_BB : DCM_MAX_PEAK_MA) * 1e-3f;
+    float i_pk_lim_a = (float)t_lim_ns * 1e-9f * chg_v / l_h;
+    if (i_pk_lim_a > peak_max_a) { i_pk_lim_a = peak_max_a; }
+    const float i_max_ma = 1e3f * 0.5f * l_h * i_pk_lim_a * i_pk_lim_a * k_per_v / t_sw_s;
+
+    pid_config.output_min = 0.0f;
+    pid_config.output_max = i_max_ma;
+    const float i_cmd_ma = pid_update(&pid_state, &pid_config,
+                                      (float)effective_setpoint_mv, (float)v_out_mv);
+
+    /* --- 6. Modulator: I_cmd -> peak current -> on-time (Timer A/B CMP2) ---
+     * The charge this period is Q = I_cmd T_sw, so I_pk = sqrt(2 Q / (L k))
+     * and t_on = I_pk L / charge.  Below DCM_MIN_ON_TIME_NS the minimum
+     * pulse still runs and pulse skipping (step 7b) holds the output down.
+     * Q1 (buck, buck-boost) is on from CMP4 to Timer A CMP2; Q4 (boost,
+     * buck-boost) from CMP4 to Timer B CMP2, TB1's set, through the
+     * dead-time generator.  In buck-boost both end at the same CMP2.      */
+    const float i_pk_a = sqrtf(2.0f * (i_cmd_ma * 1e-3f) * t_sw_s / (l_h * k_per_v));
+    uint32_t t_on_ns = (uint32_t)(1e9f * i_pk_a * l_h / chg_v);
+    if (t_on_ns > t_lim_ns)           { t_on_ns = t_lim_ns; }
+    if (t_on_ns < DCM_MIN_ON_TIME_NS) { t_on_ns = DCM_MIN_ON_TIME_NS; }
+    regulator_on_time_ns = (uint16_t)t_on_ns;
+    regulator_i_cmd_ma   = i_cmd_ma;
+    regulator_i_pk_ma    = 1e3f * i_pk_a;
+    regulator_i_max_ma   = i_max_ma;
+    const uint32_t cmp2 = DCM_PULSE_START_TICKS + HRTIM_NS_TO_TICKS_RT(t_on_ns);
+    if (regulator_mode != REGULATOR_MODE_BOOST)
+    {
+        HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP2xR = cmp2;
+    }
+    if (regulator_mode != REGULATOR_MODE_BUCK)
+    {
+        HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP2xR = cmp2;
     }
 
-    /* --- 6. Update slope compensation peak and step --- */
+    /* The peak-current comparator (COMP1 -> EEV4) is a protection backstop
+     * only, PEAK_PROTECT_PCT above the mode's peak limit: the on-time ends
+     * every pulse.  With the threshold at the command (until 2026-10-12)
+     * it cut Q1 at the end of its 100 ns blanking while Q4 ran to CMP2, and
+     * buck-boost pulses came out at about 100 ns.                         */
+    const uint32_t dac_counts = (regulator_mode == REGULATOR_MODE_BUCK_BOOST)
+                                    ? PEAK_PROTECT_COUNTS_BB : PEAK_PROTECT_COUNTS;
     slope_comp_set_peak(dac_counts);
 #if SLOPE_COMP_ENABLED
     slope_comp_update_step(v_out_mv, v_in_mv, (SlopeCompMode)regulator_mode);
 #else
-    /* No ramp: the DAC holds the peak until the next PID cycle, so it is
-     * written here rather than in the 200 kHz period ISR.                */
+    /* No ramp: the DAC holds the threshold until the next PID cycle, so it
+     * is written here rather than in the 200 kHz period ISR.              */
     slope_comp_reload_dac_peak();
-#endif
-
-    /* --- 6b. Predicted on-time (buck, SYNC_RECT_ENABLED 0) ---
-     * The peak-current comparator ends a pulse only when the DAC threshold
-     * is below about 150 mV (DCM_MIN_ON_TIME_NS in regulator_config.h has
-     * the evidence), so the pulse length is also set here from the PID's
-     * peak-current command through the inductor law,
-     * t_on = I_pk * L / (V_in - V_out), written to Timer A CMP2 (the TA1
-     * reset).  The comparator still resets TA1 earlier when it does trip
-     * and DCM_MAX_ON_TIME_NS still bounds CMP2, so this only ever shortens
-     * a pulse.  Charge per pulse goes as I_pk squared, so the PID output
-     * keeps its meaning and the plant gain grows with the operating point
-     * (see pid_kp).  mA * nH / mV = ns.                                   */
-#if !SYNC_RECT_ENABLED
-    {
-        uint32_t peak_ma = (peak_cmd_counts * 1000u) / DAC_COUNTS_PER_AMP;
-        const uint32_t peak_max_ma = (regulator_mode == REGULATOR_MODE_BUCK_BOOST)
-                                         ? DCM_MAX_PEAK_MA_BB : DCM_MAX_PEAK_MA;
-        if (peak_ma > peak_max_ma) { peak_ma = peak_max_ma; }
-        /* Inductor charging and discharging voltages per mode (both legs
-         * DCM, see HRTIM_BOOST_SWITCHING_OUTPUTS; Vd a body-diode drop):
-         *   buck        charge V_in - V_out, discharge V_out + Vd (Q2)
-         *   boost       charge V_in,         discharge V_out - V_in + Vd (Q3)
-         *   buck-boost  charge V_in,         discharge V_out + 2 Vd (Q2, Q3)
-         * t_on = I_pk * L / charge, and t_on + t_off must fit in the window
-         * after the pulse start for the current to reach zero:
-         * t_on <= window * discharge / (charge + discharge).                 */
-        uint32_t chg_mv, dis_mv;
-        if (regulator_mode == REGULATOR_MODE_BUCK)
-        {
-            chg_mv = (v_in_mv > v_out_mv + 1000u) ? (v_in_mv - v_out_mv) : 1000u;
-            dis_mv = v_out_mv + DCM_DIODE_DROP_MV;
-        }
-        else if (regulator_mode == REGULATOR_MODE_BOOST)
-        {
-            chg_mv = v_in_mv;
-            dis_mv = ((v_out_mv > v_in_mv) ? (v_out_mv - v_in_mv) : 0u) + DCM_DIODE_DROP_MV;
-        }
-        else
-        {
-            chg_mv = v_in_mv;
-            dis_mv = v_out_mv + 2u * DCM_DIODE_DROP_MV;
-        }
-        if (chg_mv < 1000u) { chg_mv = 1000u; }
-        if (dis_mv < 500u)  { dis_mv = 500u; }
-        uint32_t t_on_ns = (peak_ma * INDUCTOR_VALUE_NH) / chg_mv;
-        const uint32_t window_ns = (uint32_t)(1000000000ull / HRTIM_SWITCHING_FREQ_HZ)
-                                   - (BOOTSTRAP_REFRESH_NS + DCM_REFRESH_DEADTIME_NS)
-                                   - DCM_WINDOW_MARGIN_NS;
-        uint32_t t_dcm_ns = (window_ns * dis_mv) / (chg_mv + dis_mv);   /* < 5000 * 70000 */
-        if (t_on_ns > t_dcm_ns)            { t_on_ns = t_dcm_ns; }
-        if (t_on_ns > DCM_ON_TIME_CEIL_NS) { t_on_ns = DCM_ON_TIME_CEIL_NS; }
-        if (t_on_ns < DCM_MIN_ON_TIME_NS)  { t_on_ns = DCM_MIN_ON_TIME_NS; }
-        regulator_on_time_ns = (uint16_t)t_on_ns;
-        const uint32_t cmp2 = DCM_PULSE_START_TICKS + HRTIM_NS_TO_TICKS_RT(t_on_ns);
-        /* Q1 (buck, buck-boost) on from CMP4 to Timer A CMP2; Q4 (boost,
-         * buck-boost) on from CMP4 to Timer B CMP2, TB1's set, through the
-         * dead-time generator.                                            */
-        if (regulator_mode != REGULATOR_MODE_BOOST)
-        {
-            HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP2xR = cmp2;
-        }
-        if (regulator_mode != REGULATOR_MODE_BUCK)
-        {
-            HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP2xR = cmp2;
-        }
-    }
 #endif
 
     /* TODO(debug): Verify slope_comp_step_counts in debugger watch.
@@ -1504,9 +1434,10 @@ void regulator_pid_tim7_isr(void)
      * first PID cycle the ramp is one increment (200 mV at 20 V), so a
      * residual V_out of a few hundred mV tripped the relative OVP before
      * any switching happened (bench, 2026-09-27: SW_OVP with V_out 410 mV).
-     * UVP is already suppressed while softstart_active.                    */
-    if (!software_safety_checks_pass(v_out_mv, v_in_mv,
-                                      commanded_mv, regulator_mode))
+     * UVP is already suppressed while softstart_active.  The relative OVP
+     * uses regulator_ovp_ref_mv (step 4a).                                  */
+    if (!software_safety_checks_pass(v_out_mv, v_in_mv, commanded_mv,
+                                      regulator_ovp_ref_mv, regulator_mode))
     {
         /* Fault entry handled inside software_safety_checks_pass */
         return;
@@ -1534,7 +1465,7 @@ void regulator_pid_tim7_isr(void)
     {
         DebugSample s;
         s.v_out_mv      = v_out_mv;
-        s.v_in_mv       = v_in_mv;
+        s.v_in_mv       = adc_measurements.v_in_mv;   /* newest ADC2 result, not the median */
         s.i_inductor_ma = (uint32_t)adc_measurements.i_inductor_ma;
         s.i_out_ma      = (uint32_t)adc_measurements.i_out_ma;
         s.dac_counts    = (uint16_t)dac_counts;
@@ -1682,6 +1613,15 @@ static void hrtim_configure_compare_registers(void)
         DCM_PULSE_START_TICKS + MAX_ON_TIME_COUNTS;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].RSTx2R = HRTIM_OUTPUTRESET_TIMCMP3;
 #endif
+
+    /* Dead time between TB1 (Q3) and TB2 (Q4): PHASE2_DEADTIME_NS on both
+     * edges, prescaler unchanged (tDTG = tHRTIM / 8).                      */
+    {
+        uint32_t dt = HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].DTxR;
+        dt &= ~(HRTIM_DTR_DTR_Msk | HRTIM_DTR_DTF_Msk);
+        dt |= (PHASE2_DEADTIME_TICKS << HRTIM_DTR_DTR_Pos) | (PHASE2_DEADTIME_TICKS << HRTIM_DTR_DTF_Pos);
+        HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].DTxR = dt;
+    }
 }
 
 /**
@@ -1860,10 +1800,14 @@ static void hrtim_apply_buck_mode_static_leg(void)
 #endif
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].RSTx1R =
         HRTIM_OUTPUTRESET_EEV_4 | HRTIM_RST1R_CMP2;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP1xR =
+        DCM_PULSE_START_TICKS + HRTIM_BLANKING_TICKS_BUCK;
 
-    /* Configure Timer B (output side) for CMP3-based bootstrap refresh.
-     * CMP3xR is already set to BOOTSTRAP_REFRESH_TICKS in
-     * hrtim_configure_compare_registers(); only SET/RST sources are changed.*/
+    /* Timer B (output side): Q3 static with a Q4 bootstrap refresh from the
+     * period start to CMP3 (BOOTSTRAP_REFRESH_TICKS).  Buck does not enable
+     * these outputs (mode_switching_outputs): phase 2 stays off and Q3
+     * conducts in reverse.  Buck-boost and bench PWM start from these
+     * sources.                                                             */
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].RSTx1R = HRTIM_OUTPUTRESET_TIMPER;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx1R = HRTIM_OUTPUTSET_TIMCMP3;
 }
@@ -1947,6 +1891,11 @@ static void hrtim_apply_boost_mode_static_leg(void)
 static void hrtim_apply_buck_boost_legs(void)
 {
     hrtim_apply_buck_mode_static_leg();
+    /* Q4 drops SW2 to ground at the same edge Q1 starts, and the IL_MON
+     * amplifier rings on that step: Q1's comparator gets the boost blanking
+     * here (hrtim_apply_buck_mode_static_leg restores the buck one).        */
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP1xR =
+        DCM_PULSE_START_TICKS + HRTIM_BLANKING_TICKS_BOOST;
 #if !SYNC_RECT_ENABLED
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].RSTx1R = HRTIM_OUTPUTRESET_TIMCMP4;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx1R =
@@ -1958,7 +1907,13 @@ static void hrtim_apply_buck_boost_legs(void)
 
 /**
  * mode_switching_outputs — HRTIM outputs enabled in a mode.
- *   buck:        TA1 TA2 (pulse, Q2 refresh), TB1 TB2 (Q3 static, refresh)
+ *   buck:        TA1 TA2 (pulse, Q2 refresh); phase 2 off, Q3 conducts in
+ *                reverse.  2026-10-12, 20 V no load: holding Q3 on let the
+ *                DCM ring push output charge back into V_in through Q1's
+ *                body diode, and its bootstrap refresh rang SW2 by +-22 V;
+ *                the loop needed 163 mA of command against 47 mA with phase
+ *                2 off.  Synchronous rectification by predicted conduction
+ *                time is the planned replacement.
  *   boost:       HRTIM_BOOST_SWITCHING_OUTPUTS, TA1 TA2 (Q1 static, refresh)
  *   buck-boost:  TA1 TA2 (pulse, refresh), TB2 (pulse)
  */
@@ -1966,7 +1921,7 @@ static uint32_t mode_switching_outputs(RegulatorMode mode)
 {
     if (mode == REGULATOR_MODE_BUCK)
     {
-        return HRTIM_BUCK_SWITCHING_OUTPUTS | HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2;
+        return HRTIM_BUCK_SWITCHING_OUTPUTS;
     }
     if (mode == REGULATOR_MODE_BUCK_BOOST)
     {
@@ -1976,10 +1931,9 @@ static uint32_t mode_switching_outputs(RegulatorMode mode)
 }
 
 /**
- * change_mode_while_running — Reconfigure the HRTIM legs for new_mode and
- * restart the soft-start ramp from v_out_mv toward voltage_mv (§5.3, §11.4).
- * Called from the PID ISR on a setpoint-driven mode change and at the end
- * of the boost precharge.
+ * change_mode_while_running — Reconfigure the HRTIM legs for new_mode (§5.3).
+ * Called from the PID ISR (step 3b).  v_out_mv and voltage_mv go to the
+ * mode log only: the setpoint ramp and the loop state carry over.
  */
 static void change_mode_while_running(RegulatorMode new_mode, uint32_t v_out_mv,
                                       uint32_t voltage_mv)
@@ -2016,17 +1970,12 @@ static void change_mode_while_running(RegulatorMode new_mode, uint32_t v_out_mv,
     HAL_HRTIM_WaveformOutputStart(&hhrtim1, mode_switching_outputs(regulator_mode));
     skip_state_reset_pulsing();
 
-    /* Reset soft-start for the mode transition (§11.4) */
-    uint32_t ramp_steps = (uint32_t)SOFT_START_RAMP_MS *
-                          (uint32_t)PID_EXECUTION_RATE_HZ / 1000u;
-    if (ramp_steps == 0u) { ramp_steps = 1u; }
-    /* Ramp from the measured output (see regulator_start). */
-    uint32_t v_out_now_mv = (v_out_mv > voltage_mv) ? voltage_mv : v_out_mv;
-    softstart_increment_mv = (voltage_mv - v_out_now_mv) / ramp_steps;
-    if (softstart_increment_mv == 0u) { softstart_increment_mv = 1u; }
-    softstart_setpoint_mv = v_out_now_mv;
-    softstart_active      = true;
-    pid_reset_integrator(&pid_state);
+    /* Nothing else changes: the setpoint ramp lives above the switching
+     * mode (step 4a) and the loop commands output current in every mode
+     * (step 5), so the transfer is bumpless.  Until 2026-10-12 this
+     * restarted soft-start from V_out and zeroed the integrator; in the
+     * middle of an 80 V/s ramp that left the loop asking for almost nothing
+     * (buck-boost at 23 V stalled and drooped, bench 2026-10-11/12).      */
 }
 
 /**
@@ -2067,51 +2016,39 @@ static void power_path_disable(void)
 }
 
 /**
- * determine_mode_from_voltages — Select buck or boost based on V_in vs
- * V_setpoint with hysteresis (§5.1).
+ * determine_mode_from_voltages — Pick the switching mode (§5.1).
  *
- * @param v_in_mv       Measured input voltage in millivolts.
- * @param v_setpoint_mv Target output voltage in millivolts.
- * @return REGULATOR_MODE_BUCK or REGULATOR_MODE_BOOST.
+ * Buck below V_in - BB_BELOW_VIN_MV, boost above V_in + BB_ABOVE_VIN_MV,
+ * buck-boost between, each edge with BB_HYSTERESIS_MV against the mode the
+ * regulator is in.  The setpoint says where the output is headed; leaving
+ * buck-boost also needs V_out to be there, because buck and boost only have
+ * authority on their own side of V_in (2026-10-11: boost entered with V_out
+ * 2.6 V under V_in pinned the output at V_in less a diode drop, and its DCM
+ * on-time bound shrinks toward zero as V_out approaches V_in).  So buck and
+ * boost never meet directly: buck-boost works at any ratio and carries the
+ * output across V_in, whichever way the setpoint or V_in moves.
+ *
+ * @param v_in_mv       Filtered input voltage (regulator_vin_filt_mv).
+ * @param v_setpoint_mv Slewed setpoint (regulator_commanded_mv).
+ * @param v_out_mv      V_out estimate.
  */
 static RegulatorMode determine_mode_from_voltages(uint32_t v_in_mv,
-                                                   uint32_t v_setpoint_mv)
+                                                   uint32_t v_setpoint_mv,
+                                                   uint32_t v_out_mv)
 {
-#if BUCK_BOOST_ENABLED
-    /* Buck under V_in - BB_BELOW_VIN_MV, boost over V_in + BB_ABOVE_VIN_MV,
-     * buck-boost between; each edge has BB_HYSTERESIS_MV against the mode
-     * the regulator is in.                                                */
     const uint32_t lo = (v_in_mv > BB_BELOW_VIN_MV) ? (v_in_mv - BB_BELOW_VIN_MV) : 0u;
     const uint32_t hi = v_in_mv + BB_ABOVE_VIN_MV;
     const uint32_t h  = BB_HYSTERESIS_MV;
     switch (regulator_mode)
     {
         case REGULATOR_MODE_BUCK:
-            if (v_setpoint_mv > hi + h) { return REGULATOR_MODE_BOOST; }
-            if (v_setpoint_mv > lo + h) { return REGULATOR_MODE_BUCK_BOOST; }
-            return REGULATOR_MODE_BUCK;
+            return (v_setpoint_mv > lo + h) ? REGULATOR_MODE_BUCK_BOOST : REGULATOR_MODE_BUCK;
         case REGULATOR_MODE_BOOST:
-            if (v_setpoint_mv + h < lo) { return REGULATOR_MODE_BUCK; }
-            if (v_setpoint_mv + h < hi) { return REGULATOR_MODE_BUCK_BOOST; }
-            return REGULATOR_MODE_BOOST;
+            return (v_setpoint_mv + h < hi) ? REGULATOR_MODE_BUCK_BOOST : REGULATOR_MODE_BOOST;
         default:
-            if (v_setpoint_mv + h < lo) { return REGULATOR_MODE_BUCK; }
-            if (v_setpoint_mv > hi + h) { return REGULATOR_MODE_BOOST; }
+            if (v_setpoint_mv > hi + h && v_out_mv > hi) { return REGULATOR_MODE_BOOST; }
+            if (v_setpoint_mv + h < lo && v_out_mv < lo) { return REGULATOR_MODE_BUCK; }
             return REGULATOR_MODE_BUCK_BOOST;
-    }
-#endif
-    if (v_in_mv > (v_setpoint_mv + MODE_HYSTERESIS_MV))
-    {
-        return REGULATOR_MODE_BUCK;
-    }
-    else if (v_setpoint_mv > (v_in_mv + MODE_HYSTERESIS_MV))
-    {
-        return REGULATOR_MODE_BOOST;
-    }
-    else
-    {
-        /* Within hysteresis band — maintain current mode (§5.1) */
-        return regulator_mode;
     }
 }
 
@@ -2160,12 +2097,6 @@ static void enter_fault(RegulatorFaultSource source)
     regulator_ready  = false;
 }
 
-/**
- * software_safety_checks_pass — Check all software safety conditions (§10.2).
- *
- * Returns true if all conditions are within bounds.
- * Returns false and calls enter_fault() if any condition is violated.
- */
 static void record_fault_snapshot(uint32_t v_out_mv, uint32_t v_in_mv,
                                   uint32_t v_setpoint_mv)
 {
@@ -2183,9 +2114,18 @@ static void record_fault_snapshot(uint32_t v_out_mv, uint32_t v_in_mv,
     }
 }
 
+/**
+ * software_safety_checks_pass — Check all software safety conditions (§10.2).
+ *
+ * v_setpoint_mv is the slewed setpoint (UVP, V_in range); ovp_ref_mv is what
+ * the relative OVP is measured against (regulator_ovp_ref_mv, PID ISR step
+ * 4a).  Returns true if all conditions are within bounds.  Returns false and
+ * calls enter_fault() if any condition is violated.
+ */
 static bool software_safety_checks_pass(uint32_t v_out_mv,
                                          uint32_t v_in_mv,
                                          uint32_t v_setpoint_mv,
+                                         uint32_t ovp_ref_mv,
                                          RegulatorMode mode)
 {
     /* --- 1. Absolute OVP (§10.2) --- */
@@ -2199,11 +2139,11 @@ static bool software_safety_checks_pass(uint32_t v_out_mv,
     /* --- 2. Relative OVP --- */
     if (v_setpoint_mv > 0u)
     {
-        uint32_t ovp_threshold = (v_setpoint_mv * OVP_RELATIVE_PCT) / 100u;
+        uint32_t ovp_threshold = (ovp_ref_mv * OVP_RELATIVE_PCT) / 100u;
         if (v_out_mv > ovp_threshold)
         {
             record_fault_snapshot(v_out_mv, v_in_mv, v_setpoint_mv);
-        enter_fault(REGULATOR_FAULT_SW_OVP);
+            enter_fault(REGULATOR_FAULT_SW_OVP);
             return false;
         }
 
@@ -2222,20 +2162,17 @@ static bool software_safety_checks_pass(uint32_t v_out_mv,
 
     /* --- 4. V_in range check (§10.2) ---
      * Latched only when out of range for VIN_RANGE_PERSIST_CYCLES PID
-     * cycles in a row.  V_in is one ADC2 sample per cycle and VS_MON sees
-     * the same switching ring as VD_MON: run 36 (2026-09-28, boost 28 V)
-     * faulted after 32 s on one sample of 27.8 V while every logged cycle
-     * read 23.0 to 24.0 V and the scope's CH1 read 24.1 V.  The supply
+     * cycles in a row.  Run 36 (2026-09-28, boost 28 V) faulted after 32 s
+     * on one V_in sample of 27.8 V while every logged cycle read 23.0 to
+     * 24.0 V and the scope's CH1 read 24.1 V; V_in has been the median of
+     * three oversampled conversions since 2026-10-12 (step 1).  The supply
      * does not move in 1 ms; the ADM1270 and the FLT inputs cover the fast
      * cases.                                                             */
     bool vin_out_of_range;
     if (mode == REGULATOR_MODE_BUCK)
     {
-        /* Buck requires V_in > V_out + margin.  Not while precharging for
-         * boost: the buck ramp is capped under V_in by construction and
-         * v_setpoint_mv is the boost target.                              */
-        vin_out_of_range = !boost_precharge &&
-                           (v_in_mv < (v_setpoint_mv + BUCK_VIN_MARGIN_MV));
+        /* Buck requires V_in > V_out + margin. */
+        vin_out_of_range = (v_in_mv < (v_setpoint_mv + BUCK_VIN_MARGIN_MV));
     }
     else if (mode == REGULATOR_MODE_BUCK_BOOST)
     {

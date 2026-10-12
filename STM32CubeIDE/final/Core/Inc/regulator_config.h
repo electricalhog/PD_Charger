@@ -331,6 +331,17 @@ _Static_assert(HRTIM_PERIOD_COUNTS >= 5440u && HRTIM_PERIOD_COUNTS <= 54400u,
 #define BOOTSTRAP_REFRESH_NS     200u  /**< Bootstrap LOW pulse: 200 ns per gate driver spec */
 
 /**
+ * PHASE2_DEADTIME_NS — Timer B dead time between TB1 (Q3) and TB2 (Q4), both
+ * edges (2026-10-12; CubeMX set 16 ticks, about 12 ns, tight against
+ * gate-driver skew).  It matters where both are driven: bench PWM, and the
+ * planned synchronous rectification.  The generator counts
+ * tDTG = 1 / (8 x 170 MHz) = 0.735 ns, up to 511.
+ */
+#define PHASE2_DEADTIME_NS    50u
+#define PHASE2_DEADTIME_TICKS ((PHASE2_DEADTIME_NS * 1360u + 500u) / 1000u)
+_Static_assert(PHASE2_DEADTIME_TICKS <= 511u, "PHASE2_DEADTIME_NS over the 9-bit dead-time field");
+
+/**
  * HRTIM_BLANKING_TICKS_BUCK — Comparator blanking window (CMP1) in buck mode.
  * Units  : HRTIM ticks; derived from HRTIM_BLANKING_NS_BUCK via HRTIM_NS_TO_TICKS.
  * Purpose: EEV4 (IL_MON comparator) is masked from period reset until CMP1 fires
@@ -505,15 +516,24 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
 #define DCM_DIODE_DROP_MV 700u
 
 /**
- * SETPOINT_SLEW_MV_PER_CYCLE — How fast the regulated setpoint follows a new
- *          target while running (PID ISR step 4a).
- * Units  : mV per PID cycle (20 kHz): 1 is 20 V/s
- * Purpose: A step down (28 V to 20 V) put V_out over the relative OVP of the
- *          new target at once: the output only falls as fast as the load
- *          discharges it.  OVP/UVP are checked against the slewed value.
- *          At 20 V/s a 330 ohm load keeps up down to about 1 V at 25 uF.
+ * SETPOINT_SLEW_UP_MV_PER_CYCLE / SETPOINT_SLEW_DOWN_MV_PER_CYCLE — How fast
+ *          the regulated setpoint follows a new target while running (PID
+ *          ISR step 4a), rising and falling.
+ * Units  : mV per PID cycle (20 kHz): 1 is 20 V/s, 4 is 80 V/s
+ * Value  : 4u and 4u (2026-10-11, plans/epr-bringup.md).  5 -> 28 / 36 / 48 V
+ *          takes 288 / 388 / 538 ms, inside the 750 ms EPR budget with room
+ *          to settle, so EPR contracts negotiate straight from 5 V.
+ * Purpose: Down, the output only falls as fast as the load drains it (DCM,
+ *          no reverse flow yet), so it can trail the setpoint by volts.  The
+ *          relative OVP is therefore held at the level a downward transition
+ *          started from (regulator_ovp_ref_mv, OVP_HOLD_RELEASE_PCT) instead
+ *          of following the falling setpoint; UVP still follows it.  Until
+ *          2026-10-11 one 1 mV/cycle constant did both directions, because a
+ *          fast step down (28 V to 20 V) put V_out over the relative OVP of
+ *          the new target at once.
  */
-#define SETPOINT_SLEW_MV_PER_CYCLE 1u
+#define SETPOINT_SLEW_UP_MV_PER_CYCLE   4u
+#define SETPOINT_SLEW_DOWN_MV_PER_CYCLE 4u
 
 /**
  * BUCK_BOOST_ENABLED — Use REGULATOR_MODE_BUCK_BOOST for setpoints near V_in.
@@ -533,7 +553,8 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
 /**
  * VIN_FILTER_SHIFT — V_in low-pass for mode selection: filtered += (sample -
  *          filtered) >> shift per PID cycle.  5 is a 1.6 ms time constant;
- *          single V_in samples read up to 4 V off (run 36).
+ *          single V_in samples read up to 4 V off (run 36) until V_in became
+ *          the median of three oversampled conversions (2026-10-12).
  */
 #define VIN_FILTER_SHIFT 5u
 
@@ -763,6 +784,41 @@ _Static_assert(DCM_PULSE_START_TICKS + MAX_ON_TIME_COUNTS + DCM_REFRESH_DEADTIME
  */
 #define PID_EXECUTION_RATE_HZ 20000u
 
+/**
+ * LOOP_CROSSOVER_HZ / LOOP_C_INT_UF / LOOP_C_EXT_UF — Voltage loop
+ * (2026-10-12).  The PID commands the average current into the output node,
+ * I_cmd [mA]; the per-mode modulator (PID ISR step 6) turns it into a DCM
+ * peak current and on-time.  The plant is then C dV/dt = I_cmd - I_load in
+ * every mode, so the gains follow from the capacitance alone:
+ *   kp = 2 pi fc C        [mA per mV]
+ *   ki = kp 2 pi fc / 4   [mA per mV per s]  (PI zero two octaves below fc)
+ * with C = LOOP_C_INT_UF, plus LOOP_C_EXT_UF once the output switch is on.
+ * Values: fc 100 Hz (2026-10-12: at 300 Hz, 20 V and no load limit-cycled at
+ *         3.9 kHz, 318 mV p-p: the loop sees only about 23 uF there, so the
+ *         VBUS-side capacitance is not in the loop at that frequency, and the
+ *         loop delay is about 63 us; at 100 Hz the low-frequency ripple fell
+ *         to 200 mV p-p, 20 mV rms).  C_int 50 uF: the output side has an 82 uF electrolytic
+ *         and 10 uF ceramics (KiCad dc-dc sheet), and the bench estimates
+ *         were 19 uF (no-pulse decay, run 26) and 54 uF (L1/C resonance,
+ *         run 5); the phase margin stays above 50 degrees from 19 to 100 uF
+ *         with about 100 us of loop delay.  C_ext 250 uF: the bench VBUS side
+ *         is under 300 uF (Dan, 2026-10-11).
+ * All three are runtime-tunable (regulator_loop_fc_hz, regulator_c_int_uf,
+ * regulator_c_ext_uf).  Measure C on the bench: during an up-ramp the
+ * command settles at C * 80 V/s plus the load current.
+ */
+#define LOOP_CROSSOVER_HZ 100.0f
+#define LOOP_C_INT_UF      50.0f
+#define LOOP_C_EXT_UF     250.0f
+
+/**
+ * PEAK_PROTECT_PCT — The peak-current comparator (COMP1 -> EEV4) is a
+ * protection backstop, not the modulator: the on-time ends every pulse (PID
+ * ISR step 6).  Its threshold sits this far above the mode's peak limit
+ * (DCM_MAX_PEAK_MA, DCM_MAX_PEAK_MA_BB).  Units: percent.
+ */
+#define PEAK_PROTECT_PCT 150u
+
 _Static_assert(PID_EXECUTION_RATE_HZ >= 1000u &&
                    PID_EXECUTION_RATE_HZ <= 500000u,
                "PID_EXECUTION_RATE_HZ out of valid range [1000, 500000]");
@@ -815,23 +871,6 @@ _Static_assert(PID_EXECUTION_RATE_HZ >= 1000u &&
  * Value  : 0  (zero current threshold → regulator effectively idle)
  */
 #define PID_OUTPUT_MIN 0
-
-/**
- * PEAK_FLOOR_NEG_MARGIN_MA — How far below zero the average inductor current
- * may be commanded by the per-cycle peak-current floor (added 2026-09-27).
- * Units  : mA
- * Purpose: In forced continuous conduction the low-side switch conducts
- *          whenever the high side is off, so a peak-current setpoint of zero
- *          drives a large negative average inductor current.  At no load the
- *          output then collapses within one PID period (bench, run 1: V_out
- *          366, 0, 1127, 0, 3720, 0 mV on successive cycles).  regulator.c
- *          floors the PID output each cycle at ripple/2 − this margin, so
- *          the average inductor current cannot be commanded below −margin.
- *          0 would forbid any negative current, leaving no way to bleed an
- *          overshoot at no load; a few hundred mA is a controllable way down
- *          (300 mA into 40 µF is 0.4 V per PID period).
- */
-#define PEAK_FLOOR_NEG_MARGIN_MA 300u
 
 /**
  * PEAK_TRIP_DELAY_NS — Delay from the inductor current reaching the DAC
@@ -909,6 +948,16 @@ _Static_assert(PID_OUTPUT_MAX > PID_OUTPUT_MIN && PID_OUTPUT_MAX <= 4095,
  * Range  : [105, 150]
  */
 #define OVP_RELATIVE_PCT 110u
+
+/**
+ * OVP_HOLD_RELEASE_PCT — A downward transition holds the relative OVP at the
+ * level it started from (SETPOINT_SLEW_DOWN_MV_PER_CYCLE); the hold ends once
+ * the setpoint has reached the target and V_out is within this much above it.
+ * Units  : percent of the setpoint
+ */
+#define OVP_HOLD_RELEASE_PCT 5u
+_Static_assert(OVP_HOLD_RELEASE_PCT < OVP_RELATIVE_PCT - 100u,
+               "the OVP hold must release inside the relative OVP window");
 _Static_assert(PULSE_SKIP_ABOVE_MV * 100u < SETPOINT_MIN_MV * (OVP_RELATIVE_PCT - 100u),
                "pulse skipping must engage below the relative OVP");
 

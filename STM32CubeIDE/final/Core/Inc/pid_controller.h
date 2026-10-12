@@ -95,7 +95,6 @@ float pid_update(PidState *state, const PidConfig *config,
  * Must be called on:
  *  - IDLE → RUNNING transition
  *  - FAULT → IDLE transition
- *  - Operating mode change (buck ↔ boost)
  *  - Setpoint change exceeding the configured threshold (§8.8)
  *
  * @param state Mutable PID state.

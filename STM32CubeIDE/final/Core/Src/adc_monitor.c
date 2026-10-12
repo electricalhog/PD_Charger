@@ -3,8 +3,8 @@
  * @brief   ADC measurement subsystem implementation (NLSpec §14).
  *
  * ADC1: 4-channel circular DMA scan (VD_MON, IL_MON, ID_MON, IS_MON).
- * ADC2: Single software-triggered conversion (VS_MON / V_in), triggered
- *       from the TIM7 PID ISR.
+ * ADC2: One software-triggered conversion (VS_MON / V_in), 16x
+ *       oversampled, started by the TIM7 PID ISR and read the next cycle.
  *
  * Scaling formulas (§14.2, Appendix D), voltages with the per-channel
  * bench-calibrated full scales in regulator_config.h:
@@ -115,6 +115,20 @@ void adc_monitor_init(void)
             (void)HAL_ADCEx_InjectedConfigChannel(&hadc1, &j);
         }
     }
+
+    /* ADC2 (VS_MON, V_in): 16 conversions of 24.5 + 12.5 ADC cycles
+     * (0.87 us each at 42.5 MHz) averaged in hardware per trigger, 13.9 us.
+     * 0.87 us is 0.174 of the 5 us switching period, so the 16 samples fall
+     * at 16 different points of it over 2.8 periods.  Until 2026-10-12 V_in
+     * was one 2.5-cycle (59 ns) sample (MX_ADC2_Init) wherever in the period
+     * the PID ISR started: VS_MON is a 100k/5.82k divider with no capacitor,
+     * wired beside PHASE_2_P/N to the MCU, and at 28 V boost with 3 W 0.2 %
+     * of cycles read 1 to 5 V off (19.1 to 27.6 V around 24.4 V).  Written
+     * here, with ADC2 not yet enabled.                                     */
+    LL_ADC_SetChannelSamplingTime(ADC2, LL_ADC_CHANNEL_17, LL_ADC_SAMPLINGTIME_24CYCLES_5);
+    LL_ADC_ConfigOverSamplingRatioShift(ADC2, LL_ADC_OVS_RATIO_16, LL_ADC_OVS_SHIFT_RIGHT_4);
+    LL_ADC_SetOverSamplingDiscont(ADC2, LL_ADC_OVS_REG_CONT);
+    LL_ADC_SetOverSamplingScope(ADC2, LL_ADC_OVS_GRP_REGULAR_CONTINUED);
 
     /* Run factory offset calibration on ADC2 */
     if (HAL_ADCEx_Calibration_Start(&hadc2, ADC_SINGLE_ENDED) != HAL_OK)
@@ -236,9 +250,9 @@ void adc_monitor_start_adc1_dma(void)
 
 void adc_monitor_trigger_vin(void)
 {
-    /* Start a single software-triggered ADC2 conversion.
-     * Non-blocking: conversion runs asynchronously.  Read the result with
-     * adc_monitor_read_vin_result() after the estimated conversion time.
+    /* Start one software-triggered ADC2 conversion (16 oversampled, 13.9 us,
+     * see adc_monitor_init).  Non-blocking: read the result with
+     * adc_monitor_poll_vin_result() or adc_monitor_read_vin_result().
      * Register-level once ADC2 is enabled: HAL_ADC_Start at -O0 cost
      * several microseconds of the PID ISR (2026-09-28 evening).           */
     if ((ADC2->CR & ADC_CR_ADEN) == 0u)
@@ -250,21 +264,27 @@ void adc_monitor_trigger_vin(void)
     ADC2->CR |= ADC_CR_ADSTART;
 }
 
+bool adc_monitor_poll_vin_result(void)
+{
+    if ((ADC2->ISR & ADC_ISR_EOC) == 0u)
+    {
+        return false;
+    }
+    uint16_t raw = (uint16_t)ADC2->DR;   /* clears EOC */
+    adc_measurements.v_in_mv = scale_voltage_mv(raw, VS_MON_FULL_SCALE_MV);
+    return true;
+}
+
 void adc_monitor_read_vin_result(void)
 {
-    /* Poll for conversion complete (with a short timeout).
-     * At 42.5 MHz ADC clock, 2.5 + 12.5 = 15 cycles ≈ 354 ns.
-     * We wait up to 1 ms; in practice the conversion is done in < 1 µs.    */
-    /* A bounded spin, not HAL_ADC_PollForConversion: its 1 ms timeout reads
-     * HAL_GetTick(), which cannot advance inside this ISR (the HAL timebase
-     * interrupt is lower priority).  A missed conversion keeps the last
-     * V_in.                                                               */
-    for (uint32_t spin = 0u; spin < 2000u; spin++)
+    /* A bounded spin (the conversion takes 13.9 us), not
+     * HAL_ADC_PollForConversion: its 1 ms timeout reads HAL_GetTick(), which
+     * cannot advance with interrupts masked.  A missed conversion keeps the
+     * last V_in.                                                          */
+    for (uint32_t spin = 0u; spin < 20000u; spin++)
     {
-        if (ADC2->ISR & ADC_ISR_EOC)
+        if (adc_monitor_poll_vin_result())
         {
-            uint16_t raw = (uint16_t)ADC2->DR;   /* clears EOC */
-            adc_measurements.v_in_mv = scale_voltage_mv(raw, VS_MON_FULL_SCALE_MV);
             break;
         }
     }
