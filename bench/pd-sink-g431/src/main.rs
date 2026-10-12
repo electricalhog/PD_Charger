@@ -41,8 +41,26 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let mut config = embassy_stm32::Config::default();
-    config.rcc.hsi = true; // UCPD needs HSI16
-    config.rcc.mux.adc12sel = embassy_stm32::rcc::mux::Adcsel::SYS;
+    {
+        use embassy_stm32::rcc::*;
+        // UCPD needs HSI16 as its kernel clock; the core runs from it at
+        // 170 MHz through the PLL (/4 x85 /2).  At the 16 MHz default the PD
+        // task took longer to re-arm UCPD reception after sending a Request
+        // than a fast source takes to answer GoodCRC: the Request was retried
+        // and the contract ended in Soft and Hard Resets (2026-10-11/12).
+        config.rcc.hsi = true;
+        config.rcc.pll = Some(Pll {
+            source: PllSource::HSI,
+            prediv: PllPreDiv::DIV4,
+            mul: PllMul::MUL85,
+            divp: None,
+            divq: None,
+            divr: Some(PllRDiv::DIV2),
+        });
+        config.rcc.sys = Sysclk::PLL1_R;
+        config.rcc.boost = true; // range 1 boost, needed above 150 MHz
+        config.rcc.mux.adc12sel = mux::Adcsel::SYS; // the ADC driver divides it under 60 MHz
+    }
     let p = embassy_stm32::init(config);
 
     static TX_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
