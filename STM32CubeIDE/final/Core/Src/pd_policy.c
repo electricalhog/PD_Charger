@@ -76,6 +76,7 @@ void pd_policy_init(void)
     if (PD_SRC_PDO_9V_ENABLE)  { spr_pdo[spr_count++] = fixed_pdo( 9000u, PD_SRC_MAX_CURRENT_MA); }
     if (PD_SRC_PDO_15V_ENABLE) { spr_pdo[spr_count++] = fixed_pdo(15000u, PD_SRC_MAX_CURRENT_MA); }
     if (PD_SRC_PDO_20V_ENABLE) { spr_pdo[spr_count++] = fixed_pdo(20000u, PD_SRC_MAX_CURRENT_MA); }
+    if (PD_SRC_PDO_24V_ENABLE) { spr_pdo[spr_count++] = fixed_pdo(24000u, PD_SRC_MAX_CURRENT_MA); }
 
 #if defined(USBPDCORE_EPR)
     if (PD_EPR_ENABLE && PD_EPR_PDO_28V_ENABLE)
