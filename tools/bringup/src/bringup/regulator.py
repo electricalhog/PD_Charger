@@ -90,8 +90,12 @@ _VARS = ["regulator_state", "regulator_last_fault_source", "regulator_fault_tick
          "adc_measurements", "regulator_bench_pwm_active"]
 # Optional control telemetry: read when the firmware has the symbol.
 _CONTROL = {"regulator_mode": "mode", "target_voltage_mv": "target_mv", "regulator_commanded_mv": "commanded_mv",
-            "regulator_vin_filt_mv": "vin_filtered_mv", "regulator_on_time_ns": "on_time_ns",
+            "regulator_ovp_ref_mv": "ovp_ref_mv", "regulator_vin_filt_mv": "vin_filtered_mv", "regulator_on_time_ns": "on_time_ns",
             "regulator_pulses_skipped": "pulses_skipped"}
+# Float telemetry of the current-command loop (2026-10-12).
+_CONTROL_F = {"regulator_i_cmd_ma": "i_cmd_ma", "regulator_i_pk_ma": "i_pk_ma", "regulator_i_max_ma": "i_max_ma",
+              "pid_kp": "kp_ma_per_mv", "pid_ki": "ki_ma_per_mv_s", "regulator_loop_fc_hz": "loop_fc_hz",
+              "regulator_c_int_uf": "c_int_uf", "regulator_c_ext_uf": "c_ext_uf"}
 
 
 def _u(data: bytes) -> int:
@@ -104,7 +108,7 @@ def read_raw(cfg: dict) -> dict:
     if "regulator_debug" in missing:
         raise ToolError("firmware has no regulator_debug mailbox; flash a build from the agentic-bringup-tools branch",
                         missing=missing)
-    names = [v for v in list(_VARS) + list(_CONTROL) if v in syms]
+    names = [v for v in list(_VARS) + list(_CONTROL) + list(_CONTROL_F) if v in syms]
     regions = [syms[v] for v in names] + [(GPIOA_IDR, 4), (GPIOC_ODR, 4), (HRTIM_ISR, 16)]
     data = probe.read_regions(cfg, regions)
     raw = dict(zip(names, data[:len(names)]))
@@ -143,6 +147,9 @@ def decode(raw: dict) -> dict:
         if sym in raw:
             v = _u(raw[sym])
             ctl[key] = MODES.get(v, v) if key == "mode" else v
+    for sym, key in _CONTROL_F.items():
+        if sym in raw:
+            ctl[key] = round(struct.unpack("<f", raw[sym][:4])[0], 4)
     if ctl:
         s["control"] = ctl
     if "adc_measurements" in raw:

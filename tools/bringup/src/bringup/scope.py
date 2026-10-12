@@ -238,9 +238,16 @@ class Scope:
         return None if abs(v) >= INVALID * 0.99 else v
 
     def errors(self) -> list[str]:
+        """Drain the error queue.  The DS1104Z sometimes stalls on this one query while
+        everything else answers (2026-10-11: settings applied, *IDN? fine), so a timeout is
+        reported in the list instead of failing the command that already took effect."""
         errs = []
         for _ in range(20):
-            e = self.query(":SYSTem:ERRor?")
+            try:
+                e = self.query(":SYSTem:ERRor?")
+            except Exception as exc:  # transport timeouts: VisaIOError, socket.timeout, OSError
+                errs.append(f"error queue did not answer ({type(exc).__name__})")
+                break
             if e.startswith("0,") or e.startswith("+0,"):
                 break
             errs.append(e)
