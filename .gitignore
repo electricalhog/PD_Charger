@@ -17,3 +17,6 @@ __pycache__/
 
 # Vendor datasheets: keep local copies out of this public repo (see KiCad/datasheets/README.md)
 /KiCad/datasheets/*.pdf
+
+# Bench raw data (scope captures, load telemetry, traces): local only, see each results README
+/bench/results/*/data/
