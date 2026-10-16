@@ -123,6 +123,17 @@ extern volatile float regulator_loop_fc_hz;
 extern volatile float regulator_c_int_uf;
 extern volatile float regulator_c_ext_uf;
 
+/** The setpoint the loop regulates to now: target_voltage_mv followed at the
+ *  slew rate (PID ISR step 4a).  Equal to the target once a ramp is done. */
+extern volatile uint32_t regulator_commanded_mv;
+
+/** Predictive synchronous rectification (regulator_config.h, SR_*): runtime
+ *  switch (0/1, SR_ENABLE_DEFAULT at boot) and the window last programmed,
+ *  ns from the period start (0 when not switched). */
+extern volatile uint8_t  regulator_sr_enable;
+extern volatile uint16_t regulator_sr_on_ns;
+extern volatile uint16_t regulator_sr_off_ns;
+
 /**
  * max_consecutive_backstops — Consecutive backstop events before fault.
  * Default: 3 (§10.4).  Range: [1, 10].

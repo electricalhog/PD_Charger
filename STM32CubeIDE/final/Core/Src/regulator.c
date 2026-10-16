@@ -379,8 +379,63 @@ static inline uint32_t median3(uint32_t a, uint32_t b, uint32_t c)
 
 /** Peak-current comparator thresholds, DAC counts: protection only
  *  (PEAK_PROTECT_PCT above the mode's commanded peak limit; step 6).       */
-#define PEAK_PROTECT_COUNTS    ((DCM_MAX_PEAK_MA * PEAK_PROTECT_PCT / 100u) * DAC_COUNTS_PER_AMP / 1000u)
-#define PEAK_PROTECT_COUNTS_BB ((DCM_MAX_PEAK_MA_BB * PEAK_PROTECT_PCT / 100u) * DAC_COUNTS_PER_AMP / 1000u)
+#define PEAK_PROTECT_MA(peak_ma) (((peak_ma) * PEAK_PROTECT_PCT / 100u) < PEAK_PROTECT_MAX_MA \
+                                      ? ((peak_ma) * PEAK_PROTECT_PCT / 100u) : PEAK_PROTECT_MAX_MA)
+#define PEAK_PROTECT_COUNTS       (PEAK_PROTECT_MA(DCM_MAX_PEAK_MA) * DAC_COUNTS_PER_AMP / 1000u)
+#define PEAK_PROTECT_COUNTS_BB    (PEAK_PROTECT_MA(DCM_MAX_PEAK_MA_BB) * DAC_COUNTS_PER_AMP / 1000u)
+#define PEAK_PROTECT_COUNTS_BOOST (PEAK_PROTECT_MA(DCM_MAX_PEAK_MA_BOOST) * DAC_COUNTS_PER_AMP / 1000u)
+_Static_assert(PEAK_PROTECT_COUNTS <= PID_OUTPUT_MAX, "PEAK_PROTECT_COUNTS over the DAC range");
+
+/* =========================================================================
+ * Predictive synchronous rectification (regulator_config.h, SR_*)
+ *
+ * The rectifier edges come from Timer C (Q2, TA2: events 3 = C CMP2 on,
+ * 4 = C CMP3 off) and Timer D (Q3, TB1: events 5 = D CMP3 on, 6 = D CMP4
+ * off).  C and D only count: their outputs are never enabled.  All four
+ * timers run in lockstep (started in one MCR write, same period and
+ * prescaler) with preload, updating at their period roll-over (TRSTU); the
+ * PID ISR holds the updates (CR1 TxUDIS) while it writes a cycle's compares,
+ * so every period uses one consistent set of edges.  A write landing between
+ * an old pulse end and a new rectifier start can then never overlap a pulse
+ * switch and its rectifier (shoot-through).  "Parked" compares
+ * (HRTIM_CMP_PARKED) never match: no rectifier that period.
+ * =========================================================================*/
+volatile uint8_t  regulator_sr_enable = SR_ENABLE_DEFAULT;   /**< runtime switch */
+volatile uint16_t regulator_sr_on_ns  = 0u;   /**< last window programmed, ns from */
+volatile uint16_t regulator_sr_off_ns = 0u;   /**< the period start; 0 = none       */
+/** Rectifier fade-in, 0 to SR_BLEND_FULL: switching it on at once steps the
+ *  plant gain (the 2-3 V diode drop leaves the freewheel path; at 5 V that
+ *  is about +50 % charge per pulse) and overshot to the relative OVP on
+ *  2026-10-15.  The window and the model's diode term follow the blend over
+ *  SR_BLEND_FULL PID cycles; switching off is immediate. */
+#define SR_BLEND_FULL 2000u   /* 100 ms at 20 kHz */
+volatile uint16_t regulator_sr_blend = 0u;
+/** Buck phase 2 (Q3 window, Q4 refresh) enabled: follows regulator_sr_enable
+ *  from the PID ISR, so the switch works without a restart. */
+static bool buck_phase2_on = false;
+_Static_assert(HRTIM_PERIOD_COUNTS < HRTIM_CMP_PARKED, "parked compare must be beyond the period");
+
+#define HRTIM_TIMER_ABCD_UDIS (HRTIM_CR1_TAUDIS | HRTIM_CR1_TBUDIS | HRTIM_CR1_TCUDIS | HRTIM_CR1_TDUDIS)
+#define HRTIM_TIMER_ABCD_SWU  (HRTIM_CR2_TASWU | HRTIM_CR2_TBSWU | HRTIM_CR2_TCSWU | HRTIM_CR2_TDSWU)
+
+/** Transfer every preloaded register of Timers A-D now (configuration
+ *  writes outside the PID ISR: init, mode changes, bench PWM). */
+static inline void hrtim_update_now(void)
+{
+    HRTIM1->sCommonRegs.CR2 |= HRTIM_TIMER_ABCD_SWU;
+}
+
+/** No rectifier edges (preloaded: from the next update). */
+static void hrtim_park_sr(void)
+{
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP2xR = HRTIM_CMP_PARKED;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP3xR = HRTIM_CMP_PARKED;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_D].CMP3xR = HRTIM_CMP_PARKED;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_D].CMP4xR = HRTIM_CMP_PARKED;
+    regulator_sr_on_ns  = 0u;
+    regulator_sr_off_ns = 0u;
+}
+_Static_assert(PEAK_PROTECT_COUNTS_BOOST <= PID_OUTPUT_MAX, "PEAK_PROTECT_COUNTS_BOOST over the DAC range");
 _Static_assert(PEAK_PROTECT_COUNTS_BB <= PID_OUTPUT_MAX, "PEAK_PROTECT_COUNTS_BB over the DAC range");
 _Static_assert(BUCK_BOOST_ENABLED, "mode selection relies on buck-boost to cross V_in (2026-10-12)");
 _Static_assert(!SYNC_RECT_ENABLED, "the current-command modulator (PID ISR step 6) is DCM-only");
@@ -444,9 +499,16 @@ static void hrtim_configure_adc_trigger(void);
  *  buck does.                                                             */
 static inline uint32_t skip_outputs(RegulatorMode mode)
 {
-    if (mode == REGULATOR_MODE_BOOST)      { return HRTIM_OUTPUT_TB2 | HRTIM_OUTPUT_TA2; }
-    if (mode == REGULATOR_MODE_BUCK_BOOST) { return HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TB2; }
-    return HRTIM_OUTPUT_TA1;   /* buck: phase 2 is off (mode_switching_outputs) */
+    /* Q3 (TB1) too: a skipped pulse must not leave a rectifier window that
+     * drives current backwards.  Q2's window (TA2) may stay: with the pulse
+     * switch and Q3 off it has no current path. */
+    if (mode == REGULATOR_MODE_BOOST)      { return HRTIM_OUTPUT_TB2 | HRTIM_OUTPUT_TA2 | HRTIM_OUTPUT_TB1; }
+    if (mode == REGULATOR_MODE_BUCK_BOOST) { return HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TB2 | HRTIM_OUTPUT_TB1; }
+    /* Buck with phase 2 on: the Q4 refresh too.  Alone it rings SW2 up
+     * through Q3's body diode and pumps the output: 2026-10-15, rectifier
+     * on at 5 V, V_out climbed to the relative OVP (5.52 V) through 1121
+     * skip transitions. */
+    return HRTIM_OUTPUT_TA1 | (buck_phase2_on ? (HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2) : 0u);
 }
 
 /** Pulsing, with the watchdog window [0, on] (outputs already enabled). */
@@ -545,6 +607,7 @@ void regulator_init(void)
      *        regulator_start().  The forced state is prepared so outputs
      *        can be enabled safely.                                        --- */
     hrtim_apply_buck_mode_static_leg();
+    hrtim_update_now();
 
     /* --- Step 12: Initialise PD interface shared state --- */
     pd_interface_init();
@@ -681,6 +744,9 @@ void regulator_start(void)
     /* VS is up and both fault lines are healthy: clear the stale flags set
      * while INPUT_EN was low and arm the fault IRQ before switching.        */
     hrtim_fault_irq_rearm();
+    hrtim_park_sr();
+    hrtim_update_now();
+    buck_phase2_on = (regulator_mode == REGULATOR_MODE_BUCK) && regulator_sr_enable;
 
     /* --- Enable HRTIM switching outputs for the active legs (§5.5) --- */
     HAL_HRTIM_WaveformOutputStart(&hhrtim1, mode_switching_outputs(regulator_mode));
@@ -976,6 +1042,13 @@ RegulatorBenchResult regulator_bench_pwm(bool on)
     ta->RSTx1R &= ~HRTIM_RST1R_EXTVNT4;
     tb->SETx1R &= ~HRTIM_SET1R_EXTVNT4;
     tb->RSTx1R &= ~HRTIM_RST1R_EXTVNT4;
+    /* Bench PWM still uses the dead-time pair on Timer B (TB2 = !TB1) with
+     * the pre-2026-10-15 sources: Q3 static, Q4 refresh. */
+    tb->SETx1R = HRTIM_OUTPUTSET_TIMCMP3;
+    tb->RSTx1R = HRTIM_OUTPUTRESET_TIMPER;
+    tb->OUTxR |= HRTIM_OUTR_DTEN;
+    hrtim_park_sr();
+    hrtim_update_now();
     regulator_bench_pwm_active = true;
 
     hrtim_fault_irq_rearm();
@@ -998,6 +1071,8 @@ static void bench_pwm_restore(void)
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].RSTx1R = bench_saved_set_rst[1];
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx1R = bench_saved_set_rst[2];
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].RSTx1R = bench_saved_set_rst[3];
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].OUTxR &= ~HRTIM_OUTR_DTEN;
+    hrtim_update_now();
     regulator_bench_pwm_active = false;
 }
 
@@ -1310,21 +1385,27 @@ void regulator_pid_tim7_isr(void)
      * k = 1/charge + 1/discharge in buck (the output takes the current while
      * L charges and while it discharges) and k = 1/discharge in boost and
      * buck-boost (only while it discharges).                               */
+    /* With the rectifier on (regulator_sr_enable) the freewheel path has no
+     * diode drop for most of the discharge: the model leaves it out. */
+    if (!regulator_sr_enable)                      { regulator_sr_blend = 0u; }
+    else if (regulator_sr_blend < SR_BLEND_FULL)   { regulator_sr_blend++; }
+    const uint32_t blend = regulator_sr_blend;
+    const uint32_t vd_mv = (DCM_DIODE_DROP_MV * (SR_BLEND_FULL - blend)) / SR_BLEND_FULL;
     uint32_t chg_mv, dis_mv;
     if (regulator_mode == REGULATOR_MODE_BUCK)
     {
         chg_mv = (v_in_mv > v_out_mv + 1000u) ? (v_in_mv - v_out_mv) : 1000u;
-        dis_mv = v_out_mv + DCM_DIODE_DROP_MV;
+        dis_mv = v_out_mv + vd_mv;
     }
     else if (regulator_mode == REGULATOR_MODE_BOOST)
     {
         chg_mv = v_in_mv;
-        dis_mv = ((v_out_mv > v_in_mv) ? (v_out_mv - v_in_mv) : 0u) + DCM_DIODE_DROP_MV;
+        dis_mv = ((v_out_mv > v_in_mv) ? (v_out_mv - v_in_mv) : 0u) + vd_mv;
     }
     else
     {
         chg_mv = v_in_mv;
-        dis_mv = v_out_mv + 2u * DCM_DIODE_DROP_MV;
+        dis_mv = v_out_mv + 2u * vd_mv;
     }
     if (chg_mv < 1000u) { chg_mv = 1000u; }
     if (dis_mv < 500u)  { dis_mv = 500u; }
@@ -1344,8 +1425,9 @@ void regulator_pid_tim7_isr(void)
                                - DCM_WINDOW_MARGIN_NS;
     uint32_t t_lim_ns = (window_ns * dis_mv) / (chg_mv + dis_mv);   /* < 5000 * 70000 */
     if (t_lim_ns > DCM_ON_TIME_CEIL_NS) { t_lim_ns = DCM_ON_TIME_CEIL_NS; }
-    const float peak_max_a = (float)((regulator_mode == REGULATOR_MODE_BUCK_BOOST)
-                                         ? DCM_MAX_PEAK_MA_BB : DCM_MAX_PEAK_MA) * 1e-3f;
+    const float peak_max_a = (float)((regulator_mode == REGULATOR_MODE_BUCK_BOOST) ? DCM_MAX_PEAK_MA_BB
+                                     : (regulator_mode == REGULATOR_MODE_BOOST)    ? DCM_MAX_PEAK_MA_BOOST
+                                                                                   : DCM_MAX_PEAK_MA) * 1e-3f;
     float i_pk_lim_a = (float)t_lim_ns * 1e-9f * chg_v / l_h;
     if (i_pk_lim_a > peak_max_a) { i_pk_lim_a = peak_max_a; }
     const float i_max_ma = 1e3f * 0.5f * l_h * i_pk_lim_a * i_pk_lim_a * k_per_v / t_sw_s;
@@ -1371,22 +1453,94 @@ void regulator_pid_tim7_isr(void)
     regulator_i_pk_ma    = 1e3f * i_pk_a;
     regulator_i_max_ma   = i_max_ma;
     const uint32_t cmp2 = DCM_PULSE_START_TICKS + HRTIM_NS_TO_TICKS_RT(t_on_ns);
+
+    /* --- 6b. Rectifier window (regulator_config.h, SR_*) ---
+     * Predicted discharge t_dis = t_on * charge / discharge voltage, the
+     * rectifier's discharge voltages (no diode drop).  On one dead time
+     * after the pulse ends, off at SR_END_FRACTION_PCT of t_dis less
+     * SR_END_MARGIN_NS (the body diode takes the rest), and two dead times
+     * before the period ends at the latest.  Shorter than SR_MIN_WINDOW_NS:
+     * not switched. */
+    uint32_t sr_on_ns = 0u, sr_off_ns = 0u;
+    if (regulator_sr_enable)
+    {
+        const uint32_t sr_dis_mv = (regulator_mode == REGULATOR_MODE_BOOST)
+                                       ? ((v_out_mv > v_in_mv) ? (v_out_mv - v_in_mv) : 0u)
+                                       : v_out_mv;
+        if (sr_dis_mv >= 500u)
+        {
+            const uint32_t start_ns = BOOTSTRAP_REFRESH_NS + DCM_REFRESH_DEADTIME_NS;
+            const uint32_t end_ns   = start_ns + t_on_ns;
+            const uint32_t t_dis_ns = (uint32_t)((float)t_on_ns * (float)chg_mv / (float)sr_dis_mv);
+            uint32_t off_ns = end_ns + (uint32_t)(((uint64_t)t_dis_ns * SR_END_FRACTION_PCT * blend) /
+                                                  (100u * SR_BLEND_FULL));
+            off_ns = (off_ns > end_ns + SR_END_MARGIN_NS) ? (off_ns - SR_END_MARGIN_NS) : 0u;
+            const uint32_t latest_ns = (uint32_t)(1000000000ull / HRTIM_SWITCHING_FREQ_HZ) - 2u * SR_DEADTIME_NS;
+            if (off_ns > latest_ns) { off_ns = latest_ns; }
+            const uint32_t on_ns = end_ns + SR_DEADTIME_NS;
+            if (off_ns >= on_ns + SR_MIN_WINDOW_NS)
+            {
+                sr_on_ns  = on_ns;
+                sr_off_ns = off_ns;
+            }
+        }
+    }
+    const uint32_t sr_on  = sr_off_ns ? HRTIM_NS_TO_TICKS_RT(sr_on_ns)  : HRTIM_CMP_PARKED;
+    const uint32_t sr_off = sr_off_ns ? HRTIM_NS_TO_TICKS_RT(sr_off_ns) : HRTIM_CMP_PARKED;
+    regulator_sr_on_ns  = (uint16_t)sr_on_ns;
+    regulator_sr_off_ns = (uint16_t)sr_off_ns;
+
+    if (regulator_mode == REGULATOR_MODE_BUCK && (regulator_sr_enable != 0u) != buck_phase2_on)
+    {
+        buck_phase2_on = (regulator_sr_enable != 0u);
+        if (buck_phase2_on) { HRTIM1->sCommonRegs.OENR  = HRTIM_OUTPUT_TB2 | (regulator_pulses_skipped ? 0u : HRTIM_OUTPUT_TB1); }
+        else                { HRTIM1->sCommonRegs.ODISR = HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2; }
+    }
+
+    /* One consistent set of edges per period: hold the preload transfers of
+     * Timers A-D while writing, release together. */
+    HRTIM1->sCommonRegs.CR1 |= HRTIM_TIMER_ABCD_UDIS;
     if (regulator_mode != REGULATOR_MODE_BOOST)
     {
         HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP2xR = cmp2;
+        /* Q2 rectifier (buck, buck-boost) */
+        HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP2xR = sr_on;
+        HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP3xR = sr_off;
+    }
+    else
+    {
+        HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP2xR = HRTIM_CMP_PARKED;
+        HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP3xR = HRTIM_CMP_PARKED;
     }
     if (regulator_mode != REGULATOR_MODE_BUCK)
     {
         HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP2xR = cmp2;
+        /* Q3 rectifier (boost, buck-boost) */
+        HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_D].CMP3xR = sr_on;
+        HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_D].CMP4xR = sr_off;
     }
+    else
+    {
+        /* Buck: Q3 carries the current from the pulse start to the
+         * rectifier's end; no window, Q3 stays off (body diode). */
+        /* Its start fades with the blend from the rectifier's start back
+         * to the pulse start (Q3's drop also leaves the charge path). */
+        const uint32_t q3_on = sr_off_ns
+            ? sr_on - (uint32_t)(((uint64_t)(sr_on - DCM_PULSE_START_TICKS) * blend) / SR_BLEND_FULL)
+            : HRTIM_CMP_PARKED;
+        HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_D].CMP3xR = q3_on;
+        HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_D].CMP4xR = sr_off;
+    }
+    HRTIM1->sCommonRegs.CR1 &= ~HRTIM_TIMER_ABCD_UDIS;
 
     /* The peak-current comparator (COMP1 -> EEV4) is a protection backstop
      * only, PEAK_PROTECT_PCT above the mode's peak limit: the on-time ends
      * every pulse.  With the threshold at the command (until 2026-10-12)
      * it cut Q1 at the end of its 100 ns blanking while Q4 ran to CMP2, and
      * buck-boost pulses came out at about 100 ns.                         */
-    const uint32_t dac_counts = (regulator_mode == REGULATOR_MODE_BUCK_BOOST)
-                                    ? PEAK_PROTECT_COUNTS_BB : PEAK_PROTECT_COUNTS;
+    const uint32_t dac_counts = (regulator_mode == REGULATOR_MODE_BUCK_BOOST) ? PEAK_PROTECT_COUNTS_BB
+                              : (regulator_mode == REGULATOR_MODE_BOOST)      ? PEAK_PROTECT_COUNTS_BOOST
+                                                                              : PEAK_PROTECT_COUNTS;
     slope_comp_set_peak(dac_counts);
 #if SLOPE_COMP_ENABLED
     slope_comp_update_step(v_out_mv, v_in_mv, (SlopeCompMode)regulator_mode);
@@ -1615,13 +1769,45 @@ static void hrtim_configure_compare_registers(void)
 #endif
 
     /* Dead time between TB1 (Q3) and TB2 (Q4): PHASE2_DEADTIME_NS on both
-     * edges, prescaler unchanged (tDTG = tHRTIM / 8).                      */
+     * edges, prescaler unchanged (tDTG = tHRTIM / 8).  Used by bench PWM
+     * only since 2026-10-15: the dead-time generator makes TB2 the
+     * complement of TB1, and the rectifier must end mid-period, so the
+     * regulator programs TB2 (Q4) from its own sources and keeps the dead
+     * times as compare spacing (SR_DEADTIME_NS, DCM_REFRESH_DEADTIME_NS). */
     {
         uint32_t dt = HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].DTxR;
         dt &= ~(HRTIM_DTR_DTR_Msk | HRTIM_DTR_DTF_Msk);
         dt |= (PHASE2_DEADTIME_TICKS << HRTIM_DTR_DTR_Pos) | (PHASE2_DEADTIME_TICKS << HRTIM_DTR_DTF_Pos);
         HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].DTxR = dt;
     }
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].OUTxR &= ~HRTIM_OUTR_DTEN;
+
+    /* Timers C and D: counters for the rectifier edges (see "Predictive
+     * synchronous rectification"), Timer A's prescaler and period,
+     * continuous, compares parked. */
+    {
+        const uint32_t psc = HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].TIMxCR & HRTIM_TIMCR_CK_PSC;
+        const uint32_t idx[2] = { HRTIM_TIMERINDEX_TIMER_C, HRTIM_TIMERINDEX_TIMER_D };
+        for (uint32_t k = 0u; k < 2u; k++)
+        {
+            HRTIM_Timerx_TypeDef *t = &HRTIM1->sTimerxRegs[idx[k]];
+            t->TIMxCR = psc | HRTIM_TIMCR_CONT;
+            t->PERxR  = HRTIM_PERIOD_COUNTS;
+            t->REPxR  = 0u;
+        }
+    }
+    hrtim_park_sr();
+
+    /* Preload on A-D, transferred at each period roll-over (TRSTU). */
+    {
+        const uint32_t idx[4] = { HRTIM_TIMERINDEX_TIMER_A, HRTIM_TIMERINDEX_TIMER_B,
+                                  HRTIM_TIMERINDEX_TIMER_C, HRTIM_TIMERINDEX_TIMER_D };
+        for (uint32_t k = 0u; k < 4u; k++)
+        {
+            HRTIM1->sTimerxRegs[idx[k]].TIMxCR |= HRTIM_TIMCR_PREEN | HRTIM_TIMCR_TRSTU;
+        }
+    }
+    hrtim_update_now();
 }
 
 /**
@@ -1754,7 +1940,8 @@ static void hrtim_start_timers(void)
      * HAL_HRTIM_WaveformCounterStart_IT enables the timer with interrupts. */
     HAL_HRTIM_WaveformCounterStart_IT(&hhrtim1,
                                        HRTIM_TIMERID_MASTER |
-                                       HRTIM_TIMERID_TIMER_A | HRTIM_TIMERID_TIMER_B);
+                                       HRTIM_TIMERID_TIMER_A | HRTIM_TIMERID_TIMER_B |
+                                       HRTIM_TIMERID_TIMER_C | HRTIM_TIMERID_TIMER_D);
 }
 
 /**
@@ -1803,13 +1990,23 @@ static void hrtim_apply_buck_mode_static_leg(void)
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP1xR =
         DCM_PULSE_START_TICKS + HRTIM_BLANKING_TICKS_BUCK;
 
-    /* Timer B (output side): Q3 static with a Q4 bootstrap refresh from the
-     * period start to CMP3 (BOOTSTRAP_REFRESH_TICKS).  Buck does not enable
-     * these outputs (mode_switching_outputs): phase 2 stays off and Q3
-     * conducts in reverse.  Buck-boost and bench PWM start from these
-     * sources.                                                             */
-    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].RSTx1R = HRTIM_OUTPUTRESET_TIMPER;
-    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx1R = HRTIM_OUTPUTSET_TIMCMP3;
+    /* TA2 (Q2): bootstrap refresh from the period start to CMP3, and the
+     * rectifier window (Timer C CMP2 on, CMP3 off). */
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].SETx2R = HRTIM_SET2R_PER | HRTIM_SET2R_TIMEVNT3;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].RSTx2R = HRTIM_RST2R_CMP3 | HRTIM_RST2R_TIMEVNT4;
+
+    /* Timer B (output side), enabled in buck only with the rectifier
+     * (mode_switching_outputs): Q4 (TB2) gives Q3's bootstrap refresh from
+     * the period start to CMP3; Q3 (TB1) carries the inductor current from
+     * the pulse start (Timer D CMP3) to the rectifier's end (Timer D CMP4),
+     * and is off by CMP2 = one dead time before the next refresh in any
+     * case.  Off outside that window, so the DCM ring cannot push charge
+     * back through it (2026-10-12, Q3 held on: 163 against 47 mA). */
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP2xR = HRTIM_PERIOD_COUNTS - DCM_REFRESH_DEADTIME_TICKS;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx1R = HRTIM_SET1R_TIMEVNT5;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].RSTx1R = HRTIM_RST1R_TIMEVNT6 | HRTIM_RST1R_CMP2;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx2R = HRTIM_SET2R_PER;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].RSTx2R = HRTIM_RST2R_CMP3;
 }
 
 /**
@@ -1857,20 +2054,17 @@ static void hrtim_apply_boost_mode_static_leg(void)
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].SETx1R = HRTIM_OUTPUTSET_TIMCMP4;
 #endif
 
-    /* Restore boost switching sources for Timer B (output side).
-     * (These were overwritten by hrtim_apply_buck_mode_static_leg when
-     * transitioning from buck mode, or are set here for initial boost start.) */
-#if SYNC_RECT_ENABLED
-    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].RSTx1R =
-        HRTIM_OUTPUTRESET_TIMPER;
-#else
-    /* TB1 low (so TB2, Q4, high) from CMP4 = DCM_PULSE_START_TICKS, see
-     * hrtim_configure_compare_registers.                                  */
-    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].RSTx1R =
-        HRTIM_OUTPUTRESET_TIMCMP4;
-#endif
-    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx1R =
-        HRTIM_OUTPUTSET_EEV_4 | HRTIM_SET1R_CMP2;
+    /* TA2 (Q2): the refresh only; no rectifier on the input leg in boost. */
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].SETx2R = HRTIM_SET2R_PER;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].RSTx2R = HRTIM_RST2R_CMP3;
+
+    /* Timer B: Q4 (TB2) charges L1 from CMP4 to CMP2 (or the peak
+     * comparator); Q3 (TB1) rectifies from Timer D CMP3 to CMP4 and is off
+     * at the period start in any case, a pulse start (CMP4) before Q4. */
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx2R = HRTIM_SET2R_CMP4;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].RSTx2R = HRTIM_RST2R_CMP2 | HRTIM_RST2R_EXTVNT4;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx1R = HRTIM_SET1R_TIMEVNT5;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].RSTx1R = HRTIM_RST1R_TIMEVNT6 | HRTIM_RST1R_PER;
 #if !SYNC_RECT_ENABLED
     /* The PID ISR rewrites CMP2 every cycle (step 6b, up to
      * DCM_ON_TIME_CEIL_NS); until then the fixed DCM_MAX_ON_TIME_NS.      */
@@ -1897,9 +2091,13 @@ static void hrtim_apply_buck_boost_legs(void)
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP1xR =
         DCM_PULSE_START_TICKS + HRTIM_BLANKING_TICKS_BOOST;
 #if !SYNC_RECT_ENABLED
-    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].RSTx1R = HRTIM_OUTPUTRESET_TIMCMP4;
-    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx1R =
-        HRTIM_OUTPUTSET_EEV_4 | HRTIM_SET1R_CMP2;
+    /* Q4 (TB2) pulses with Q1 (CMP4 to CMP2, or the peak comparator); Q3
+     * (TB1) rectifies with Q2 (Timer D CMP3 to CMP4, off at the period
+     * start in any case). */
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx2R = HRTIM_SET2R_CMP4;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].RSTx2R = HRTIM_RST2R_CMP2 | HRTIM_RST2R_EXTVNT4;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx1R = HRTIM_SET1R_TIMEVNT5;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].RSTx1R = HRTIM_RST1R_TIMEVNT6 | HRTIM_RST1R_PER;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP2xR =
         DCM_PULSE_START_TICKS + MAX_ON_TIME_COUNTS;
 #endif
@@ -1919,15 +2117,20 @@ static void hrtim_apply_buck_boost_legs(void)
  */
 static uint32_t mode_switching_outputs(RegulatorMode mode)
 {
+    /* Q3 (TB1) is enabled in every mode: it is only ever set by a
+     * rectifier window (Timer D), which is parked while
+     * regulator_sr_enable is 0.  Buck adds phase 2 (Q3 window, Q4 refresh)
+     * only with the rectifier on (the PID ISR follows changes in buck). */
     if (mode == REGULATOR_MODE_BUCK)
     {
-        return HRTIM_BUCK_SWITCHING_OUTPUTS;
+        return HRTIM_BUCK_SWITCHING_OUTPUTS |
+               (regulator_sr_enable ? (HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2) : 0u);
     }
     if (mode == REGULATOR_MODE_BUCK_BOOST)
     {
-        return HRTIM_BUCK_SWITCHING_OUTPUTS | HRTIM_OUTPUT_TB2;
+        return HRTIM_BUCK_SWITCHING_OUTPUTS | HRTIM_OUTPUT_TB2 | HRTIM_OUTPUT_TB1;
     }
-    return HRTIM_BOOST_SWITCHING_OUTPUTS | HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2;
+    return HRTIM_BOOST_SWITCHING_OUTPUTS | HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2;
 }
 
 /**
@@ -1967,6 +2170,9 @@ static void change_mode_while_running(RegulatorMode new_mode, uint32_t v_out_mv,
     {
         hrtim_apply_boost_mode_static_leg();
     }
+    hrtim_park_sr();      /* the next PID cycle programs the new mode's window */
+    hrtim_update_now();
+    buck_phase2_on = (regulator_mode == REGULATOR_MODE_BUCK) && regulator_sr_enable;
     HAL_HRTIM_WaveformOutputStart(&hhrtim1, mode_switching_outputs(regulator_mode));
     skip_state_reset_pulsing();
 
@@ -2044,7 +2250,12 @@ static RegulatorMode determine_mode_from_voltages(uint32_t v_in_mv,
         case REGULATOR_MODE_BUCK:
             return (v_setpoint_mv > lo + h) ? REGULATOR_MODE_BUCK_BOOST : REGULATOR_MODE_BUCK;
         case REGULATOR_MODE_BOOST:
-            return (v_setpoint_mv + h < hi) ? REGULATOR_MODE_BUCK_BOOST : REGULATOR_MODE_BOOST;
+            /* Also on a sag: boost below the band cannot pull V_out back up
+             * (its discharge voltage V_out - V_in + Vd goes to a diode drop,
+             * the window caps the pulse; 2026-10-15, 28 V into 25 ohm sat at
+             * 22 V in boost). */
+            return (v_setpoint_mv + h < hi || v_out_mv + REGULATOR_BOOST_FALLBACK_MV < hi)
+                       ? REGULATOR_MODE_BUCK_BOOST : REGULATOR_MODE_BOOST;
         default:
             if (v_setpoint_mv > hi + h && v_out_mv > hi) { return REGULATOR_MODE_BOOST; }
             if (v_setpoint_mv + h < lo && v_out_mv < lo) { return REGULATOR_MODE_BUCK; }

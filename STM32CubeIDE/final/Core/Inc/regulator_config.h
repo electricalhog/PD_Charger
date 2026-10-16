@@ -421,6 +421,36 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
 #define SYNC_RECT_ENABLED 0u
 
 /**
+ * Predictive synchronous rectification (2026-10-15, plans/ccm-predictive.md
+ * phase 2), with SYNC_RECT_ENABLED 0.  The rectifier conducts from the end of
+ * the charge pulse until shortly before the inductor current is predicted to
+ * reach zero, and the body diode carries the rest: a DCM converter without
+ * the 2 V diode drop in the freewheel path.
+ *   buck        Q2 (TA2) rectifies; Q3 (TB1) is on from the pulse start to
+ *               the same predicted end, Q4 (TB2) gives its bootstrap refresh
+ *   boost       Q3 (TB1) rectifies
+ *   buck-boost  Q2 and Q3 rectify together
+ * The prediction is volt-second balance: t_dis = t_on * V_charge /
+ * V_discharge, with the rectifier's discharge voltages (buck V_out, boost
+ * V_out - V_in, buck-boost V_out), so it does not depend on L1's value.
+ * The edges come from Timer C (Q2: CMP2 on, CMP3 off, Timer A events 3/4)
+ * and Timer D (Q3: CMP3 on, CMP4 off, Timer B events 5/6); all four timers
+ * are preloaded and updated together at the period (regulator.c).
+ * SR_DEADTIME_NS        pulse switch off -> rectifier on
+ * SR_END_FRACTION_PCT   rectifier off at this share of the predicted t_dis
+ * SR_END_MARGIN_NS      ... less this
+ * SR_MIN_WINDOW_NS      shorter windows are not switched (body diode only)
+ * SR_ENABLE_DEFAULT     regulator_sr_enable at boot (runtime switch)
+ * HRTIM_CMP_PARKED      a compare value the counter never reaches
+ */
+#define SR_DEADTIME_NS       50u
+#define SR_END_FRACTION_PCT  85u
+#define SR_END_MARGIN_NS     40u
+#define SR_MIN_WINDOW_NS     60u
+#define SR_ENABLE_DEFAULT    0u
+#define HRTIM_CMP_PARKED     0xFFDFu
+
+/**
  * OUTPUT_SWITCH_ENABLED — Whether regulator_start() asserts OUTPUT_EN.
  * Units  : boolean (0u or 1u)
  * Value  : 1u (bench, 2026-09-28 evening: boost at 28 V into a 330 ohm
@@ -488,7 +518,10 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
  *          the peak is the limit that keeps authority up there; 2.5 A keeps
  *          the low-V_out behaviour of runs 21 to 29.
  */
-#define DCM_MAX_PEAK_MA 2500u
+/* 2026-10-15: 6000 (from 2500) for the 25 ohm on VBUS: 15 V (9 W) needs
+ * more than the ~7.7 W 2.5 A pulses carry; buck pulses are mostly
+ * window-limited below this at 15 to 20 V. */
+#define DCM_MAX_PEAK_MA 6000u
 
 /**
  * DCM_MAX_PEAK_MA_BB — The same limit in buck-boost.  A buck-boost pulse
@@ -498,7 +531,23 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
  *          4 A is 7.5 W ideal, well under L1's 21 A saturation.
  * Units  : mA
  */
-#define DCM_MAX_PEAK_MA_BB 4000u
+/* 2026-10-15: 10000 (from 4000): 24 V into 25 ohm is 0.96 A.  At 8000 the
+ * loop railed at 22.7 V (about 1.0 A real: the model's ~150 mA offset and
+ * two 2 V body diodes); the 5 -> 28 V ramp crosses this band at up to
+ * 1.08 A.  10 A: 1.96 us charge + 1.85 us discharge, inside the window. */
+#define DCM_MAX_PEAK_MA_BB 10000u
+
+/**
+ * DCM_MAX_PEAK_MA_BOOST — The same limit in boost.  Boost delivers at most
+ *          L I_pk^2 V_out / (2 (V_out - V_in)) f: at 2.5 A and 24 V in that is
+ *          4.4 W at 36 V, and at 36 V with no load the loop already sat at
+ *          the ceiling and hunted at 1.7 kHz, 285 mV p-p (2026-10-12).
+ *          4 A, as in buck-boost, is 11.3 W at 36 V and 15 W at 48 V ideal.
+ * Units  : mA
+ */
+/* 2026-10-15: 10000 (from 4000): 48 V into 25 ohm is 92 W, about 90 W
+ * ideal at 10 A with the real 2 V Q3 drop. */
+#define DCM_MAX_PEAK_MA_BOOST 10000u
 
 /**
  * DCM_ON_TIME_CEIL_NS — Longest computed on-time (PID ISR step 6b).  The
@@ -543,11 +592,21 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
  *          at any V_out/V_in (discontinuous, non-synchronous).
  * BB_BELOW_VIN_MV / BB_ABOVE_VIN_MV — Band around V_in (filtered) where it is
  *          selected; BB_HYSTERESIS_MV on each edge.
+ *          Above: 7000 since 2026-10-15 (3000 before).  DCM boost near V_in is
+ *          limited by the period, not the peak: L1 must discharge within the
+ *          window at V_out - V_in + Vd, so at 28 V from 24 V the charge is
+ *          capped near 0.76 us (3.9 A, about 1.0 A out).  With 25 ohm on
+ *          VBUS (1.12 A) 28 V collapsed in boost.  Buck-boost discharges at
+ *          V_out + 2 Vd and carries about 1.2 A at 10 A peaks; boost from
+ *          V_in + 7 V up has the window back (about 2.1 A at 36 V).
+ *          REGULATOR_BOOST_FALLBACK_MV: boost hands back to buck-boost when
+ *          V_out sags that far under the band's top edge.
  * Units  : boolean; mV
  */
 #define BUCK_BOOST_ENABLED 1u
 #define BB_BELOW_VIN_MV   2000u
-#define BB_ABOVE_VIN_MV   3000u
+#define BB_ABOVE_VIN_MV   7000u
+#define REGULATOR_BOOST_FALLBACK_MV 1500u
 #define BB_HYSTERESIS_MV   500u
 
 /**
@@ -815,9 +874,12 @@ _Static_assert(DCM_PULSE_START_TICKS + MAX_ON_TIME_COUNTS + DCM_REFRESH_DEADTIME
  * PEAK_PROTECT_PCT — The peak-current comparator (COMP1 -> EEV4) is a
  * protection backstop, not the modulator: the on-time ends every pulse (PID
  * ISR step 6).  Its threshold sits this far above the mode's peak limit
- * (DCM_MAX_PEAK_MA, DCM_MAX_PEAK_MA_BB).  Units: percent.
+ * (DCM_MAX_PEAK_MA, DCM_MAX_PEAK_MA_BB, DCM_MAX_PEAK_MA_BOOST).  Units: percent.
  */
 #define PEAK_PROTECT_PCT 150u
+/** PEAK_PROTECT_MAX_MA — Ceiling on the comparator threshold: IL_MON reads to
+ *  13.2 A (ADC_IL_FULL_SCALE_MA), so the threshold stays under it.        */
+#define PEAK_PROTECT_MAX_MA 12500u
 
 _Static_assert(PID_EXECUTION_RATE_HZ >= 1000u &&
                    PID_EXECUTION_RATE_HZ <= 500000u,
@@ -1087,7 +1149,14 @@ _Static_assert(PULSE_SKIP_ABOVE_MV * 100u < SETPOINT_MIN_MV * (OVP_RELATIVE_PCT 
  * while VS_MON averaged 20071 mV.  Both channels now sit near 1.16 x
  * nominal, VD_MON about 3 percent more (the sampling draw above).
  * Recalibrate whenever the wiring on PA0 or PA4 changes. */
-#define VD_MON_FULL_SCALE_MV 71560u   /* 80600 x 13.32 / 15.002 */
+/* 2026-10-12: D3 (the clamp on VD_MON) leaked ahead of its knee: the ADC
+ * read 0.2, 0.9, 2.9 and 15.3 percent low at 20, 24, 28 and 36 V (meter at
+ * TP2: 20.03, 24.22, 28.84, 42.5 V), so a 36 V contract put 42.5 V on VBUS.
+ * With D3 disconnected the meter read 19.87, 23.80, 27.70 and 35.05 V with
+ * the ADC at 20.02, 24.05, 28.00 and about 35.65 V (36 V hunting): a gain
+ * error only, fitted by least squares, residuals -106 to +144 mV.  D2 on
+ * VS_MON is still fitted (0.9 percent low at 24 V). */
+#define VD_MON_FULL_SCALE_MV 70645u   /* 71560 x 0.98721 */
 #define VS_MON_FULL_SCALE_MV 69500u   /* 56800 x 24.56 / 20.071 */
 
 /**

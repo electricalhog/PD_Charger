@@ -91,7 +91,10 @@ _VARS = ["regulator_state", "regulator_last_fault_source", "regulator_fault_tick
 # Optional control telemetry: read when the firmware has the symbol.
 _CONTROL = {"regulator_mode": "mode", "target_voltage_mv": "target_mv", "regulator_commanded_mv": "commanded_mv",
             "regulator_ovp_ref_mv": "ovp_ref_mv", "regulator_vin_filt_mv": "vin_filtered_mv", "regulator_on_time_ns": "on_time_ns",
-            "regulator_pulses_skipped": "pulses_skipped"}
+            "regulator_pulses_skipped": "pulses_skipped",
+            # Predictive synchronous rectification (2026-10-15)
+            "regulator_sr_enable": "sr_enable", "regulator_sr_on_ns": "sr_on_ns", "regulator_sr_off_ns": "sr_off_ns",
+            "regulator_sr_blend": "sr_blend"}
 # Float telemetry of the current-command loop (2026-10-12).
 _CONTROL_F = {"regulator_i_cmd_ma": "i_cmd_ma", "regulator_i_pk_ma": "i_pk_ma", "regulator_i_max_ma": "i_max_ma",
               "pid_kp": "kp_ma_per_mv", "pid_ki": "ki_ma_per_mv_s", "regulator_loop_fc_hz": "loop_fc_hz",
