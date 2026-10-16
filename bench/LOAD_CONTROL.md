@@ -1,9 +1,15 @@
 # Commanding the RP2040 buck as an electronic load
 
-> **Update:** the buck is now driven by a QT Py RP2040. The sink (NUCLEO-G431RB) talks to it over
-> I2C on the QT Py's STEMMA QT port, not USB-CDC, and both ends are implemented in this
-> directory: see [`README.md`](README.md), `buck-load-qtpy/`, `load-link/` and `load-control/`.
-> The analysis below (power through V_out, local limits, no reverse power) is what they implement.
+> **As built (updated 2026-10-15).** This note predates the hardware. What was built:
+> - The buck is driven by a QT Py RP2040, commanded from the laptop over the QT Py's USB console
+>   (`bu load run`). An I2C link from the sink on the STEMMA QT port was tried first and dropped
+>   on 2026-10-06; the QT Py would not ACK as an I2C target.
+> - The ballast is **11 Ω / 10 W**. The firmware's parameters still assume 10 Ω and cap at 7 W,
+>   so about 6.4 W real.
+> - The analysis below (power through V_out, local limits, no reverse power) is what
+>   `load-control/` implements.
+> - See [`README.md`](README.md) ("The electronic load") for its limits on the current bench,
+>   including the fixed 25 Ω on VBUS.
 
 Sources reviewed:
 

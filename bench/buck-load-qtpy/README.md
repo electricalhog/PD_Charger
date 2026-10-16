@@ -31,10 +31,27 @@ The control law runs every 1 ms:
 
 1. Allowed power = min(host target, 7 W ballast limit, 0.8 · V_in · I_contract).
 2. V\* = √(P · 10 Ω), slewed at +5 V/s and −2 V/s.
-3. Duty = V\*/V_in plus an integral trim on the V_out error.
+3. Duty = V\*/V_in plus an integral trim on the V_out error, at most 90 %.
 
-The −2 V/s step-down is far slower than the 10 Ω × 8.6 mF discharge, so the synchronous buck
+The parameters (`Params::BENCH_10R_10W` in `../load-control`) assume a 10 Ω ballast; the bench
+ballast is 11 Ω. So the reported `pout_mw` is for 10 Ω, the power into the 11 Ω is 10/11 of it,
+and the 7 W cap is about 6.4 W real. The 8.4 V output ceiling, √(7 W · 10 Ω), sets the
+over-voltage fault below.
+
+The −2 V/s step-down is far slower than the 11 Ω × 8.6 mF discharge, so the synchronous buck
 never pushes energy back into VBUS.
+
+## Limits on the bench
+
+- **VIN.**
+  - It needs 12–15 V to switch: the gate rail comes from VIN through IC8 (L6983).
+  - Both voltage taps read 118.5 counts/V and saturate at about 34.6 V. At 36 and 48 V
+    contracts the load cannot see VIN, its input-current estimate uses the clipped value, and
+    the RP2040's ADC pins sit above 3.3 V.
+- **Ratings.** IC8 is a 38 V part. The load is kept on VBUS at 36 and 48 V by decision (risk
+  accepted 2026-10-11); it saw about 42.5 V and 47 V on 2026-10-12.
+- **Parallel load.** Since 2026-10-15 a fixed 25 Ω sits on VBUS beside the load (see
+  `../README.md`). This firmware knows nothing of it.
 
 Faults latch with all DISABLE lines high:
 
@@ -50,11 +67,12 @@ Faults latch with all DISABLE lines high:
 A command with `clear=1` and `arm=0` releases a latched fault (`bu load run --clear`).
 
 ```sh
-tools/bringup/bu load run --p 500,2000,3000 --seconds 4 --limit-ma 500 --vin-min-mv 11500
+tools/bringup/bu load run --p 500,2000,3000 --seconds 4 --limit-ma 3000 --vin-min-mv 11500
 ```
 
 holds each target for 4 s without disarming in between, then disarms; the `TEL` frames land in
-`bringup_out/`.
+`bringup_out/`. `--limit-ma` is the contract current the load stays under (0.8 · V · I); the
+source's PDOs are 3 A since 2026-10-15.
 
 ## Flash
 
