@@ -78,6 +78,10 @@ option(PD_BENCH_24V "Offer a 24 V fixed PDO (bench only, not in the spec)" OFF)
 # Bench: offer a 28 V fixed EPR PDO (position 8).  Needs VCONN for the
 # e-marker check; see PD_EPR_PDO_28V_ENABLE in Core/Inc/pd_bench_config.h.
 option(PD_BENCH_EPR_28V "Offer the 28 V EPR PDO (bench, needs PD_VCONN)" OFF)
+# Bench: 36 and 48 V fixed EPR PDOs, each on top of the one below
+# (PD_EPR_PDO_36V_ENABLE / _48V_ENABLE in Core/Inc/pd_bench_config.h).
+option(PD_BENCH_EPR_36V "Offer the 36 V EPR PDO (bench, needs PD_BENCH_EPR_28V)" OFF)
+option(PD_BENCH_EPR_48V "Offer the 48 V EPR PDO (bench, needs PD_BENCH_EPR_36V)" OFF)
 
 if(PD_VBUS_PATH_CHARGER)
     target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE PD_VBUS_PATH_CHARGER=1)
@@ -128,6 +132,18 @@ if(PD_BENCH_EPR_28V)
         message(FATAL_ERROR "PD_BENCH_EPR_28V needs PD_VCONN (EPR entry checks the cable e-marker)")
     endif()
     target_compile_definitions(stm32cubemx INTERFACE PD_BENCH_EPR_28V=1)
+endif()
+if(PD_BENCH_EPR_36V)
+    if(NOT PD_BENCH_EPR_28V)
+        message(FATAL_ERROR "PD_BENCH_EPR_36V needs PD_BENCH_EPR_28V")
+    endif()
+    target_compile_definitions(stm32cubemx INTERFACE PD_BENCH_EPR_36V=1)
+endif()
+if(PD_BENCH_EPR_48V)
+    if(NOT PD_BENCH_EPR_36V)
+        message(FATAL_ERROR "PD_BENCH_EPR_48V needs PD_BENCH_EPR_36V")
+    endif()
+    target_compile_definitions(stm32cubemx INTERFACE PD_BENCH_EPR_48V=1)
 endif()
 
 # Add include paths

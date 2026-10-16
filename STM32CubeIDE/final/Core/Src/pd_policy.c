@@ -83,6 +83,14 @@ void pd_policy_init(void)
     {
         epr_pdo[epr_count++] = fixed_pdo(28000u, PD_EPR_28V_CURRENT_MA);
     }
+    if (PD_EPR_ENABLE && PD_EPR_PDO_36V_ENABLE)
+    {
+        epr_pdo[epr_count++] = fixed_pdo(36000u, PD_EPR_36V_CURRENT_MA);
+    }
+    if (PD_EPR_ENABLE && PD_EPR_PDO_48V_ENABLE)
+    {
+        epr_pdo[epr_count++] = fixed_pdo(48000u, PD_EPR_48V_CURRENT_MA);
+    }
 #endif
 
     memset((void *)&pd_status, 0, sizeof(pd_status));

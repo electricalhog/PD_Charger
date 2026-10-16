@@ -49,6 +49,16 @@ static volatile uint32_t dry_vbus_mv;
 static volatile uint32_t vbus_off_tick;
 static bool              vbus_seen_on;
 static bool              fault_reset_sent;
+/* Bench time cap (PD_BENCH_HIGH_V_MAX_MS): tick at which the contract went
+ * above PD_BENCH_HIGH_V_MV, and the Hard Resets it has sent (bu mem read). */
+static uint32_t          high_v_since_tick;
+static bool              high_v_active;
+__attribute__((used)) volatile uint32_t pd_bench_high_v_resets;
+/* Regulation lost after PS_RDY (PD_VBUS_LOST_MS): since when, and how many
+ * Hard Resets it has sent (bu mem read). */
+static uint32_t          vbus_lost_since_tick;
+static bool              vbus_lost_active;
+__attribute__((used)) volatile uint32_t pd_vbus_lost_resets;
 
 static bool output_switch_closed(void)
 {
@@ -90,10 +100,13 @@ uint32_t pd_vbus_wait_in_range(uint32_t target_mv, uint32_t timeout_ms)
             return UINT32_MAX;
         }
         uint32_t v = adc_measurements.v_out_mv;
-        bool ok = output_switch_closed() &&
+        /* The ramp must be done, not just passing through the window: a
+         * 28 V ramp into 25 ohm reached 27.3 V, got PS_RDY, then sagged
+         * (2026-10-15). */
+        bool ok = output_switch_closed() && regulator_commanded_mv == target_mv &&
                   v + tol_mv >= target_mv && v <= target_mv + tol_mv;
         in_range = ok ? in_range + 1u : 0u;
-        if (in_range >= 3u)              /* 3 consecutive 2 ms samples */
+        if (in_range >= 5u)              /* 5 consecutive 2 ms samples */
         {
             return elapsed;
         }
@@ -117,6 +130,54 @@ void pd_vbus_poll(void)
         vbus_off_tick = HAL_GetTick();
     }
     vbus_seen_on = closed;
+
+    if (PD_BENCH_HIGH_V_MAX_MS != 0u)
+    {
+        bool high = DPM_Params[USBPD_PORT_0].PE_Power == USBPD_POWER_EXPLICITCONTRACT &&
+                    pd_status.contract_mv > PD_BENCH_HIGH_V_MV;
+        if (!high)
+        {
+            high_v_active = false;
+        }
+        else if (!high_v_active)
+        {
+            high_v_active     = true;
+            high_v_since_tick = HAL_GetTick();
+        }
+        else if ((HAL_GetTick() - high_v_since_tick) >= PD_BENCH_HIGH_V_MAX_MS)
+        {
+            high_v_active = false;   /* re-armed by the next contract above */
+            pd_bench_high_v_resets++;
+            pd_status_event(PD_EV_HIGH_V_CAP);
+            (void)USBPD_DPM_RequestHardReset(USBPD_PORT_0);
+        }
+    }
+
+    {
+        const uint32_t set = regulator_commanded_mv;
+        const uint32_t v   = adc_measurements.v_out_mv;
+        const uint32_t tol = set * PD_VBUS_LOST_PCT / 100u;
+        bool lost = DPM_Params[USBPD_PORT_0].PE_Power == USBPD_POWER_EXPLICITCONTRACT &&
+                    regulator_get_state() == REGULATOR_STATE_RUNNING && closed &&
+                    v + tol < set;   /* low side only: above is OVP's (and a
+                                        down-slew without reverse flow lags) */
+        if (!lost)
+        {
+            vbus_lost_active = false;
+        }
+        else if (!vbus_lost_active)
+        {
+            vbus_lost_active     = true;
+            vbus_lost_since_tick = HAL_GetTick();
+        }
+        else if ((HAL_GetTick() - vbus_lost_since_tick) >= PD_VBUS_LOST_MS)
+        {
+            vbus_lost_active = false;
+            pd_vbus_lost_resets++;
+            pd_status_event(PD_EV_VBUS_LOST);
+            (void)USBPD_DPM_RequestHardReset(USBPD_PORT_0);
+        }
+    }
 
     RegulatorState state = regulator_get_state();
     if (state != REGULATOR_STATE_FAULT)

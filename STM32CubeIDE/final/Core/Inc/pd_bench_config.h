@@ -33,15 +33,16 @@
 /**
  * PD_SRC_MAX_CURRENT_MA — Current offered in every PDO.
  * Units  : mA (PDO resolution 10 mA)
- * Value  : 500 mA.  The power stage runs DCM-only (SYNC_RECT_ENABLED 0,
- *          DCM_MAX_PEAK_MA 2500) and its output current capability has not
- *          been measured; bench runs so far loaded it with 330 ohm (85 mA
- *          at 28 V).  A sink may draw up to the RDO operating current it
- *          requests, which is capped by this value.
+ * Value  : 3000 mA (2026-10-15; 500 mA until then).  The bench now has
+ *          25 ohm fixed on VBUS (1.9 A at 48 V), so every PDO must cover
+ *          that.  The power stage is still DCM-only (SYNC_RECT_ENABLED 0)
+ *          with the raised peak limits; whether it holds 5 % at these
+ *          currents is what the 2026-10-15 runs measure.  A sink may draw
+ *          up to the RDO operating current it requests, capped by this.
  * Raise  : only after a dummy-load run at the highest offered voltage
  *          holds V_out within 5 % at this current.
  */
-#define PD_SRC_MAX_CURRENT_MA       500u
+#define PD_SRC_MAX_CURRENT_MA       3000u   /* 25 ohm on VBUS since 2026-10-15: 0.8 A at 20 V */
 
 /** PD_SRC_PDO_9V_ENABLE / _15V_ / _20V_ — offer that fixed SPR PDO (1/0). */
 #define PD_SRC_PDO_9V_ENABLE        1u
@@ -102,7 +103,53 @@
 #else
 #define PD_EPR_PDO_28V_ENABLE       0u
 #endif
-#define PD_EPR_28V_CURRENT_MA       500u
+#define PD_EPR_28V_CURRENT_MA       3000u
+
+/**
+ * PD_EPR_PDO_36V_ENABLE / PD_EPR_PDO_48V_ENABLE — 36 and 48 V fixed EPR PDOs
+ * (the next object positions after 28 V), each behind its own bench option
+ * (CMake -DPD_BENCH_EPR_36V=ON, -DPD_BENCH_EPR_48V=ON), enabled in order
+ * (plans/epr-bringup.md).  On top of the 28 V conditions:
+ *   - 48 V needs every part on VBUS rated >= 58 V; the power board's are
+ *     60 V by design (unverified), R27 dissipates 123 mW at 48 V.
+ *   - the QT Py load's VIN tap (9.78:1) passes 3.3 V at 32 V and IC8
+ *     (L6983) is a 38 V part: risk accepted for the bench (2026-10-11).
+ *   - boost delivers at most L I_pk^2 V_out / (2 (V_out - V_in)) f at the
+ *     DCM_MAX_PEAK_MA limit: 5.9 W at 48 V from 24 V, before losses.
+ *   - BLOCKED (2026-10-12): VD_MON under-reads above about 20 V.  With the
+ *     ADC at 36.0 V, the scope read 42.3 V at TP2 and Q3's diode plateau on
+ *     SW2 rose 15.4 V from the 28 V point (ADC +8.1 V).  48 V would be about
+ *     60 V, and OVP uses the same sense.  Fix the sense (D3's 3.4 V clamp
+ *     leakage is the suspect) and meter-check before enabling either.
+ */
+#if defined(PD_BENCH_EPR_36V) && (PD_BENCH_EPR_36V)
+#define PD_EPR_PDO_36V_ENABLE       1u
+#else
+#define PD_EPR_PDO_36V_ENABLE       0u
+#endif
+#if defined(PD_BENCH_EPR_48V) && (PD_BENCH_EPR_48V)
+#define PD_EPR_PDO_48V_ENABLE       1u
+#else
+#define PD_EPR_PDO_48V_ENABLE       0u
+#endif
+#define PD_EPR_36V_CURRENT_MA       3000u
+#define PD_EPR_48V_CURRENT_MA       3000u   /* 25 ohm draws 1.92 A */
+
+/**
+ * PD_BENCH_HIGH_V_MV / PD_BENCH_HIGH_V_MAX_MS — Time cap for contracts above
+ * PD_BENCH_HIGH_V_MV (2026-10-15).  The bench has 25 ohm / 25 W fixed on
+ * VBUS: 31 W at 28 V is fine continuously, 52 W at 36 V and 92 W at 48 V
+ * only in bursts.  A contract above the threshold that lasts longer than
+ * PD_BENCH_HIGH_V_MAX_MS ends in a Hard Reset (back to vSafe5V; the bench
+ * sink does not re-enter EPR on its own).  The host script keeps the
+ * 10-minute average; this is the backstop.  0 ms turns it off.
+ */
+#define PD_BENCH_HIGH_V_MV          28000u
+#if PD_EPR_PDO_36V_ENABLE
+#define PD_BENCH_HIGH_V_MAX_MS      2000u
+#else
+#define PD_BENCH_HIGH_V_MAX_MS      0u
+#endif
 
 /* =========================================================================
  * SECTION 3: VCONN
@@ -155,6 +202,17 @@
  * before PS_RDY is sent.  Spec vSrcNew: +/-5 %.
  */
 #define PD_VBUS_TOLERANCE_PCT       5u
+
+/**
+ * PD_VBUS_LOST_PCT / PD_VBUS_LOST_MS — Regulation lost after PS_RDY
+ * (2026-10-15).  When V_out stays more than PD_VBUS_LOST_PCT under the
+ * regulator's commanded setpoint (which follows the slew, so ramps do not
+ * count) for PD_VBUS_LOST_MS while a contract is in place, the source sends
+ * a Hard Reset rather than keep claiming a voltage it cannot hold: 28 V into
+ * 25 ohm collapsed to 22 V in boost after PS_RDY.
+ */
+#define PD_VBUS_LOST_PCT            8u
+#define PD_VBUS_LOST_MS             200u
 
 /**
  * PD_SPR_TRANSITION_BUDGET_MS / PD_EPR_TRANSITION_BUDGET_MS — How long the
@@ -222,6 +280,24 @@ _Static_assert(!PD_EPR_PDO_28V_ENABLE ||
                "tPSTransition at SETPOINT_SLEW_DOWN_MV_PER_CYCLE");
 _Static_assert(!PD_EPR_PDO_28V_ENABLE || 28000u * 110u / 100u < OVP_ABSOLUTE_MV,
                "28 V EPR PDO with its relative OVP must stay under OVP_ABSOLUTE_MV");
+#if (defined(PD_BENCH_EPR_36V) && (PD_BENCH_EPR_36V)) && !(defined(PD_BENCH_EPR_28V) && (PD_BENCH_EPR_28V))
+#error "PD_BENCH_EPR_36V needs PD_BENCH_EPR_28V"
+#endif
+#if (defined(PD_BENCH_EPR_48V) && (PD_BENCH_EPR_48V)) && !(defined(PD_BENCH_EPR_36V) && (PD_BENCH_EPR_36V))
+#error "PD_BENCH_EPR_48V needs PD_BENCH_EPR_36V"
+#endif
+#define PD_EPR_MAX_MV                                                    \
+    (PD_EPR_PDO_48V_ENABLE ? 48000u :                                    \
+     PD_EPR_PDO_36V_ENABLE ? 36000u :                                    \
+     PD_EPR_PDO_28V_ENABLE ? 28000u : PD_SPR_MAX_MV)
+_Static_assert(PD_RAMP_FROM_5V_MS(PD_EPR_MAX_MV) <= PD_EPR_TRANSITION_BUDGET_MS,
+               "highest EPR PDO cannot be reached from 5 V within EPR tPSTransition");
+_Static_assert(PD_RAMP_TO_5V_MS(PD_EPR_MAX_MV) <= PD_EPR_TRANSITION_BUDGET_MS,
+               "the setpoint cannot come down from the highest EPR PDO to 5 V within "
+               "EPR tPSTransition");
+_Static_assert(PD_EPR_MAX_MV * OVP_RELATIVE_PCT / 100u <= OVP_ABSOLUTE_MV,
+               "highest EPR PDO with its relative OVP must stay at or under OVP_ABSOLUTE_MV");
+_Static_assert(PD_EPR_MAX_MV <= SETPOINT_MAX_MV, "EPR PDO above SETPOINT_MAX_MV");
 _Static_assert(PD_SPR_MAX_MV <= SETPOINT_MAX_MV, "PDO above SETPOINT_MAX_MV");
 
 #endif /* PD_BENCH_CONFIG_H */

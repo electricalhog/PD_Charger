@@ -98,6 +98,8 @@ extern volatile PdStatus pd_status;
 #define PD_EV_SETUP_POWER     0x203u  /* PE called USBPD_DPM_SetupNewPower */
 #define PD_EV_SETUP_POWER_ERR 0x204u  /* ... and it returned an error */
 #define PD_EV_POWER_NOT_READY 0x205u  /* IsPowerReady answered DISABLE */
+#define PD_EV_HIGH_V_CAP      0x206u  /* Hard Reset: contract above PD_BENCH_HIGH_V_MV too long */
+#define PD_EV_VBUS_LOST       0x207u  /* Hard Reset: V_out off the setpoint by PD_VBUS_LOST_PCT */
 #define PD_EV_DPM_WHAT_TO_DO  0x210u  /* 0x210 | IDAction: PE asked the DPM (RequestDPMWhatToDo) */
 
 /** Build the PDO tables; call once before the PD stack runs. */
