@@ -1,8 +1,8 @@
 # USB-C PD / EPR bring-up (side branch of agentic bring-up)
 
 Branch: `claude/usb-c-epr-testing-9bt5lo`, which is `agentic-bringup-tools` plus a merge of
-`jonah-bench` (the bench-run regulator firmware) plus the work below. Nothing here has run on
-hardware yet. Every bench step below is a proposal for you to review.
+`jonah-bench` (the bench-run regulator firmware) plus the work below. The sections up to the bench
+logs were written before the first bench run; the logs record what has run since.
 
 ## Assumptions (correct any that are wrong before flashing)
 
@@ -249,8 +249,8 @@ machine.
 
 - **VBUS sense recalibrated.** At the 15 V contract a meter read 13.32 V at TP2 and 24.56 V on
   the supply, against 15.00 V on VD_MON and 20.07 V on VS_MON.
-  - `VD_MON_FULL_SCALE_MV` is now 71560 (was 80600) and `VS_MON_FULL_SCALE_MV` 69500 (was 56800),
-    in `regulator_config.h`.
+  - `VD_MON_FULL_SCALE_MV` was set to 71560 (from 80600) and `VS_MON_FULL_SCALE_MV` to 69500
+    (from 56800), in `regulator_config.h`. VD_MON has been 70645 since 2026-10-12.
   - It is a gain-only correction, so redo it whenever the wiring on PA0 or PA4 changes.
 - **20 V PDO** with `-DPD_BENCH_20V=ON`, which needs `PD_BENCH_15V`. In SPR mode 20 V is reached
   from 15 V (250 ms at 20 V/s). 5 → 20 V takes 750 ms, which only the EPR budget covers.
@@ -422,7 +422,7 @@ an 830 ms minimum tPSTransition.
    - validate the up-step overshoot into a dummy load before any PD use.
 
    Not done here, because it changes `jonah-bench` loop dynamics.
-2. **Output current.** The stage is DCM-only (`SYNC_RECT_ENABLED` 0, `DCM_MAX_PEAK_MA` 2500).
+2. **Output current.** The stage is DCM-only (`SYNC_RECT_ENABLED` 0, `DCM_MAX_PEAK_MA` 2500 when this was written; 6000 from 2026-10-15).
    Bench loads so far were 330 Ω. Measure the current each voltage holds within 5 % before
    raising `PD_SRC_MAX_CURRENT_MA`.
 3. **Boost start ringing.** Runs 32 and 33 rang to 36–38 V at a 28 V target. Any EPR voltage

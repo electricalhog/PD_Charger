@@ -133,7 +133,9 @@ This replaced the original plan (the sink's receptacle feeding the load) on 2026
 - **Heat budget (the user's):** up to 5× rating in short steps, averaging no more than 25 W
   over 10 minutes; 28 V (31 W) is fine continuously.
 - **Firmware backstop (bench builds with the 36/48 V PDOs):** a contract above 28 V ends in a
-  Hard Reset after 2 s (`PD_BENCH_HIGH_V_MAX_MS`).
+  Hard Reset after 2 s (`PD_BENCH_HIGH_V_MAX_MS`). It covers 48 V too.
+- **Policy (2026-10-16):** 36 and 48 V are allowed, but not left unattended, until the 36 V
+  oscillation with the rectifier on is resolved and the dissipation is measured.
 
 **QT Py tools.** The load firmware has its own USB console. `bu load status | run | bootsel |
 flash [--power-stage]` use it. The I2C diagnostics (`pins | sniff | edges | glitch | i2c |

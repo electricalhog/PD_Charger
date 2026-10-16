@@ -14,12 +14,13 @@ the range:
 | boost 28 V from 24 V | 3.6 A | 1.8 A in (≈ 43 W) |
 | boost 48 V from 24 V | 12.8 A | 6.4 A in (≈ 150 W) |
 
-Today's ceiling comes from the DCM peak limits (2.5 A buck, 4 A boost and buck-boost) and the
-period window, not from DCM itself. At the boundary with 12 A peaks, 48 V boost delivers about
+Before 2026-10-15 the ceiling came from the DCM peak limits (2.5 A buck, 4 A boost and buck-boost)
+and the period window, not from DCM itself; the interim limits from that day are 6, 10 and 10 A.
+At the boundary with 12 A peaks, 48 V boost delivers about
 130 W. L1 saturates at 21 A and IL_MON (INA281A2, 5 mΩ) reads up to 13.2 A, forward only.
 
-The second limit is the GaN body diodes: Q2 and Q3 are never driven as rectifiers, so the
-rectified current flows at about 2 V. That is about 5 W at 125 W out, and it heats parts that are
+The second limit is the GaN body diodes: before the predictive rectifier (2026-10-15), Q2 and Q3
+were never driven as rectifiers, so the rectified current flowed at about 2 V. That is about 5 W at 125 W out, and it heats parts that are
 not sized for it.
 
 ## Load limit

@@ -509,7 +509,7 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
  *          (SYNC_RECT_ENABLED 0).  The PID output is clamped to it too, so the
  *          integrator cannot wind past it.
  * Units  : mA
- * Value  : 2500u (2026-09-28 evening)
+ * Value  : 6000u (2026-10-15; 2500u from 2026-09-28)
  * Purpose: DCM_MAX_ON_TIME_NS alone capped the pulse at 600 ns whatever the
  *          operating point.  That is 2.4 A at 5 V out from 24 V, but only
  *          1.2 A at 13.6 V, where charge per pulse was down to the 330 ohm
@@ -540,9 +540,9 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
 /**
  * DCM_MAX_PEAK_MA_BOOST — The same limit in boost.  Boost delivers at most
  *          L I_pk^2 V_out / (2 (V_out - V_in)) f: at 2.5 A and 24 V in that is
- *          4.4 W at 36 V, and at 36 V with no load the loop already sat at
+ *          8.8 W at 36 V, and at 36 V with no load the loop already sat at
  *          the ceiling and hunted at 1.7 kHz, 285 mV p-p (2026-10-12).
- *          4 A, as in buck-boost, is 11.3 W at 36 V and 15 W at 48 V ideal.
+ *          4 A, as in buck-boost, is 22.6 W at 36 V and 15 W at 48 V ideal.
  * Units  : mA
  */
 /* 2026-10-15: 10000 (from 4000): 48 V into 25 ohm is 92 W, about 90 W

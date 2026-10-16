@@ -66,7 +66,7 @@ the next build was prepared.
   - With the rectifier off this is meant to switch as before.
 - 5 → 28 V all held. The commands came within 5 % of runs A–C, except 20 V (1058 mA against
   960 and 908).
-- One 15 V read was 14.30 V; the next two were 15.0 V.
+- The three 15 V reads were 14.94, 15.01 and 14.30 V.
 - Capture `sr0_bb28` at 28 V (18:51), top of `figures/sw_28v_bb_off_on.png`:
   - After each charge pulse, SW2 sits at about 33 V and SW1 at about −3 V for 1.3 µs.
   - Q3 and Q2 conduct through their body diodes at peaks near 10 A.
@@ -106,7 +106,7 @@ the next build was prepared.
   `figures/burst36.png`).
 - The regulator was in boost:
   - V_out 35.9–36.5 V by the ADC.
-  - The command 2080–2160 mA against a ceiling of 2050–2280 mA, about 95 % of it.
+  - The command 2080–2163 mA against a ceiling of 2050–2280 mA, about 96 % of it.
   - Peaks 6.4–7.2 A, below the 10 A limit.
 - The user heard a screech.
 - VBUS was above 33 V for 2.09 s, averaging 34.9 V on the scope. It had 5.3 V p-p (0.88 V rms)
@@ -129,7 +129,7 @@ The current command needed for the same 25 Ω load (`figures/icmd_by_run.png`, `
 | 20 V | 800 mA | 964 | 907 | 1002 | 1058 | 845 |
 | 24 V | 960 mA | not held | 1352 | | 1382 | 1187 |
 | 28 V | 1120 mA | | not held | 1520 | 1553 | 1373 |
-| 36 V | 1440 mA | | | | | 2127, at its ceiling |
+| 36 V | 1440 mA | | | | | 2127, about 96 % of its ceiling |
 
 Command and load are in mA. Reading the cells:
 - Run D's 20 V cell is the 1052–1062 mA reads. Runs A–C read 893–1003 mA at 20 V.

@@ -119,7 +119,7 @@ bidirectional: when duty drops faster than the output can discharge through R, t
 drives the inductor current negative and pumps output-capacitor energy into the input.
 
 - At 10 V, ≈ 8.6 mF stores 0.43 J. VBUS has little capacitance, the G431 sink has no blocking
-  device, and the G474 source can't absorb energy (DCM, no synchronous rectification). Its V_out
+  device, and the G474 source can't absorb energy (DCM; the predictive rectifier, when on, is one-way). Its V_out
   would rise into SW_OVP, and the source would Hard Reset.
 - **Slew V_out\* downward no faster than the ballast discharges it.** τ = R·C ≈ 8 Ω × 8.6 mF
   ≈ 69 ms, so the step-down rate should be ≤ V_out/τ.

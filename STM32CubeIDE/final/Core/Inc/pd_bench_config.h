@@ -115,12 +115,16 @@
  *   - the QT Py load's VIN tap (9.78:1) passes 3.3 V at 32 V and IC8
  *     (L6983) is a 38 V part: risk accepted for the bench (2026-10-11).
  *   - boost delivers at most L I_pk^2 V_out / (2 (V_out - V_in)) f at the
- *     DCM_MAX_PEAK_MA limit: 5.9 W at 48 V from 24 V, before losses.
- *   - BLOCKED (2026-10-12): VD_MON under-reads above about 20 V.  With the
- *     ADC at 36.0 V, the scope read 42.3 V at TP2 and Q3's diode plateau on
- *     SW2 rose 15.4 V from the 28 V point (ADC +8.1 V).  48 V would be about
- *     60 V, and OVP uses the same sense.  Fix the sense (D3's 3.4 V clamp
- *     leakage is the suspect) and meter-check before enabling either.
+ *     DCM_MAX_PEAK_MA_BOOST limit (10 A since 2026-10-15): 94 W at 48 V from
+ *     24 V, before losses.
+ *   - 36 V was BLOCKED on 2026-10-12: VD_MON under-read above about 20 V (D3's
+ *     3.4 V clamp leaked; with the ADC at 36.0 V the scope read 42.3 V at TP2).
+ *     D3 is off and VD_MON is recalibrated; 36 V was burst on 2026-10-15.
+ *   - 48 V is not blocked: it ran on 2026-10-12 with the meter at 47.0 V (no
+ *     ADC pair recorded; the sense is the same as OVP's).
+ *   - 36 and 48 V run with the time cap below and are not left unattended
+ *     until the 36 V oscillation (about 3.9 kHz with the rectifier on) is
+ *     resolved and the power dissipation is measured (2026-10-16).
  */
 #if defined(PD_BENCH_EPR_36V) && (PD_BENCH_EPR_36V)
 #define PD_EPR_PDO_36V_ENABLE       1u

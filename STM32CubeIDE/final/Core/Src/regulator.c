@@ -80,9 +80,9 @@
 #endif
 
 /* Outputs of the buck switching leg (Timer A).  Both outputs are always
- * enabled: with SYNC_RECT_ENABLED 0 the low side (TA2, Q2) carries only the
- * bootstrap refresh pulse at the start of each period, never the
- * synchronous-rectifier conduction: see regulator_config.h.               */
+ * enabled: with SYNC_RECT_ENABLED 0 the low side (TA2, Q2) carries the
+ * bootstrap refresh pulse at the start of each period, plus the predictive
+ * rectifier when regulator_sr_enable is 1 (see regulator_config.h).      */
 #define HRTIM_BUCK_SWITCHING_OUTPUTS (HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2)
 #if SYNC_RECT_ENABLED
 #define HRTIM_BOOST_SWITCHING_OUTPUTS (HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2)
