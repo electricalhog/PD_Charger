@@ -100,7 +100,7 @@ The V_in median also moved, from 24.43 V (the single sample's fixed phase) to 24
 | 2 W | 1239 | 74.9 | 821 | 208 | 91.6 | 21.7 | 191 |
 | 3 W | 1204 | 84.5 | 761 | 241 | 98.9 | 21.2 | 188 |
 
-All values are in mV. The board ADC read 28.019–28.028 V (+0.07 to +0.10 %) at every load. The QT Py read 28.26 V at its input.
+All values are in mV. The board ADC read 28.019–28.028 V at every load. The DMM read 28.84 V at no load, so the real level is about +3 %. The QT Py read 28.26 V at its input.
 
 ## Task 1 scorecard (28 V, 24 V in)
 
@@ -114,11 +114,43 @@ All values are in mV. The board ADC read 28.019–28.028 V (+0.07 to +0.10 %) at
 
 The ramps ran unloaded. The load cannot start at 5 V, because its gate drive needs 12–15 V at its input.
 
+## Above 28 V: blocked by the VBUS sense (2026-10-12)
+
+36 and 48 V EPR PDOs were added behind bench gates (`PD_BENCH_EPR_36V`, `PD_BENCH_EPR_48V`). The sink saw them at positions 9 and 10, and 5 → 36 V ramped with no fault; the board ADC read 36.01 V. VBUS was really higher:
+
+| | Board ADC (VD_MON) | DMM at TP2 | Scope at TP2 (5 V/div DC) | SW2 diode plateau (CH3, 10 V/div DC) | QT Py VIN |
+|---|---|---|---|---|---|
+| 28 V contract | 27.92–28.09 V | 28.84 V | 28.85 V | 31.56 V | 28.19 V |
+| 36 V contract | 36.02 V | – | 42.29 V | 46.93 V | saturated (≥ 34.5 V) |
+
+Two independent readings agree:
+- **Switch node.** The SW2 plateau is V_out plus Q3's reverse drop, and it rose 15.4 V between the two contracts while the ADC rose 8.1 V. On the same capture, CH2 read SW1 at 24.17 V against V_in 24.08 V.
+- **Scope at TP2.** It reads 42.3 V for an ADC reading of 36.0 V.
+
+So VD_MON under-reads more and more above the 15 V calibration point: 2.9 % at 28 V (the DMM read 28.84 V for an ADC reading of about 28.0 V; the scope agrees within 10 mV) and 15.3 % at 36 V (DMM 42.5 V). The 28 V contract therefore sits at +3.0 %, inside the ±5 % of vSrcNew. The likely cause is leakage in D3, the 3.4 V clamp zener on VD_MON (the pin sits at about 2 V at 36 V), with D2 on VS_MON the same part. OVP uses the same sense, so 48 V (about 60 V real) was not tried, and the bench went back to the 28 V-only build.
+
+Meter calibration run (DMM at TP2, 2026-10-12; VS node 24.56 V by DMM, against 24.35 V on the ADC, 0.9 % low):
+
+| Contract | Board ADC | DMM at TP2 | ADC low by | Pin drop below the bare divider |
+|---|---|---|---|---|
+| 15 V (2026-10-10 calibration point) | 13.32 V | 13.32 V | 0 % | 16.2 % |
+| 20 V | 19.99 V | 20.03 V | 0.2 % | 16.3 % |
+| 24 V | 23.99 V | 24.22 V | 0.9 % | 16.9 % |
+| 28 V | 28.00 V | 28.84 V | 2.9 % | 18.6 % |
+| 36 V | 36.01 V | 42.50 V | 15.3 % | 29.0 % |
+
+The constant 16.2 % is the divider and ADC gain, which the full-scale calibration absorbs. The excess above it starts near 1.1 V at the pin and reaches about 54 µA through the divider's 5.5 kΩ at 1.7 V. That is a clamp leaking ahead of its knee: D3 on VD_MON, and D2 on VS_MON shows the same 0.9 % at 24 V.
+
+Next steps:
+1. Done: meter readings at 20, 24, 28 and 36 V (above).
+2. Fix the clamp (a higher-voltage or low-leakage part, or a Schottky to 3V3), then recalibrate.
+3. Before any 36 V or 48 V run, cross-check OVP against an independent sense.
+
 ## Open items
 
 - **PS_RDY validity.** Before the PH2_N wiring fix, the source sent PS_RDY for 24 V while VBUS had stalled at 21.9 V. PS_RDY should wait for VBUS to be in range.
 - **Meter readings at 28 V.** Two calibrations need a meter:
-  - VBUS at TP2. The ADC reads 28.02 V, the QT Py 28.26 V, and the scope 28.85 V at 5 V/div.
+  - VBUS at TP2: done. The DMM read 28.84 V (+3.0 %) with the ADC at about 28.0 V, matching the scope's 28.85 V. VD_MON is nonlinear above the 15 V calibration point (see above).
   - V_in (VS). The VS_MON gain predates the oversampling.
 - **Loop retune.**
   - Set the gains for the plant as measured: C/G ≈ 25 µF, about 64 µs of loop delay. Keep kp, and raise ki about 8× (the PI zero from 25 to about 200 Hz). That would shorten the 6 ms tail and the skip plateaus.
