@@ -94,26 +94,7 @@ down-slews; this replaces the planned timed reverse pulses.
 
 Each phase is flashed only after review. Power-stage changes are flashed on approval.
 
-## Progress (2026-10-15)
+## Progress
 
-Bench: 25 Ω / 25 W fixed on VBUS; the QT Py buck is back on its 11 Ω / 10 W.
-
-- **Interim power.** Peak limits raised to buck 6 A, buck-boost 10 A, boost 10 A, with the
-  comparator capped at 12.5 A. Buck-boost runs up to V_in + 7 V, because DCM boost near V_in is
-  limited by the period window (28 V collapsed to 22 V in boost). Boost falls back to buck-boost on
-  a sag. PS_RDY waits for the ramp to finish, and VBUS more than 8 % under the setpoint for 200 ms
-  ends in a Hard Reset. PDOs are 3 A. Contracts above 28 V are capped at 2 s.
-- **Phase 2 (rectifier) works at 5–28 V.**
-  - Timers C and D give the rectifier edges, Q4 is driven explicitly, and A–D are preloaded.
-  - `regulator_sr_enable` boots 0. It fades in over 100 ms, because switching it on at once at
-    5 V overshot to the relative OVP. Pulse skipping in buck also stops the Q4 refresh, which
-    otherwise pumps the output.
-  - The current command dropped 17–20 % in buck at 9–20 V and 11–14 % in buck-boost at 24–28 V,
-    for the same load. The 28 V peak current fell from 9.9 to 9.1 A, and the FETs ran noticeably
-    cooler. No reverse current: each conduction ends with a short body-diode tail.
-- **36 V with the rectifier:**
-  - It held 34.9 V (scope) for the 2 s cap.
-  - The loop sat at 95 % of a window-limited ceiling (6.4–7.2 A peaks) and oscillated at 3.9 kHz:
-    5.3 V p-p, audible.
-  - Next: measure the margin at 28 V by lowering `regulator_loop_fc_hz`, and set the gains per
-    mode. 36 and 48 V need Phase 3 (CCM) for headroom.
+- **2026-10-15.** Interim DCM limits, Phase 2 (the rectifier) built and run at 5–28 V, and one
+  36 V burst. The account of the day, with figures, is in `bench/results/2026-10-15/README.md`.
