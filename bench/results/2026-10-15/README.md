@@ -97,8 +97,9 @@ the next build was prepared.
 - Capture `sr1_bb28` at 28 V (19:18), bottom of `figures/sw_28v_bb_off_on.png`:
   - During conduction SW1 is near −0.7 V and SW2 about 2 V lower than in `sr0_bb28`.
   - At about 1.25 µs both nodes step to the diode levels for about 0.15 µs.
-  - Afterwards the nodes ring between about 0 and 26 V, about 2 µs per cycle, until the next
-    pulse.
+  - Afterwards the nodes ring between about 0 and 26 V until the next pulse. The cycle is
+    420 ns (median of 111 cycles in this capture, measured 2026-10-16); "about 2 µs per cycle"
+    was written here at first.
 - The user reported the FETs cooler than in run C.
 
 **8. 36 V burst (19:22).**

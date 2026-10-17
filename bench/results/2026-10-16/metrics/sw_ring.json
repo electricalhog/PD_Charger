@@ -1,0 +1,42 @@
+{
+ "periods_analyzed": 52,
+ "vbus_mean_v": 28.02,
+ "charge_ns_mean_min_max": [
+  1786,
+  976,
+  1824
+ ],
+ "discharge_ns_mean_min_max": [
+  1564,
+  1240,
+  1612
+ ],
+ "clamp_ns_mean": 237,
+ "i_pk_a_from_charge": 9.33,
+ "zero_crossing_ns_after_charge": 1565,
+ "ring_period_ns_median_iqr": [
+  420,
+  378,
+  436
+ ],
+ "ring_mhz": 2.38,
+ "ring_c_eq_nf": 0.95,
+ "sw1_below_minus4v": {
+  "ns_per_period": 20.2,
+  "ns_from_edge_median_p90": [
+   12,
+   24
+  ]
+ },
+ "sw2_above_35v": {
+  "ns_per_period": 25.5,
+  "ns_from_edge_median_p90": [
+   36,
+   48
+  ]
+ },
+ "sw1_min_v": -10.5,
+ "sw2_max_v": 41.3,
+ "vbus_burst_after_sw1_rise_mhz": 12.5,
+ "vbus_burst_pp_v": 3.16
+}

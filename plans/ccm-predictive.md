@@ -99,3 +99,6 @@ Each phase is flashed only after review. Power-stage changes are flashed on appr
 
 - **2026-10-15.** Interim DCM limits, Phase 2 (the rectifier) built and run at 5–28 V, and one
   36 V burst. The account of the day, with figures, is in `bench/results/2026-10-15/README.md`.
+- **2026-10-16.** `plans/240w-roadmap.md` proposes the CCM path from here: forced CCM with an
+  average-current inner loop updated every switching period. This plan's DCM modulator and
+  rectifier stay as the light-load mode.
