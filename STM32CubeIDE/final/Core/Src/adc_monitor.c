@@ -114,6 +114,15 @@ void adc_monitor_init(void)
             j.InjectedRank    = rk[k];
             (void)HAL_ADCEx_InjectedConfigChannel(&hadc1, &j);
         }
+        /* The HAL sets the channels' sampling times above but writes JSQR
+         * for rank 1 only while ScanConvMode is ADC_SCAN_DISABLE (the regular
+         * group is VD_MON alone; stm32g4xx_hal_adc_ex.c), so JSQR held IL_MON
+         * alone and JDR2/JDR3 (ID_MON, IS_MON) read 0 until 2026-10-16.  The
+         * three ranks, software start (JEXTEN 0), written while JADSTART = 0. */
+        ADC1->JSQR = ((3u - 1u) << ADC_JSQR_JL_Pos)
+                   | (2u  << ADC_JSQR_JSQ1_Pos)
+                   | (7u  << ADC_JSQR_JSQ2_Pos)
+                   | (15u << ADC_JSQR_JSQ3_Pos);
     }
 
     /* ADC2 (VS_MON, V_in): 16 conversions of 24.5 + 12.5 ADC cycles
