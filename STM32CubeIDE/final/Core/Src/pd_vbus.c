@@ -47,7 +47,7 @@ static volatile uint32_t dry_vbus_mv;
 
 /* HAL tick at which the output switch was last seen opening. */
 static volatile uint32_t vbus_off_tick;
-static bool              vbus_seen_on;
+static volatile bool     vbus_seen_on;
 static bool              fault_reset_sent;
 /* Bench time cap (PD_BENCH_HIGH_V_MAX_MS): tick at which the contract went
  * above PD_BENCH_HIGH_V_MV, and the Hard Resets it has sent (bu mem read). */
@@ -71,8 +71,11 @@ uint32_t pd_vbus_get_mv(void)
     {
         return dry_vbus_mv;
     }
-    if (output_switch_closed())
+    if (output_switch_closed() || vbus_seen_on)
     {
+        /* vbus_seen_on: open, but pd_vbus_poll (10 ms) has not seen it yet,
+         * so vbus_off_tick is stale; a regulator SWITCH_PULSE can be shorter
+         * than a poll. */
         return adc_measurements.v_out_mv;
     }
     /* Switch open: OUTPUT_DIS discharges the VBUS side, which no ADC sees. */

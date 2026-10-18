@@ -21,7 +21,7 @@ import struct
 import time
 
 from . import probe
-from .config import ToolError
+from .config import ToolError, out_file, rel
 
 # ------------------------------------------------------------------ board facts
 
@@ -52,8 +52,89 @@ FAULT_BITS = {
     0x20: ("SW_BACKSTOP", "too many consecutive cycle-by-cycle backstop events"),
 }
 CMD = {"clear-fault": 1, "stop": 2, "bench-pwm-on": 3, "bench-pwm-off": 4, "set-voltage": 5, "start": 6,
-       "snapshot": 7}
+       "snapshot": 7, "trace-arm": 8, "switch-pulse": 9}
 ARG_CMDS = ("set-voltage", "start")   # take a millivolt argument in regulator_debug.arg
+RAW_ARG_CMDS = ("trace-arm", "switch-pulse")   # take a packed argument (trace_arg) or microseconds
+TRACE_TRIGGERS = {"now": 0, "switch": 1, "ceiling": 2, "error": 3}
+TRACE_STATES = {0: "IDLE", 1: "ARMED", 2: "TRIGGERED", 3: "DONE"}
+TRACE_RESULTS = {
+    0: ("OK", ""),
+    1: ("NOT_RUNNING", "the regulator must be RUNNING for a switch pulse"),
+    2: ("SWITCH_BUSY", "the output switch is not closed yet (start still connecting) or a pulse is running"),
+    3: ("BAD_ARG", "trigger 0-3; pulse 1-50000 us (SWITCH_PULSE_MAX_US)"),
+    4: ("NO_SWITCH", "firmware built without OUTPUT_SWITCH_ENABLED"),
+}
+TRACE_LEN = 2048
+TRACE_SAMPLE = struct.Struct("<5H")      # v_out_mv, i_cmd_ma, i_max_ma, t_on_ns, flags (regulator.h)
+TRACE_CTL = struct.Struct("<10I")        # state, trigger, post, threshold_mv, write_index, trigger_index, count,
+                                         # remaining, pulse_us, pulse_cycles (the last two since TIM4 timing)
+TRACE_FLAGS = {0x04: "skipping", 0x08: "switch_on", 0x10: "rectifier", 0x20: "at_limit", 0x40: "pulse_open",
+               0x80: "trigger"}
+PID_HZ = 20000
+CPU_HZ = 170_000_000                     # DWT->CYCCNT, for the measured pulse
+PULSE_MAX_US = 50000
+
+
+def pulse_us(ms: float) -> int:
+    """SWITCH_PULSE argument: ms to whole microseconds (TIM4 ticks), 1..PULSE_MAX_US."""
+    us = round(ms * 1000)
+    if not 1 <= us <= PULSE_MAX_US:
+        raise ToolError(f"pulse must be 0.001-{PULSE_MAX_US / 1000:g} ms")
+    return us
+
+
+def trace_arg(trigger: str, post: int, threshold_mv: int = 0) -> int:
+    """Pack TRACE_ARM's argument: trigger | post << 4 | (threshold_mv / 10) << 16."""
+    if trigger not in TRACE_TRIGGERS:
+        raise ToolError(f"trigger must be one of {sorted(TRACE_TRIGGERS)}")
+    if not 0 <= post < TRACE_LEN:
+        raise ToolError(f"post must be 0..{TRACE_LEN - 1} samples (50 us each)")
+    return TRACE_TRIGGERS[trigger] | (post << 4) | ((max(0, threshold_mv) // 10 & 0xFFFF) << 16)
+
+
+def trace_read(cfg: dict) -> dict:
+    """Read regulator_trace + regulator_trace_ctl, oldest sample first, and write them to a CSV."""
+    syms = probe.symbols(cfg)
+    for name in ("regulator_trace", "regulator_trace_ctl"):
+        if name not in syms:
+            raise ToolError(f"firmware has no {name}: flash a build with the regulator trace (2026-10-17)")
+    ctl_raw, buf = probe.read_regions(cfg, [syms["regulator_trace_ctl"], syms["regulator_trace"]])
+    words = list(struct.unpack_from(f"<{len(ctl_raw) // 4}I", ctl_raw)) + [0, 0]
+    state, trigger, post, thr, w, trig_i, count, remaining, p_us, p_cyc = words[:10]
+    n = min(count, TRACE_LEN)
+    first = w if count >= TRACE_LEN else 0
+    rows = []
+    for k in range(n):
+        idx = (first + k) % TRACE_LEN
+        v, ic, im, ton, fl = TRACE_SAMPLE.unpack_from(buf, idx * TRACE_SAMPLE.size)
+        rows.append((idx, v, ic, im, ton, fl))
+    trig_pos = next((k for k, r in enumerate(rows) if r[0] == trig_i and r[5] & 0x80), None)
+    path = out_file(cfg, "regulator_trace", "csv")
+    with path.open("w") as f:
+        f.write("t_ms,v_out_mv,i_cmd_ma,i_max_ma,t_on_ns,mode,skipping,switch_on,rectifier,at_limit,pulse_open,trigger\n")
+        for k, (_, v, ic, im, ton, fl) in enumerate(rows):
+            t_ms = (k - (trig_pos if trig_pos is not None else 0)) * 1000.0 / PID_HZ
+            bits = [int(bool(fl & b)) for b in (0x04, 0x08, 0x10, 0x20, 0x40, 0x80)]
+            f.write(f"{t_ms:.2f},{v},{ic},{im},{ton},{MODES.get(fl & 3, fl & 3)}," + ",".join(map(str, bits)) + "\n")
+    out = {"ok": True, "state": TRACE_STATES.get(state, state),
+           "trigger": next((k for k, v in TRACE_TRIGGERS.items() if v == trigger), trigger),
+           "post": post, "threshold_mv": thr, "samples": n, "count": count, "remaining": remaining,
+           "trigger_sample": trig_pos, "file": rel(path)}
+    if p_us:
+        out["pulse_us"] = p_us
+        out["pulse_us_measured"] = round(p_cyc * 1e6 / CPU_HZ, 2) if p_cyc else None
+    if rows:
+        vs = [r[1] for r in rows]
+        out["v_out_mv"] = {"min": min(vs), "max": max(vs), "first": vs[0], "last": vs[-1]}
+        out["i_cmd_ma_max"] = max(r[2] for r in rows)
+        out["at_limit_samples"] = sum(1 for r in rows if r[5] & 0x20)
+        out["skipping_samples"] = sum(1 for r in rows if r[5] & 0x04)
+        sw = [bool(r[5] & 0x08) for r in rows]
+        out["switch_edges_ms"] = [round((k - (trig_pos or 0)) * 1000.0 / PID_HZ, 2)
+                                  for k in range(1, len(sw)) if sw[k] != sw[k - 1]]
+    if state != 3:
+        out["note"] = "trace not DONE yet: still waiting for the trigger or the post-trigger samples"
+    return out
 MODES = {0: "BUCK", 1: "BOOST", 2: "BUCK_BOOST"}
 SET_RESULTS = {
     0: ("OK", ""),
@@ -261,7 +342,8 @@ def status(cfg: dict) -> dict:
     return {"ok": True, **decode(read_raw(cfg)), "protection": PROTECTION}
 
 
-def command(cfg: dict, name: str, timeout: float = 3.0, force: bool = False, mv: int | None = None) -> dict:
+def command(cfg: dict, name: str, timeout: float = 3.0, force: bool = False, mv: int | None = None,
+            arg: int | None = None) -> dict:
     before = decode(read_raw(cfg))
     mb = before["mailbox"]
     if mb["request"]:
@@ -281,6 +363,12 @@ def command(cfg: dict, name: str, timeout: float = 3.0, force: bool = False, mv:
         if size < 20:
             raise ToolError(f"firmware mailbox has no arg field: '{name}' needs a newer build", mailbox_size=size)
         probe.mem_write(cfg, f"{addr + 16:#x}", str(int(mv)), "u32")
+    if name in RAW_ARG_CMDS:
+        if arg is None:
+            raise ToolError(f"'{name}' needs an argument")
+        if size < 20:
+            raise ToolError(f"firmware mailbox has no arg field: '{name}' needs a newer build", mailbox_size=size)
+        probe.mem_write(cfg, f"{addr + 16:#x}", str(int(arg)), "u32")
     # The firmware may service the request from an ISR before the programmer reads it back.
     probe.mem_write(cfg, f"{addr:#x}", str(CMD[name]), "u32", volatile_target=True)
     t0 = time.monotonic()
@@ -310,6 +398,9 @@ def command(cfg: dict, name: str, timeout: float = 3.0, force: bool = False, mv:
         out.update(ok=res == 0, result="OK" if res == 0 else "NOT_RUNNING",
                    note="VD_MON ring frozen in regulator_snapshot_trace (oldest first); pulses held off 100 us as a "
                         "scope marker (SW2 stays high: pulse-width trigger > 60 us)")
+    elif name in RAW_ARG_CMDS:
+        code, text = TRACE_RESULTS.get(res, (str(res), "unknown result"))
+        out.update(ok=code == "OK", result=code, arg=arg, **({"explanation": text} if text else {}))
     elif name.startswith("bench-pwm"):
         code, text = BENCH_RESULTS.get(res, (str(res), "unknown result"))
         out.update(ok=code == "OK", result=code, **({"explanation": text} if text else {}))

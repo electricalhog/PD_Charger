@@ -294,10 +294,88 @@ typedef enum
     REGULATOR_DEBUG_CMD_BENCH_PWM_OFF = 4u, /**< result = RegulatorBenchResult */
     REGULATOR_DEBUG_CMD_SET_VOLTAGE = 5u, /**< arg = mV; result = RegulatorSetResult */
     REGULATOR_DEBUG_CMD_START       = 6u, /**< arg = mV; result = RegulatorSetResult */
-    REGULATOR_DEBUG_CMD_SNAPSHOT    = 7u  /**< freeze the VD_MON ring into regulator_snapshot_trace and
+    REGULATOR_DEBUG_CMD_SNAPSHOT    = 7u, /**< freeze the VD_MON ring into regulator_snapshot_trace and
                                                hold pulses off for 2 PID periods as a scope marker;
                                                result = 0, or 1 if not RUNNING */
+    REGULATOR_DEBUG_CMD_TRACE_ARM   = 8u, /**< arg = trigger | post << 4 | threshold_10mv << 16
+                                               (regulator_trace); result = RegulatorTraceResult */
+    REGULATOR_DEBUG_CMD_SWITCH_PULSE = 9u /**< arg = us (1..50000) the output switch stays open:
+                                               the PID ISR opens it, TIM4 (one-pulse, 1 us)
+                                               reconnects it; result = RegulatorTraceResult */
 } RegulatorDebugCmd;
+
+/**
+ * Regulator trace (2026-10-17): one sample per PID cycle into a ring, armed
+ * from the debug mailbox (TRACE_ARM), frozen a set number of samples after a
+ * trigger, and read over SWD (`bu regulator trace`).  It records only while
+ * RUNNING (the PID ISR returns early otherwise).
+ *
+ * Triggers: NOW at the first sample; SWITCH when SWITCH_PULSE opens the output
+ * switch; CEILING when the on-time reaches its window limit (step 6); ERROR
+ * when |setpoint - V_out| exceeds the threshold.
+ */
+#define REGULATOR_TRACE_LEN 2048u
+
+typedef enum
+{
+    REGULATOR_TRACE_TRIG_NOW     = 0u,
+    REGULATOR_TRACE_TRIG_SWITCH  = 1u,
+    REGULATOR_TRACE_TRIG_CEILING = 2u,
+    REGULATOR_TRACE_TRIG_ERROR   = 3u
+} RegulatorTraceTrigger;
+
+typedef enum
+{
+    REGULATOR_TRACE_IDLE      = 0u,
+    REGULATOR_TRACE_ARMED     = 1u,   /**< recording, waiting for the trigger */
+    REGULATOR_TRACE_TRIGGERED = 2u,   /**< recording the post-trigger samples */
+    REGULATOR_TRACE_DONE      = 3u    /**< frozen until the next TRACE_ARM    */
+} RegulatorTraceState;
+
+typedef enum
+{
+    REGULATOR_TRACE_OK          = 0u,
+    REGULATOR_TRACE_NOT_RUNNING = 1u,  /**< SWITCH_PULSE needs RUNNING                  */
+    REGULATOR_TRACE_SWITCH_BUSY = 2u,  /**< switch not closed yet, or already pulsing   */
+    REGULATOR_TRACE_BAD_ARG     = 3u,  /**< trigger > 3, or pulse outside 1..50000 us   */
+    REGULATOR_TRACE_NO_SWITCH   = 4u   /**< built without OUTPUT_SWITCH_ENABLED         */
+} RegulatorTraceResult;
+
+/** Trace flag bits (RegulatorTraceSample.flags). */
+#define REGULATOR_TRACE_FLAG_MODE_MASK   0x0003u  /**< RegulatorMode                         */
+#define REGULATOR_TRACE_FLAG_SKIPPING    0x0004u  /**< pulses skipped this cycle             */
+#define REGULATOR_TRACE_FLAG_SWITCH_ON   0x0008u  /**< output switch closed                  */
+#define REGULATOR_TRACE_FLAG_RECTIFIER   0x0010u  /**< rectifier blend above 0               */
+#define REGULATOR_TRACE_FLAG_AT_LIMIT    0x0020u  /**< on-time clamped at its window limit   */
+#define REGULATOR_TRACE_FLAG_PULSE_OPEN  0x0040u  /**< SWITCH_PULSE holding the switch open  */
+#define REGULATOR_TRACE_FLAG_TRIGGER     0x0080u  /**< the trigger sample                    */
+
+typedef struct
+{
+    uint16_t v_out_mv;   /**< V_out this cycle (VD_MON trimmed mean) [mV]      */
+    uint16_t i_cmd_ma;   /**< PI output, the average-current command [mA]       */
+    uint16_t i_max_ma;   /**< its ceiling this cycle [mA]                       */
+    uint16_t t_on_ns;    /**< charge pulse programmed [ns]                      */
+    uint16_t flags;      /**< REGULATOR_TRACE_FLAG_*                            */
+} RegulatorTraceSample;  /* 10 bytes */
+
+typedef struct
+{
+    uint32_t state;          /**< RegulatorTraceState                          */
+    uint32_t trigger;        /**< RegulatorTraceTrigger                        */
+    uint32_t post;           /**< samples kept after the trigger sample        */
+    uint32_t threshold_mv;   /**< ERROR trigger threshold                      */
+    uint32_t write_index;    /**< next slot (mod REGULATOR_TRACE_LEN)          */
+    uint32_t trigger_index;  /**< slot of the trigger sample                   */
+    uint32_t count;          /**< samples written since the arm                */
+    uint32_t remaining;      /**< post-trigger samples still to write          */
+    uint32_t pulse_us;       /**< last SWITCH_PULSE: open time requested [us]  */
+    uint32_t pulse_cycles;   /**< its OUTPUT_EN low-to-high time, DWT cycles
+                                  (170 MHz); 0 until TIM4 reconnects           */
+} RegulatorTraceCtl;
+
+extern volatile RegulatorTraceSample regulator_trace[REGULATOR_TRACE_LEN];
+extern volatile RegulatorTraceCtl    regulator_trace_ctl;
 
 /**
  * RegulatorBenchResult — outcome of regulator_bench_pwm().
@@ -420,6 +498,12 @@ void regulator_hrtim_fault_isr(void);
  * peak, updates slope step, performs software safety checks (§8, §10.2).
  */
 void regulator_pid_tim7_isr(void);
+
+/**
+ * regulator_switch_pulse_tim4_isr — SWITCH_PULSE reconnect (TIM4 update,
+ * one-pulse, priority NVIC_PRIORITY_SWITCH_PULSE_TIM4).
+ */
+void regulator_switch_pulse_tim4_isr(void);
 
 #ifdef __cplusplus
 }

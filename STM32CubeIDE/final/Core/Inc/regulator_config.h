@@ -856,12 +856,19 @@ _Static_assert(DCM_PULSE_START_TICKS + MAX_ON_TIME_COUNTS + DCM_REFRESH_DEADTIME
  *         3.9 kHz, 318 mV p-p: the loop sees only about 23 uF there, so the
  *         VBUS-side capacitance is not in the loop at that frequency, and the
  *         loop delay is about 63 us; at 100 Hz the low-frequency ripple fell
- *         to 200 mV p-p, 20 mV rms).  C_int 50 uF: the output side has an 82 uF electrolytic
- *         and 10 uF ceramics (KiCad dc-dc sheet), and the bench estimates
- *         were 19 uF (no-pulse decay, run 26) and 54 uF (L1/C resonance,
- *         run 5); the phase margin stays above 50 degrees from 19 to 100 uF
- *         with about 100 us of loop delay.  C_ext 250 uF: the bench VBUS side
- *         is under 300 uF (Dan, 2026-10-11).
+ *         to 200 mV p-p, 20 mV rms).  C_int 50 uF: chosen when the output side
+ *         was taken to have an 82 uF electrolytic and 10 uF ceramics (KiCad
+ *         dc-dc sheet), and the bench estimates were 19 uF (no-pulse decay,
+ *         run 26) and 54 uF (L1/C resonance, run 5); the phase margin stays
+ *         above 50 degrees from 19 to 100 uF with about 100 us of loop delay.
+ *         The electrolytics (C14, C15) are not fitted (Dan, 2026-10-17): the
+ *         output is 5 x 10 uF 50 V X7R 1206 (CL31B106KBHNNNE), which DC bias
+ *         takes to about 16 uF at 20 V, 10 uF at 28 V, 7.5 uF at 36 V and
+ *         6 uF at 48 V (Samsung bias curve).  The bench side adds the QT Py's
+ *         100-120 uF input once the output switch closes.  plans/240w-roadmap.md
+ *         section 2 weighs that against the 36 V oscillation.  The value is
+ *         unchanged here.
+ *         C_ext 250 uF: the bench VBUS side is under 300 uF (Dan, 2026-10-11).
  * All three are runtime-tunable (regulator_loop_fc_hz, regulator_c_int_uf,
  * regulator_c_ext_uf).  Measure C on the bench: during an up-ramp the
  * command settles at C * 80 V/s plus the load current.
@@ -919,6 +926,10 @@ _Static_assert(PID_EXECUTION_RATE_HZ >= 1000u &&
 
 /** TIM7 (PID) and ADC completion — paired; must be below HRTIM. */
 #define NVIC_PRIORITY_PID_TIM7 2u
+
+/** TIM4 — the SWITCH_PULSE reconnect (bench, regulator.h), 1 us one-pulse.
+ *  Above the PID ISR so the open time does not wait for a PID cycle. */
+#define NVIC_PRIORITY_SWITCH_PULSE_TIM4 1u
 
 /** UCPD1 / PD stack — FreeRTOS-managed (confirmed IOC: priority 5). */
 #define NVIC_PRIORITY_UCPD1 5u

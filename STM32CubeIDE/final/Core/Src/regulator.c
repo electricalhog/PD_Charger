@@ -173,6 +173,25 @@ extern ADC_HandleTypeDef hadc1;
  *  frozen when a software fault latches (the DMA ring keeps running).     */
 volatile uint16_t regulator_fault_trace[ADC1_DMA_SCANS];
 
+/** Regulator trace (regulator.h, mailbox TRACE_ARM): one sample per PID cycle,
+ *  frozen `post` samples after the trigger.  20 kB of SRAM.                */
+volatile RegulatorTraceSample regulator_trace[REGULATOR_TRACE_LEN];
+volatile RegulatorTraceCtl    regulator_trace_ctl = {0};
+/** Step 6: the on-time hit its window limit this cycle (trace flag, trigger). */
+static volatile bool trace_at_limit = false;
+/** Set by SWITCH_PULSE as it opens the switch; the trace's SWITCH trigger.  */
+static volatile bool trace_switch_event = false;
+/** SWITCH_PULSE: open, waiting for TIM4 to reconnect; step 4c holds off.  */
+static volatile bool switch_pulse_active = false;
+/** SWITCH_PULSE: DWT->CYCCNT when OUTPUT_EN went low.                     */
+static volatile uint32_t switch_pulse_t0 = 0u;
+/** SWITCH_PULSE: longest open time [us]; the PD layer reports V_out for up
+ *  to PD_VBUS_DISCHARGE_MS (100) after the switch opens, so stay well inside
+ *  it.  TIM4 (16 bit, 1 us ticks) times it, so the open time does not snap
+ *  to the 50 us PID cycle.                                                 */
+#define SWITCH_PULSE_MAX_US 50000u
+#define SWITCH_PULSE_TIM_PSC ((SYSCLK_HZ / 1000000UL) - 1u)   /* 1 MHz ticks */
+
 /* Boost starts (2026-09-28, runs 32 and 33).  Starting boost directly turns
  * Q1, the input leg's static switch, fully on into an empty output: V_in
  * steps across L1 and C_out, the tank rings toward 2 * V_in, and Q3's
@@ -584,6 +603,18 @@ void regulator_init(void)
     HAL_NVIC_SetPriority(TIM7_DAC_IRQn, NVIC_PRIORITY_PID_TIM7, 0u);
     HAL_NVIC_EnableIRQ(TIM7_DAC_IRQn);
 
+    /* --- Step 7b: TIM4, the SWITCH_PULSE reconnect: one-pulse, 1 us ticks,
+     *              update interrupt on overflow only (URS) --- */
+    __HAL_RCC_TIM4_CLK_ENABLE();
+    TIM4->CR1  = TIM_CR1_OPM | TIM_CR1_URS;
+    TIM4->PSC  = SWITCH_PULSE_TIM_PSC;
+    TIM4->ARR  = 0xFFFFu;
+    TIM4->EGR  = TIM_EGR_UG;      /* load PSC; URS keeps UIF clear */
+    TIM4->SR   = 0u;
+    TIM4->DIER = TIM_DIER_UIE;
+    HAL_NVIC_SetPriority(TIM4_IRQn, NVIC_PRIORITY_SWITCH_PULSE_TIM4, 0u);
+    HAL_NVIC_EnableIRQ(TIM4_IRQn);
+
     /* --- Step 8: Initialise PID state and default coefficients (§8.7) --- */
     /* Gains and output limits are recomputed every PID cycle (steps 2, 5). */
     pid_config.kp          = 0.0f;
@@ -871,6 +902,95 @@ RegulatorClearResult regulator_clear_fault(void)
  * regulator_debug_poll
  * =========================================================================*/
 
+/** TRACE_ARM: arg = trigger | post << 4 | threshold_10mv << 16.  Resets the
+ *  ring; recording starts at the next PID cycle while RUNNING.            */
+static uint32_t trace_arm(uint32_t arg)
+{
+    const uint32_t trigger = arg & 0xFu;
+    uint32_t post = (arg >> 4) & 0xFFFu;
+    if (trigger > (uint32_t)REGULATOR_TRACE_TRIG_ERROR)
+    {
+        return REGULATOR_TRACE_BAD_ARG;
+    }
+    if (post >= REGULATOR_TRACE_LEN) { post = REGULATOR_TRACE_LEN - 1u; }
+    regulator_trace_ctl.state         = REGULATOR_TRACE_IDLE;   /* the ISR stops writing */
+    regulator_trace_ctl.trigger       = trigger;
+    regulator_trace_ctl.post          = post;
+    regulator_trace_ctl.threshold_mv  = ((arg >> 16) & 0xFFFFu) * 10u;
+    regulator_trace_ctl.write_index   = 0u;
+    regulator_trace_ctl.trigger_index = 0u;
+    regulator_trace_ctl.count         = 0u;
+    regulator_trace_ctl.remaining     = post;
+    regulator_trace_ctl.pulse_us      = 0u;
+    regulator_trace_ctl.pulse_cycles  = 0u;
+    trace_switch_event = false;
+    regulator_trace_ctl.state         = REGULATOR_TRACE_ARMED;
+    return REGULATOR_TRACE_OK;
+}
+
+/** SWITCH_PULSE (PID ISR context): open the output switch for arg us; TIM4
+ *  (one-pulse, 1 us ticks) reconnects it (regulator_switch_pulse_tim4_isr).
+ *  A load disconnect then a connect at the present contract, for loop tests.
+ *  Q5/Q6 turn off through the 51 kohm gate pull-up (bench/README.md): at
+ *  5 V they let go about 1.4 ms after OUTPUT_EN falls, so shorter pulses do
+ *  nothing (2026-10-17).  kp follows output_switch_on (step 2), so for that
+ *  1.4 ms the loop runs at the open-switch gain with the load still on.  */
+static uint32_t switch_pulse(uint32_t us)
+{
+#if OUTPUT_SWITCH_ENABLED
+    if (regulator_state != REGULATOR_STATE_RUNNING) { return REGULATOR_TRACE_NOT_RUNNING; }
+    if (us < 1u || us > SWITCH_PULSE_MAX_US)        { return REGULATOR_TRACE_BAD_ARG; }
+    if (!output_switch_on || switch_pulse_active)
+    {
+        return REGULATOR_TRACE_SWITCH_BUSY;
+    }
+    TIM4->CR1 &= ~TIM_CR1_CEN;
+    TIM4->CNT  = 0u;
+    TIM4->ARR  = us - 1u;          /* update after us ticks (one-pulse) */
+    TIM4->SR   = ~TIM_SR_UIF;
+    regulator_trace_ctl.pulse_us     = us;
+    regulator_trace_ctl.pulse_cycles = 0u;
+    switch_pulse_active = true;
+    trace_switch_event  = true;
+    output_switch_on    = false;
+    switch_pulse_t0     = DWT->CYCCNT;
+    OUTPUT_EN_WRITE(GPIO_PIN_RESET);
+    TIM4->CR1 |= TIM_CR1_CEN;
+    return REGULATOR_TRACE_OK;
+#else
+    (void)us;
+    return REGULATOR_TRACE_NO_SWITCH;
+#endif
+}
+
+/** Stop a SWITCH_PULSE in progress: the power path is going off or being
+ *  re-enabled, and TIM4 must not reconnect afterwards.                    */
+static void switch_pulse_cancel(void)
+{
+    TIM4->CR1 &= ~TIM_CR1_CEN;
+    TIM4->SR   = ~TIM_SR_UIF;
+    switch_pulse_active = false;
+}
+
+void regulator_switch_pulse_tim4_isr(void)
+{
+#if OUTPUT_SWITCH_ENABLED
+    if (!switch_pulse_active)
+    {
+        return;
+    }
+    /* Reconnect only where step 4c could have; otherwise it is left to
+     * step 4c (a start in progress) or to nobody (stopped, faulted).     */
+    if (regulator_state == REGULATOR_STATE_RUNNING && !softstart_active && !output_switch_on)
+    {
+        OUTPUT_EN_WRITE(GPIO_PIN_SET);
+        regulator_trace_ctl.pulse_cycles = DWT->CYCCNT - switch_pulse_t0;
+        output_switch_on = true;
+    }
+    switch_pulse_active = false;
+#endif
+}
+
 static void debug_complete(uint32_t cmd, uint32_t result)
 {
     regulator_debug.result   = result;
@@ -912,6 +1032,14 @@ static void regulator_debug_poll_isr(void)
         snapshot_hold_cycles = SNAPSHOT_HOLD_PID_CYCLES;
         debug_complete(cmd, 0u);
     }
+    else if (cmd == REGULATOR_DEBUG_CMD_TRACE_ARM)
+    {
+        debug_complete(cmd, trace_arm(regulator_debug.arg));
+    }
+    else if (cmd == REGULATOR_DEBUG_CMD_SWITCH_PULSE)
+    {
+        debug_complete(cmd, switch_pulse(regulator_debug.arg));
+    }
     else if (cmd == REGULATOR_DEBUG_CMD_SET_VOLTAGE)
     {
         uint32_t mv = regulator_debug.arg;
@@ -952,6 +1080,16 @@ void regulator_debug_poll(void)
             break;
         case REGULATOR_DEBUG_CMD_BENCH_PWM_OFF:
             result = (uint32_t)regulator_bench_pwm(false);
+            break;
+        case REGULATOR_DEBUG_CMD_TRACE_ARM:
+            result = trace_arm(regulator_debug.arg);   /* not RUNNING: the ISR is idle */
+            break;
+        case REGULATOR_DEBUG_CMD_SWITCH_PULSE:
+            if (regulator_state == REGULATOR_STATE_RUNNING)
+            {
+                return;   /* the PID ISR services it (regulator_debug_poll_isr) */
+            }
+            result = REGULATOR_TRACE_NOT_RUNNING;
             break;
         case REGULATOR_DEBUG_CMD_SET_VOLTAGE:
         case REGULATOR_DEBUG_CMD_START:
@@ -1359,7 +1497,7 @@ void regulator_pid_tim7_isr(void)
     /* --- 4c. Connect the output (see OUTPUT_CONNECT_MARGIN_MV) ---
      * After soft-start, with V_out near the target.                       */
 #if OUTPUT_SWITCH_ENABLED
-    if (!output_switch_on && !softstart_active &&
+    if (!output_switch_on && !softstart_active && !switch_pulse_active &&
         v_out_mv + OUTPUT_CONNECT_MARGIN_MV >= commanded_mv)
     {
         OUTPUT_EN_WRITE(GPIO_PIN_SET);
@@ -1446,6 +1584,7 @@ void regulator_pid_tim7_isr(void)
      * dead-time generator.  In buck-boost both end at the same CMP2.      */
     const float i_pk_a = sqrtf(2.0f * (i_cmd_ma * 1e-3f) * t_sw_s / (l_h * k_per_v));
     uint32_t t_on_ns = (uint32_t)(1e9f * i_pk_a * l_h / chg_v);
+    trace_at_limit = (t_on_ns >= t_lim_ns);
     if (t_on_ns > t_lim_ns)           { t_on_ns = t_lim_ns; }
     if (t_on_ns < DCM_MIN_ON_TIME_NS) { t_on_ns = DCM_MIN_ON_TIME_NS; }
     regulator_on_time_ns = (uint16_t)t_on_ns;
@@ -1627,6 +1766,53 @@ void regulator_pid_tim7_isr(void)
         s.state         = (uint8_t)regulator_state;
         s.mode          = (uint8_t)regulator_mode;
         debug_log_record(&s);
+    }
+
+    /* --- 10b. Regulator trace (regulator.h, mailbox TRACE_ARM) --- */
+    if (regulator_trace_ctl.state == REGULATOR_TRACE_ARMED ||
+        regulator_trace_ctl.state == REGULATOR_TRACE_TRIGGERED)
+    {
+        volatile RegulatorTraceCtl *tc = &regulator_trace_ctl;
+        bool fire = false;
+        if (tc->state == REGULATOR_TRACE_ARMED)
+        {
+            int32_t err = regulator_pid_error_mv;
+            switch (tc->trigger)
+            {
+                case REGULATOR_TRACE_TRIG_NOW:     fire = true;                     break;
+                case REGULATOR_TRACE_TRIG_SWITCH:  fire = trace_switch_event;       break;
+                case REGULATOR_TRACE_TRIG_CEILING: fire = trace_at_limit;           break;
+                case REGULATOR_TRACE_TRIG_ERROR:
+                    fire = (uint32_t)(err < 0 ? -err : err) > tc->threshold_mv;      break;
+                default: break;
+            }
+        }
+        const float ic = regulator_i_cmd_ma, im = regulator_i_max_ma;
+        uint16_t flags = (uint16_t)((uint32_t)regulator_mode & REGULATOR_TRACE_FLAG_MODE_MASK);
+        if (regulator_pulses_skipped)    { flags |= REGULATOR_TRACE_FLAG_SKIPPING; }
+        if (output_switch_on)            { flags |= REGULATOR_TRACE_FLAG_SWITCH_ON; }
+        if (regulator_sr_blend != 0u)    { flags |= REGULATOR_TRACE_FLAG_RECTIFIER; }
+        if (trace_at_limit)              { flags |= REGULATOR_TRACE_FLAG_AT_LIMIT; }
+        if (switch_pulse_active)         { flags |= REGULATOR_TRACE_FLAG_PULSE_OPEN; }
+        if (fire)                        { flags |= REGULATOR_TRACE_FLAG_TRIGGER; }
+        const uint32_t w = tc->write_index;
+        regulator_trace[w].v_out_mv = (uint16_t)(v_out_mv > 65535u ? 65535u : v_out_mv);
+        regulator_trace[w].i_cmd_ma = (uint16_t)(ic <= 0.0f ? 0.0f : (ic >= 65535.0f ? 65535.0f : ic));
+        regulator_trace[w].i_max_ma = (uint16_t)(im <= 0.0f ? 0.0f : (im >= 65535.0f ? 65535.0f : im));
+        regulator_trace[w].t_on_ns  = regulator_on_time_ns;
+        regulator_trace[w].flags    = flags;
+        tc->write_index = (w + 1u) % REGULATOR_TRACE_LEN;
+        tc->count++;
+        if (fire)
+        {
+            tc->trigger_index = w;
+            tc->state = (tc->remaining == 0u) ? REGULATOR_TRACE_DONE : REGULATOR_TRACE_TRIGGERED;
+        }
+        else if (tc->state == REGULATOR_TRACE_TRIGGERED && --tc->remaining == 0u)
+        {
+            tc->state = REGULATOR_TRACE_DONE;
+        }
+        trace_switch_event = false;
     }
     cyc_record(regulator_cyc_pid, DWT->CYCCNT - cyc0);
 }
@@ -2205,6 +2391,7 @@ static void power_path_enable(void)
     HAL_GPIO_WritePin(PIN_INPUT_EN_PORT,  PIN_INPUT_EN_PIN,  GPIO_PIN_SET);
     /* OUTPUT_EN stays low here: the PID ISR (step 4c) connects VBUS once
      * V_out is regulating, if OUTPUT_SWITCH_ENABLED (regulator_config.h). */
+    switch_pulse_cancel();
     OUTPUT_EN_WRITE(GPIO_PIN_RESET);
     output_switch_on = false;
     HAL_GPIO_WritePin(PIN_OUTPUT_DIS_PORT,PIN_OUTPUT_DIS_PIN,GPIO_PIN_RESET);
@@ -2215,6 +2402,7 @@ static void power_path_enable(void)
  */
 static void power_path_disable(void)
 {
+    switch_pulse_cancel();
     output_switch_on = false;
     HAL_GPIO_WritePin(PIN_INPUT_EN_PORT,  PIN_INPUT_EN_PIN,  GPIO_PIN_RESET);
     OUTPUT_EN_WRITE(GPIO_PIN_RESET);

@@ -288,6 +288,7 @@ void LPUART1_IRQHandler(void)
  *   HRTIM1_TIMA_IRQn(IRQ 67): priority 1 — DAC reload + backstop, 200 kHz
  *   HRTIM1_FLT_IRQn (IRQ 66): priority 1 — hardware fault
  *   TIM7_DAC_IRQn   (IRQ 55): priority 2 — PID loop, 20 kHz
+ *   TIM4_IRQn       (IRQ 30): priority 1 — SWITCH_PULSE reconnect (bench)
  * All of these are below FreeRTOS configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY=5
  * (numerically; lower number = higher urgency on Cortex-M4 with BASEPRI).
  * During bring-up verify with: NVIC->IP[IRQn] >> 4 in debugger memory view. */
@@ -324,6 +325,20 @@ void TIM7_DAC_IRQHandler(void)
   {
     __HAL_TIM_CLEAR_IT(&htim7, TIM_IT_UPDATE);
     regulator_pid_tim7_isr();
+  }
+}
+
+/**
+ * @brief TIM4 interrupt handler: the SWITCH_PULSE reconnect, one-pulse with
+ *        1 us ticks (priority 1).  Configured in regulator_init(); ISR body
+ *        in regulator.c.
+ */
+void TIM4_IRQHandler(void)
+{
+  if ((TIM4->SR & TIM_SR_UIF) != 0u)
+  {
+    TIM4->SR = ~TIM_SR_UIF;
+    regulator_switch_pulse_tim4_isr();
   }
 }
 

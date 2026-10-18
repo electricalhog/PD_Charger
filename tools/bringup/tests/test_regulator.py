@@ -115,3 +115,46 @@ def test_set_voltage_refuses_old_mailbox(monkeypatch):
     monkeypatch.setattr(probe, "symbols", lambda cfg: {"regulator_debug": (0x20006818, 16)})
     with pytest.raises(ToolError, match="no arg field"):
         regulator.command({}, "set-voltage", mv=24000)
+
+
+def test_trace_arg_packing():
+    assert regulator.trace_arg("switch", 1800) == 1 | (1800 << 4)
+    assert regulator.trace_arg("error", 100, 1500) == 3 | (100 << 4) | (150 << 16)
+    with pytest.raises(ToolError):
+        regulator.trace_arg("bogus", 10)
+    with pytest.raises(ToolError):
+        regulator.trace_arg("now", regulator.TRACE_LEN)
+
+
+def test_pulse_us_rounds_to_microseconds_inside_the_firmware_range():
+    assert regulator.pulse_us(1.0) == 1000
+    assert regulator.pulse_us(1.4375) == 1438
+    assert regulator.pulse_us(50) == 50000
+    for bad in (0.0, 0.0004, 50.001):
+        with pytest.raises(ToolError):
+            regulator.pulse_us(bad)
+
+
+def test_trace_read_orders_the_ring_and_aligns_the_trigger(monkeypatch, tmp_path):
+    n = regulator.TRACE_LEN
+    buf = bytearray(n * regulator.TRACE_SAMPLE.size)
+    # Ring wrapped (count > n), next write at 100, trigger at slot 1000: oldest sample is slot 100.
+    for idx in range(n):
+        age = (idx - 100) % n                       # 0 = oldest
+        switch_on = 0x08 if not (900 <= age < 1000) else 0
+        flags = 2 | switch_on | (0x80 if idx == 1000 else 0)
+        regulator.TRACE_SAMPLE.pack_into(buf, idx * regulator.TRACE_SAMPLE.size, 28000 + age % 7, 1400, 1680, 1790, flags)
+    ctl = regulator.TRACE_CTL.pack(3, 1, 1147, 0, 100, 1000, n + 500, 0, 5000, 850_034)
+    monkeypatch.setattr(probe, "symbols", lambda cfg: {"regulator_trace_ctl": (0x1000, 40),
+                                                       "regulator_trace": (0x2000, len(buf))})
+    monkeypatch.setattr(probe, "read_regions", lambda cfg, regions: [ctl, bytes(buf)])
+    monkeypatch.setattr(regulator, "out_file", lambda cfg, stem, ext: tmp_path / f"{stem}.{ext}")
+    monkeypatch.setattr(regulator, "rel", lambda p: str(p))
+    out = regulator.trace_read({})
+    assert out["state"] == "DONE" and out["trigger"] == "switch" and out["samples"] == n
+    assert out["trigger_sample"] == 900                # slot 1000 is 900 samples after slot 100
+    assert out["switch_edges_ms"] == [0.0, 5.0]        # opens at the trigger, recloses 100 samples later
+    assert out["pulse_us"] == 5000 and out["pulse_us_measured"] == 5000.2
+    lines = (tmp_path / "regulator_trace.csv").read_text().splitlines()
+    assert lines[0].startswith("t_ms,v_out_mv") and lines[1].startswith("-45.00,28000,")
+    assert lines[901].split(",")[-1] == "1"            # the trigger row

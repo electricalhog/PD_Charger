@@ -89,6 +89,9 @@ Times and JSON sizes are measured (typical). "Artifact" = file written to `bring
 | `regulator bench-pwm on\|off` | actuate | open-loop gate test (IDLE, input path off, fault lines high) | 0.2 s | 1.5 kB | – |
 | `regulator set-voltage MV` | actuate | new regulation target through the mailbox (`arg` word); firmware slews to it | 0.3 s | 1.5 kB | – |
 | `regulator start MV` | actuate | set target and start from IDLE; refused (`PD_OWNS_VBUS`) in `PD_VBUS_PATH_CHARGER` builds, as is `set-voltage` | 0.3–1 s | 1.5 kB | – |
+| `regulator trace-arm [--trigger now\|switch\|ceiling\|error] [--post N] [--threshold-mv MV]` | actuate | arm the 20 kHz regulator trace (V_out, I_cmd, its ceiling, on-time, flags; 2048 samples); it freezes N samples after the trigger | 0.3 s | < 1 kB | – |
+| `regulator switch-pulse MS` | actuate | open the output switch for 0.001–50 ms (TIM4, 1 µs; `regulator trace` reports the measured time) at the present contract, then reconnects it (a load drop, then a connect) | 0.3 s | < 1 kB | – |
+| `regulator trace` | read | read the trace, oldest first, with a summary (state, trigger sample, V_out range, switch edges, at-limit and skip counts) | ~2 s | < 1 kB | CSV 60 kB |
 | `profile [--samples N] [--lines N]` | read | statistical CPU profile over SWD: DWT PC samples → functions (and source lines), SCB_ICSR/pxCurrentTCB → time per ISR/task; no firmware support beyond DEMCR.TRCENA | ~4 s per 1000 samples | ~3 kB | – |
 | `regulator sweep MV,MV,… [--dwell S] [--scope CHn]` | actuate | set-voltage per point, then control telemetry + debug_log stats (+ scope VAVG/VPP); stops at a fault | ~2.5 s/point | ~0.5 kB/point | – |
 | `scope idn` / `scope state` | read | identity / full channel+timebase+trigger+acquire state | 0.1 s / 1.2 s | < 1 kB / 1 kB | – |

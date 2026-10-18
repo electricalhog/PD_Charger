@@ -376,6 +376,18 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--timeout", type=float, default=3.0)
     g = rg.add_parser("start", help="set the target (mV) and start from IDLE (after stop or clear-fault)")
     g.add_argument("mv", type=int); g.add_argument("--timeout", type=float, default=5.0)
+    g = rg.add_parser("trace-arm", help="arm the 20 kHz regulator trace (V_out, I_cmd, its ceiling, on-time, flags); "
+                                        "it freezes POST samples after the trigger")
+    g.add_argument("--trigger", choices=["now", "switch", "ceiling", "error"], default="now",
+                   help="now; switch (a switch-pulse opens the output switch); ceiling (on-time at its window limit); "
+                        "error (|setpoint - V_out| above --threshold-mv)")
+    g.add_argument("--post", type=int, default=1536, help="samples after the trigger, 50 us each (max 2047)")
+    g.add_argument("--threshold-mv", type=int, default=0)
+    g.add_argument("--timeout", type=float, default=3.0)
+    g = rg.add_parser("switch-pulse", help="open the output switch for MS (0.001-50, timed by TIM4 to 1 us) at the "
+                                           "present contract, then reconnect it: a load drop then a connect")
+    g.add_argument("ms", type=float); g.add_argument("--timeout", type=float, default=3.0)
+    rg.add_parser("trace", help="read the regulator trace (oldest first) into a CSV, with a summary")
 
     # scope
     sc = sub.add_parser("scope", help="Rigol DS1054Z").add_subparsers(dest="op", required=True)
@@ -441,7 +453,7 @@ EFFECTS = {
     "probe list": "read", "probe reset": "actuate", "flash": "actuate",
     "sym": "read", "layout": "read", "mem read": "read", "mem write": "actuate",
     "profile": "read", "pd status": "read", "pd trace": "read", "sink": "actuate", "load status": "read", "load pins": "read", "load sniff": "read", "load i2c": "read", "load edges": "read", "load glitch": "read", "load i2cpoll": "read", "load sartest": "actuate", "load sarscan": "actuate", "load drivetest": "actuate", "load padtest": "actuate", "load bootsel": "actuate", "load flash": "actuate", "load run": "actuate", "bench status": "read", "bench sweep": "actuate", "regulator status": "read", "regulator clear-fault": "actuate", "regulator stop": "actuate",
-    "regulator bench-pwm": "actuate", "regulator set-voltage": "actuate", "regulator sweep": "actuate", "regulator snapshot": "actuate", "regulator start": "actuate",
+    "regulator bench-pwm": "actuate", "regulator set-voltage": "actuate", "regulator sweep": "actuate", "regulator snapshot": "actuate", "regulator start": "actuate", "regulator trace-arm": "actuate", "regulator switch-pulse": "actuate", "regulator trace": "read",
     "scope analyze": "read", "scope idn": "read", "scope state": "read", "scope measure": "read",
     "scope delay": "read", "scope screenshot": "read", "scope capture": "actuate",
     "la scan": "read", "la decoders": "read", "la decode": "read", "la edges": "read", "la capture": "read",
@@ -545,6 +557,13 @@ def dispatch(cfg: dict, a) -> dict:
             return regulator.status(cfg)
         if a.op == "sweep":
             return regulator.sweep(cfg, [int(x) for x in a.targets.split(",")], a.dwell, scope_source=a.scope)
+        if a.op == "trace":
+            return regulator.trace_read(cfg)
+        if a.op == "trace-arm":
+            return regulator.command(cfg, "trace-arm", a.timeout,
+                                     arg=regulator.trace_arg(a.trigger, a.post, a.threshold_mv))
+        if a.op == "switch-pulse":
+            return regulator.command(cfg, "switch-pulse", a.timeout, arg=regulator.pulse_us(a.ms))
         name = f"bench-pwm-{a.action}" if a.op == "bench-pwm" else a.op
         return regulator.command(cfg, name, a.timeout, getattr(a, "force", False), getattr(a, "mv", None))
     if c == "scope":
