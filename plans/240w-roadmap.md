@@ -1,8 +1,9 @@
 # Roadmap to 240 W (plan, 2026-10-16)
 
 Goal: every PDO of a 240 W EPR source, up to 48 V / 5 A, on this board. The board is 122 × 47 mm,
-4-layer 1 oz FR4, GaN in 3 × 5 mm QFN, with no heat sink and no airflow. It has EPC2308 fitted
-now; EPC2305 goes in once the CCM firmware is proven.
+4-layer 1 oz FR4, GaN in 3 × 5 mm QFN, with no heat sink and no airflow. It has EPC2308 (150 V)
+fitted now; EPC2302 (100 V, the part the board was drawn for) goes in once the CCM firmware is
+proven. The output has ceramics only: the 82 µF electrolytics (C14, C15) are not fitted.
 
 Numbers marked *model* come from `plans/scripts/loss_budget.py` (its docstring lists every source
 value). The rest come from the 2026-10-15 reads (`bench/results/2026-10-15/metrics/steps.json`),
@@ -51,15 +52,63 @@ the code, the KiCad sheets and the datasheets cited.
   at 3.9 kHz.
   - At fc 300 Hz that gives 0.98: the limit cycle.
   - At fc 100 Hz it needs C_seen / g ≈ 8 µF to oscillate.
-- Two candidates at 36 V, unverified:
-  - **Ceramics under DC bias.** The ceramics may be all the loop sees at 4 kHz. That fits
-    23 µF at 20 V, and 36 V bias leaves less. The capacitor part numbers are not in the repo.
-  - **The ceiling is in the fast path.** It is recomputed every PID cycle from the measured
+- **Ceramics under DC bias (2026-10-17).**
+  - The electrolytics are not fitted. The output capacitance is 5 × CL31B106KBHNNNE (10 µF,
+    50 V, X7R, 1206).
+  - Samsung's bias curve takes each to about 3.2 µF at 20 V, 2.0 µF at 28 V, 1.5 µF at 36 V
+    and 1.2 µF at 48 V.
+  - With fc 100 Hz and gains for 300 µF, the loop gain at 3.97 kHz is:
+
+    | V_out | 5 ceramics | Loop gain |
+    |---|---|---|
+    | 20 V | 16 µF | 0.47 |
+    | 28 V | 10 µF | 0.76 |
+    | 36 V | 7.5 µF | 1.01 |
+    | 48 V | 6 µF | 1.26 |
+
+  - 36 V sits at 1, where it oscillated. 48 V under load should oscillate too. At fc 300 Hz and
+    20 V the gain is 1.4, the 2026-10-12 limit cycle.
+  - The bench VBUS side adds a little, and the modulator gain g is not 1, so these are
+    first-order.
+- **The ceiling in the fast path may add to it.** It is recomputed every PID cycle from the measured
     V_out and V_in. At 36 V it scales about 1:1 with V_out. It was active: the on-time read was
     1383 ns against a window limit of about 1360–1450 ns for the V_in and V_out read, and one
     read had the command above the ceiling read beside it.
 
-**Tests.** Each needs a runtime write or a trace (ask first).
+**Tests.** Each needs a runtime write or a trace (ask first). Test 2 is the direct check of the
+capacitance explanation.
+
+**Revised (2026-10-17, later).** The QT Py's input is about 100–120 µF (user), on the bench side
+of the closed switch.
+- If those are ceramics like the board's, the linear model gives a loop gain at −180° of 0.30
+  at 36 V and 0.44 at 20 V / 300 Hz (`loop_model.py --load-caps 1.1`). That predicts neither
+  oscillation.
+- So the capacitance explanation holds only if that capacitance mostly disappears at 20–36 V
+  (low-voltage parts), or if the 2026-10-12 limit cycle ran with the switch open.
+- Otherwise the 36 V oscillation is the nonlinear one: the command pinned at the ceiling, which
+  moves with V_out every PID cycle. Test 1 (trace i_cmd against i_max) decides it.
+
+**Model (2026-10-17, `plans/scripts/loop_model.py`).**
+- **The model:** DCM as a current source into the VBUS network; the PI as coded (kp, ki from
+  fc 100 Hz and 300 µF); 63 µs of delay; the board's five ceramics derated for DC bias.
+- **It fits:**
+  - 20 V at fc 300 Hz oscillates at 3.93 kHz;
+  - 20 V and 28 V at fc 100 Hz hold (28 V with a 35° margin);
+  - 36 V sits at a 13° margin, a loop gain of 0.89 at −180°.
+
+  The fit requires the QT Py's input ceramics to add at most about 6 µF.
+- **It also says the regulator is soft.**
+  - kp sized for 300 µF is 0.19 A/V. Against the real 10 µF and a 25 Ω load, that gives about
+    4–5 Ω of closed-loop output impedance from 25 Hz to 2 kHz, peaking at 14 Ω near 3.9 kHz
+    at 28 V.
+  - A 1.1 A step should dip VBUS about 7.9 V at 28 V. A PD-size step (5 A) is far outside what
+    this loop can hold. Phases 1 and 2 have to fix this.
+- **Untested.** The 3.9 kHz peak has not been measured. On 2026-10-17 the QT Py no longer
+  converted, so the load steps came from the output switch closing after a start, at 5 V only
+  (`bench/results/2026-10-17/`).
+- **What can make one without hardware:** a firmware step or sine added to the PI's output (the
+  delivered current), logged at the PID rate with a triggered freeze and averaged over
+  repetitions. From the node's side, a current step there is a load step.
 1. Trace i_cmd, i_max and v_out at the PID rate through a 36 V burst. If the command rides the
    ceiling at 3.9 kHz, the ceiling is in the loop.
 2. At 36 V, set `regulator_c_ext_uf` 250 → 0 (kp ÷ 6). Prediction: the 3.9 kHz goes away.
@@ -96,16 +145,20 @@ Core loss, copper and capacitor ESR are left out.
 
 - **Today's settings cost about 1 W more.** With the present 50 ns dead time and a refresh every
   period, the same point is 35.5 µJ (7.1 W).
-- **EPC2305 in place of EPC2308.**
-  - About 0.3 W better at 48 V / 5 A (5.8 W).
-  - About 0.1 W worse at the 3 A PDOs.
-  - At 200 kHz its doubled Q_OSS offsets most of its lower R_DS(on). Its real gains are
-    R_θJB (1.5 against 2.8 °C/W) and current margin.
+- **EPC2302 (the planned part) in place of EPC2308:**
+  - about 0.5 W better at 48 V / 5 A (27.9 µJ, 5.6 W);
+  - about 0.1 W worse at the 3 A PDOs, from its larger Q_OSS (85 against 37 nC at 50 V);
+  - R_θJB 1.5 against 2.8 °C/W.
+
+  It is a 100 V part (120 V repetitive transient). At 48 V out, SW2's overshoot sets the margin.
+  On 2026-10-16 SW2 read up to 41 V at 28 V out, with an unchecked probe ground.
 - **Not modeled:**
   - L1 core loss, which is largest at 48 V with 12.8 A p-p ripple (Vishay's IHLP calculator, or
     measure it);
   - 1 oz copper: each mΩ at 10.3 A is 0.11 W;
-  - capacitor ESR. Boost output-capacitor ripple is 5.9 A rms at 48 V / 5 A and 4.3 A rms at 36 V.
+  - capacitor ESR. Boost output-capacitor ripple is 5.9 A rms at 48 V / 5 A and 4.3 A rms at
+    36 V: about 1.2 A per ceramic. Samsung's ripple curve gives a few °C of self-heating for
+    that, so heat is not the limit; capacitance is (section 4).
 
 **Free-air budget.**
 - **Measured (2026-10-16, `bench/results/2026-10-16/`).** At 28 V, rectifier on, DCM, still air
@@ -136,7 +189,10 @@ Core loss, copper and capacitor ESR are left out.
   the one hard turn-on (2 µJ) is under 1.5 µJ of a 30 µJ period.
 - **The levers, in order:**
   1. **Input voltage.** At 56 V in, every PDO is a buck and 48 V / 5 A models 2.4 W (99 %)
-     (`--vin 56`). The ADM1270 OV is set at 57 V.
+     (`--vin 56`).
+     - The ADM1270 OV is set at 57 V.
+     - The input ceramics are 50 V parts, so above about 40 V they need 100 V parts.
+     - The 100 V EPC2302 leaves less margin there than at 24 V.
   2. **Series resistance** in the 10 A path (section 4).
   3. **Dead time and refresh rate** (about 1 W at 48 V).
 
@@ -167,9 +223,19 @@ Each change goes in before the power level that needs it.
 - Change: about 6 mΩ (11 A full scale, half the loss).
 
 **Output and input capacitors.**
-- Not in the repo: part numbers, voltage and ripple ratings.
-- Binds at 36 and 48 V in CCM (5.9 A rms out; 3.7 A rms in).
-- Change: identify them first. Add capacitance if the loop or load steps need it.
+- **Now:** ceramics only, CL31B106KBHNNNE (10 µF, 50 V, X7R, 1206); C14 and C15 (82 µF) are not
+  fitted. The output has five: about 16 µF at 20 V, 10 µF at 28 V, 7.5 µF at 36 V and 6 µF at
+  48 V.
+- **Binds at 36 and 48 V:**
+  - **Ripple:** forced CCM at 48 V / 5 A gives I_out·D / (f·C) ≈ 2.1 V p-p; 36 V / 5 A gives
+    about 1.1 V p-p.
+  - **Rating:** 48 V is 96 % of the parts' 50 V rating, before ripple and edge spikes.
+  - **Loop:** the gain in section 2.
+  - **Load steps:** about 6 µF cannot carry a sink's step while the loop responds.
+- **Change:**
+  - 100 V-rated output ceramics, and/or a 63 V polymer in C15's 10 × 7.9 mm footprint.
+  - Aim for 30 µF or more effective at 48 V: 0.4 V p-p at 5 A.
+  - Check the total against the PD spec's source bulk-capacitance limits.
 
 **R27 (Q5/Q6 gate).**
 - Now: an 0603 at 123 mW (48 V).
@@ -246,12 +312,16 @@ Each one is checked on the bench.
    τ ≤ 15 µs (per-period ADC and compute), which moves it to about 17 kHz.
 2. **The current loop must sit above the L–C resonance.**
    - The resonance is (1 − D)/(2π√(LC)).
-   - With the 23 µF seen at kHz: 7.6 kHz at 48 V, 10 kHz at 36 V, 15 kHz in buck.
-   - So the current loop needs about 20 kHz of bandwidth, which means per-period updates.
+   - With the ceramics only (bias-derated): about 15 kHz at 48 V (6 µF), 18 kHz at 36 V
+     (7.5 µF), 18 kHz in buck at 20 V (16 µF). With 30 µF at 48 V it is about 7 kHz.
+   - So the current loop needs 20–40 kHz of bandwidth, which means per-period updates. More
+     output capacitance relaxes this.
 3. **Boost RHP zero.** It is at (1 − D)²R/(2πL): 81 kHz at 48 V / 5 A, 108 kHz at 36 V, 140 kHz
    at 28 V. The small L1 keeps it far above a 5 kHz voltage loop.
-4. **Use the capacitance the loop actually sees.** Compute kp from C measured at kHz. C_ext sits
-   behind the output switch and cable.
+4. **Use the capacitance the loop actually sees.**
+   - Compute kp from C measured at kHz. C_ext sits behind the output switch and cable.
+   - The on-board C depends on V_out: about 44 µF at 5 V down to 6 µF at 48 V with the
+     present ceramics. So kp should follow V_out.
 5. **Keep limits out of the fast path.** Compute ceilings from filtered or commanded values,
    with anti-windup.
 6. **Input filter (Middlebrook).**
@@ -277,7 +347,7 @@ Each phase is flashed only after review. Power-stage changes are flashed on appr
   R5/R25. This gives a measured °C/W in place of the 5–7 W estimate.
 - The 36 V tests in section 2.
 - Bootstrap droop on a held high side, which sets N.
-- The capacitor part numbers.
+- The capacitor part numbers. (Done 2026-10-17: ceramics only, CL31B106KBHNNNE.)
 - Exit: efficiency per contract, board °C/W, and the 36 V mechanism confirmed or ruled out.
 
 *Status (2026-10-16 evening, `bench/results/2026-10-16/`).*
@@ -293,8 +363,7 @@ Each phase is flashed only after review. Power-stage changes are flashed on appr
   - 20 and 24 V; the rectifier-on sweep;
   - the cool-down;
   - the 36 V tests;
-  - bootstrap droop;
-  - the capacitor part numbers.
+  - bootstrap droop.
 - **New items:**
   - Pulling the 25 Ω at 28 V latched HW_FLT1 (VS_GOOD), not OVP.
   - The board's current reads are single samples at one phase of the period, so they are not
@@ -359,8 +428,9 @@ averages 20 board reads per step and stores them with the bench readings in `dat
 - Q3 static and Q4 refreshed, as the LM5175 does.
 
 **Phase 4: hardware for more than about 150 W.**
-- R5 and R25 to 2 mΩ; R6 to about 6 mΩ; output capacitors per Phase 0; R27 to a 1206.
-- Then EPC2305, after Phases 2–3 run clean.
+- R5 and R25 to 2 mΩ; R6 to about 6 mΩ; R27 to a 1206.
+- Output capacitance: 30 µF or more effective at 48 V, rated 63–100 V (section 4).
+- Then EPC2302, after Phases 2–3 run clean and SW2's overshoot is measured with a ground spring.
 
 **Phase 5: 48 V / 5 A.**
 - Pulses of 0.5, 2, 10 and 60 s, logging temperature.

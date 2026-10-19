@@ -26,8 +26,8 @@ This replaced the original plan (the sink's receptacle feeding the load) on 2026
 
 - **Source:** the G474 drives the PD_Charger power board. There is no shield on the G474.
   - A 24 V bench supply feeds the power board.
-  - The power board's output (VBUS, TP2) goes straight to the loads: the buck's HV input (VIN)
-    and, since 2026-10-15, the fixed 25 Ω. The Type-C cable carries no VBUS: the sink's VBUS
+  - The power board's output (VBUS, after its output switch Q5/Q6) goes straight to the loads:
+    the buck's HV input (VIN) and, since 2026-10-15, the fixed 25 Ω. The Type-C cable carries no VBUS: the sink's VBUS
     sense reads 0 V.
 - **CC and VCONN:**
   - The G474's CC1/CC2 (PB6/PB4) run over the Apple 240 W cable to the SRC1M1 receptacle on the
@@ -39,7 +39,7 @@ This replaced the original plan (the sink's receptacle feeding the load) on 2026
   - CH1: the 25 Ω resistor (the probe connection is unreliable).
   - CH2 = TP3: SW1, the Q1/Q2 node.
   - CH3 = TP4: SW2, the Q3/Q4 node.
-  - CH4 = TP2: VBUS.
+  - CH4 = TP2: VOUTa, the regulated node ahead of R6 and the output switch.
 
 **Things found on the hardware:**
 
@@ -67,6 +67,24 @@ This replaced the original plan (the sink's receptacle feeding the load) on 2026
 - **The VBUS sense depends on the wiring.** Taking the SRC1M1 shield off the G474 changed the
   loading on PA0 and PA4 (VD_MON, VS_MON), and TP2 read 11 % below the ADC. It was recalibrated
   against a meter on 2026-10-10 (`regulator_config.h`). Redo that whenever this wiring changes.
+- **TP2 is ahead of the output switch; the bench loads are after it (2026-10-17).**
+  - TP2 is `/DC-DC/VOUTa`, the converter's output node with the ceramics (PCB nets). It feeds R6,
+    then VD (the VD_MON sense), then Q5/Q6, then VBUS and J3.
+  - The 25 Ω and the QT Py are on the VBUS side, after the switch (Dan). So CH4 watches the
+    regulated node, and the switch closing after each start (regulator.c step 4c) is a load
+    connect seen on TP2.
+- **The QT Py buck no longer converts (2026-10-17).**
+  - Armed at 3 W at 28 V, it ran its PWM at about 30 % duty, but its output stayed near 0.1 V
+    and it drew nothing visible on TP2.
+  - It last switched power on 2026-10-07. Since then it saw 42.5 and 47 V, and IC8 (its 12 V
+    gate rail) is a 38 V part.
+  - Its buck input still draws 73–90 mA from VBUS while not converting (measured by Dan; the
+    QT Py logic itself can run from USB, so this is the buck converter's input current).
+- **Ceramics only on the power stage (noted 2026-10-17).**
+  - The 82 µF electrolytics C14 and C15 are not fitted. V_out ripple has been fine without them.
+  - The ceramics are CL31B106KBHNNNE (10 µF, 50 V, X7R, 1206), five on the output.
+  - DC bias takes each to about 3.2 µF at 20 V, 2.0 µF at 28 V, 1.5 µF at 36 V and 1.2 µF at
+    48 V (Samsung's characteristic sheet). At 48 V they run at 96 % of their rating.
 - **D3, the clamp on VD_MON, leaked (2026-10-12).** Above about 20 V the ADC read low: 2.9 % at
   28 V and 15.3 % at 36 V (meter 42.5 V for an ADC 36.0 V). D3 is disconnected and VD_MON
   recalibrated (`results/2026-10-11/README.md`). D2 on VS_MON is the same part and

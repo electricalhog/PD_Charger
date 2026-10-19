@@ -2,15 +2,16 @@
 """Loss budget per switching period for the PD_Charger power stage (plans/240w-roadmap.md).
 
 Forced CCM at 200 kHz from a 24 V input, one line per USB PD fixed PDO of a 240 W source.
-Prints energy per switching period (uJ) and watts by mechanism, for EPC2308 and EPC2305,
+Prints energy per switching period (uJ) and watts by mechanism, for EPC2308 and EPC2302,
 at the present 50 ns dead time and a 15 ns target, with the static leg refreshed every
 period and every 8th.  Also prints the present DCM modulator's ceiling per contract
 (regulator.c PID ISR step 5) against the 25 ohm bench load.
 
 Sources (values typed in, not fitted):
-- EPC2308 / EPC2305 datasheets (rev. June 2026): RDS(on) typ 4.5 / 2.2 mOhm at 25 C,
-  x1.4 / x1.5 at about 100 C (Fig. 9); QOSS vs VDS read off Fig. 6; QG 11.7 / 22 nC;
-  third-quadrant drop about 2 V plus 25 mV/A (Fig. 8).
+- EPC2308 (rev. June 2026) and EPC2302 (rev. April 2026) datasheets: RDS(on) typ 4.5 / 1.4 mOhm
+  at 25 C, x1.4 / x1.5 at about 100 C (Fig. 9); QOSS vs VDS read off Fig. 6; QG 11.7 / 23 nC;
+  third-quadrant drop about 2 V plus 25 mV/A (Fig. 8).  EPC2302 is the planned final part
+  (100 V); EPC2308 (150 V) is fitted now.
 - IHLP6767GZER4R7M11: DCR 3.98 mOhm typ at 25 C (x1.25 for a hot winding), Isat 21 A.
 - KiCad: R5 5 mOhm (IL_MON) in series with L1; R25 5 mOhm as built (schematic 2 mOhm);
   R6 12 mOhm; Q5-Q8 SiR5607DP, 5.6 mOhm typ at Vgs -10 V, 9.2 at -4.5 V (x1.3 hot).
@@ -32,8 +33,8 @@ V_DRV = 5.0
 FETS = {
     "EPC2308": dict(rds=4.5e-3 * 1.4, qg=11.7e-9,
                     qoss=[(0, 0), (12.5, 13), (25, 24), (50, 37), (75, 50), (100, 57), (150, 72)]),
-    "EPC2305": dict(rds=2.2e-3 * 1.5, qg=22e-9,
-                    qoss=[(0, 0), (12.5, 35), (25, 55), (50, 80), (75, 103), (100, 120), (150, 158)]),
+    "EPC2302": dict(rds=1.4e-3 * 1.5, qg=23e-9,
+                    qoss=[(0, 0), (10, 33), (25, 55), (50, 85), (75, 110), (100, 133)]),
 }
 
 PDOS = [(5, 3), (9, 3), (15, 3), (20, 5), (28, 5), (36, 5), (48, 5)]
