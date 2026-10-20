@@ -1,0 +1,1036 @@
+{
+ "sw_28v_sr1_0w": {
+  "points": 600000,
+  "dt_ns": 2.0,
+  "span_ms": 1.2,
+  "SW1": {
+   "low_v_p5": -0.813,
+   "high_v_p95": 25.212,
+   "min_v": -9.759,
+   "max_v": 29.278,
+   "mean_v": 12.735,
+   "duty_pct": 50.56,
+   "fsw_hz": 2242152.5,
+   "periods": 915,
+   "rising_edges": 916,
+   "resonant_crossings": {
+    "rising": 230,
+    "falling": 12
+   },
+   "period_us_p5_p50_p95": [
+    0.422,
+    0.446,
+    3.386
+   ],
+   "rise": {
+    "t_10_90_ns": {
+     "n": 233,
+     "median": 39.2801,
+     "p5": 31.8821,
+     "p95": 42.9934,
+     "max": 44.3555
+    },
+    "dvdt_max_v_per_ns": {
+     "n": 233,
+     "median": 6.3027,
+     "p5": 5.083,
+     "p95": 7.6042,
+     "max": 8.1327
+    },
+    "overshoot_v": {
+     "n": 233,
+     "median": 3.659,
+     "p5": 3.253,
+     "p95": 4.066,
+     "max": 4.066
+    },
+    "ring_hz_mean_spectrum": 3571429
+   },
+   "fall": {
+    "t_10_90_ns": {
+     "n": 440,
+     "median": 5.3009,
+     "p5": 4.6279,
+     "p95": 474.6985,
+     "max": 499.8601
+    },
+    "dvdt_max_v_per_ns": {
+     "n": 440,
+     "median": 5.6929,
+     "p5": 4.6662,
+     "p95": 7.5227,
+     "max": 7.9296
+    },
+    "undershoot_v": {
+     "n": 440,
+     "median": 7.7262,
+     "p5": 1.6265,
+     "p95": 8.5394,
+     "max": 8.9461
+    },
+    "ring_hz_mean_spectrum": 3571429
+   },
+   "spectrum_bands": {
+    "0.15-0.5 MHz": {
+     "peak_dbuv": 139.8,
+     "at_hz": 200000
+    },
+    "0.5-5 MHz": {
+     "peak_dbuv": 131.6,
+     "at_hz": 2400000
+    },
+    "5-30 MHz": {
+     "peak_dbuv": 116.7,
+     "at_hz": 5400000
+    },
+    "30-100 MHz": {
+     "peak_dbuv": 97.4,
+     "at_hz": 36799167
+    }
+   },
+   "harmonics": [
+    {
+     "harmonic": 1,
+     "hz": 2240000,
+     "dbuv": 103.4
+    },
+    {
+     "harmonic": 2,
+     "hz": 4481667,
+     "dbuv": 84.4
+    },
+    {
+     "harmonic": 3,
+     "hz": 6725833,
+     "dbuv": 81.8
+    },
+    {
+     "harmonic": 5,
+     "hz": 11210000,
+     "dbuv": 88.1
+    },
+    {
+     "harmonic": 10,
+     "hz": 22424167,
+     "dbuv": 75.1
+    },
+    {
+     "harmonic": 25,
+     "hz": 56051667,
+     "dbuv": 62.8
+    },
+    {
+     "harmonic": 50,
+     "hz": 112109167,
+     "dbuv": 59.9
+    },
+    {
+     "harmonic": 100,
+     "hz": 224212500,
+     "dbuv": 59.0
+    }
+   ],
+   "bin_hz": 833.3
+  },
+  "SW2": {
+   "low_v_p5": -1.63,
+   "high_v_p95": 32.186,
+   "min_v": -8.963,
+   "max_v": 40.742,
+   "mean_v": 12.473,
+   "duty_pct": 40.68,
+   "fsw_hz": 551876.4,
+   "periods": 677,
+   "rising_edges": 678,
+   "resonant_crossings": {
+    "rising": 0,
+    "falling": 229
+   },
+   "period_us_p5_p50_p95": [
+    0.444,
+    1.812,
+    2.768
+   ],
+   "rise": {
+    "t_10_90_ns": {
+     "n": 232,
+     "median": 5.4278,
+     "p5": 5.2366,
+     "p95": 6.1166,
+     "max": 8.8078
+    },
+    "dvdt_max_v_per_ns": {
+     "n": 232,
+     "median": 6.315,
+     "p5": 5.836,
+     "p95": 6.7225,
+     "max": 6.9265
+    },
+    "overshoot_v": {
+     "n": 232,
+     "median": 7.741,
+     "p5": 5.9284,
+     "p95": 8.149,
+     "max": 8.556
+    },
+    "ring_hz_mean_spectrum": 10714286
+   },
+   "fall": {
+    "t_10_90_ns": {
+     "n": 2,
+     "median": 21.33,
+     "p5": 20.9971,
+     "p95": 21.6629,
+     "max": 21.6999
+    },
+    "dvdt_max_v_per_ns": {
+     "n": 2,
+     "median": 1.6298,
+     "p5": 1.6297,
+     "p95": 1.63,
+     "max": 1.63
+    },
+    "undershoot_v": {
+     "n": 2,
+     "median": 4.8891,
+     "p5": 4.8891,
+     "p95": 4.8891,
+     "max": 4.8891
+    },
+    "ring_hz_mean_spectrum": 3571429
+   },
+   "spectrum_bands": {
+    "0.15-0.5 MHz": {
+     "peak_dbuv": 143.4,
+     "at_hz": 200000
+    },
+    "0.5-5 MHz": {
+     "peak_dbuv": 131.1,
+     "at_hz": 2400000
+    },
+    "5-30 MHz": {
+     "peak_dbuv": 112.1,
+     "at_hz": 5600000
+    },
+    "30-100 MHz": {
+     "peak_dbuv": 92.6,
+     "at_hz": 44598333
+    }
+   },
+   "harmonics": [
+    {
+     "harmonic": 1,
+     "hz": 554167,
+     "dbuv": 102.9
+    },
+    {
+     "harmonic": 2,
+     "hz": 1104167,
+     "dbuv": 97.8
+    },
+    {
+     "harmonic": 3,
+     "hz": 1655833,
+     "dbuv": 95.4
+    },
+    {
+     "harmonic": 5,
+     "hz": 2760000,
+     "dbuv": 99.2
+    },
+    {
+     "harmonic": 10,
+     "hz": 5520000,
+     "dbuv": 78.5
+    },
+    {
+     "harmonic": 25,
+     "hz": 13799167,
+     "dbuv": 99.3
+    },
+    {
+     "harmonic": 50,
+     "hz": 27591667,
+     "dbuv": 89.8
+    },
+    {
+     "harmonic": 100,
+     "hz": 55190000,
+     "dbuv": 83.0
+    }
+   ],
+   "bin_hz": 833.3
+  }
+ },
+ "sw_28v_sr1_3w": {
+  "points": 600000,
+  "dt_ns": 2.0,
+  "span_ms": 1.2,
+  "SW1": {
+   "low_v_p5": -0.407,
+   "high_v_p95": 25.212,
+   "min_v": -9.353,
+   "max_v": 29.278,
+   "mean_v": 12.704,
+   "duty_pct": 50.16,
+   "fsw_hz": 1972386.6,
+   "periods": 910,
+   "rising_edges": 911,
+   "resonant_crossings": {
+    "rising": 270,
+    "falling": 71
+   },
+   "period_us_p5_p50_p95": [
+    0.424,
+    0.507,
+    3.632
+   ],
+   "rise": {
+    "t_10_90_ns": {
+     "n": 235,
+     "median": 44.6238,
+     "p5": 39.4321,
+     "p95": 46.5154,
+     "max": 47.2159
+    },
+    "dvdt_max_v_per_ns": {
+     "n": 235,
+     "median": 4.88,
+     "p5": 4.27,
+     "p95": 5.4896,
+     "max": 8.1328
+    },
+    "overshoot_v": {
+     "n": 235,
+     "median": 2.846,
+     "p5": 2.846,
+     "p95": 3.253,
+     "max": 4.066
+    },
+    "ring_hz_mean_spectrum": 3571429
+   },
+   "fall": {
+    "t_10_90_ns": {
+     "n": 435,
+     "median": 4.8787,
+     "p5": 4.4729,
+     "p95": 220.1141,
+     "max": 234.5178
+    },
+    "dvdt_max_v_per_ns": {
+     "n": 435,
+     "median": 5.2863,
+     "p5": 1.6265,
+     "p95": 5.8961,
+     "max": 5.8965
+    },
+    "undershoot_v": {
+     "n": 435,
+     "median": 7.7262,
+     "p5": -0.4066,
+     "p95": 8.5395,
+     "max": 8.9461
+    },
+    "ring_hz_mean_spectrum": 3571429
+   },
+   "spectrum_bands": {
+    "0.15-0.5 MHz": {
+     "peak_dbuv": 140.7,
+     "at_hz": 200000
+    },
+    "0.5-5 MHz": {
+     "peak_dbuv": 131.4,
+     "at_hz": 2200000
+    },
+    "5-30 MHz": {
+     "peak_dbuv": 113.9,
+     "at_hz": 5400000
+    },
+    "30-100 MHz": {
+     "peak_dbuv": 92.3,
+     "at_hz": 33399167
+    }
+   },
+   "harmonics": [
+    {
+     "harmonic": 1,
+     "hz": 1974167,
+     "dbuv": 106.3
+    },
+    {
+     "harmonic": 2,
+     "hz": 3945833,
+     "dbuv": 81.0
+    },
+    {
+     "harmonic": 3,
+     "hz": 5920000,
+     "dbuv": 85.2
+    },
+    {
+     "harmonic": 5,
+     "hz": 9860000,
+     "dbuv": 81.7
+    },
+    {
+     "harmonic": 10,
+     "hz": 19721667,
+     "dbuv": 68.7
+    },
+    {
+     "harmonic": 25,
+     "hz": 49311667,
+     "dbuv": 65.0
+    },
+    {
+     "harmonic": 50,
+     "hz": 98616667,
+     "dbuv": 52.0
+    },
+    {
+     "harmonic": 100,
+     "hz": 197237500,
+     "dbuv": 58.5
+    }
+   ],
+   "bin_hz": 833.3
+  },
+  "SW2": {
+   "low_v_p5": -2.037,
+   "high_v_p95": 32.186,
+   "min_v": -9.371,
+   "max_v": 41.964,
+   "mean_v": 12.452,
+   "duty_pct": 42.35,
+   "fsw_hz": 521920.7,
+   "periods": 749,
+   "rising_edges": 750,
+   "resonant_crossings": {
+    "rising": 0,
+    "falling": 231
+   },
+   "period_us_p5_p50_p95": [
+    0.424,
+    1.916,
+    2.657
+   ],
+   "rise": {
+    "t_10_90_ns": {
+     "n": 233,
+     "median": 5.351,
+     "p5": 5.1861,
+     "p95": 6.3168,
+     "max": 10.774
+    },
+    "dvdt_max_v_per_ns": {
+     "n": 233,
+     "median": 6.926,
+     "p5": 5.4187,
+     "p95": 7.13,
+     "max": 7.13
+    },
+    "overshoot_v": {
+     "n": 233,
+     "median": 8.964,
+     "p5": 5.297,
+     "p95": 9.371,
+     "max": 9.778
+    },
+    "ring_hz_mean_spectrum": 10714286
+   },
+   "fall": {
+    "t_10_90_ns": {
+     "n": 1,
+     "median": 22.1397,
+     "p5": 22.1397,
+     "p95": 22.1397,
+     "max": 22.1397
+    },
+    "dvdt_max_v_per_ns": {
+     "n": 1,
+     "median": 1.63,
+     "p5": 1.63,
+     "p95": 1.63,
+     "max": 1.63
+    },
+    "undershoot_v": {
+     "n": 1,
+     "median": 4.4817,
+     "p5": 4.4817,
+     "p95": 4.4817,
+     "max": 4.4817
+    },
+    "ring_hz_mean_spectrum": 3571429
+   },
+   "spectrum_bands": {
+    "0.15-0.5 MHz": {
+     "peak_dbuv": 144.0,
+     "at_hz": 200000
+    },
+    "0.5-5 MHz": {
+     "peak_dbuv": 132.7,
+     "at_hz": 2200000
+    },
+    "5-30 MHz": {
+     "peak_dbuv": 112.2,
+     "at_hz": 5200000
+    },
+    "30-100 MHz": {
+     "peak_dbuv": 91.9,
+     "at_hz": 30994167
+    }
+   },
+   "harmonics": [
+    {
+     "harmonic": 1,
+     "hz": 520000,
+     "dbuv": 100.9
+    },
+    {
+     "harmonic": 2,
+     "hz": 1045833,
+     "dbuv": 97.4
+    },
+    {
+     "harmonic": 3,
+     "hz": 1565833,
+     "dbuv": 107.9
+    },
+    {
+     "harmonic": 5,
+     "hz": 2611667,
+     "dbuv": 107.1
+    },
+    {
+     "harmonic": 10,
+     "hz": 5220000,
+     "dbuv": 87.0
+    },
+    {
+     "harmonic": 25,
+     "hz": 13045833,
+     "dbuv": 83.7
+    },
+    {
+     "harmonic": 50,
+     "hz": 26096667,
+     "dbuv": 66.8
+    },
+    {
+     "harmonic": 100,
+     "hz": 52194167,
+     "dbuv": 85.7
+    }
+   ],
+   "bin_hz": 833.3
+  }
+ },
+ "sw_28v_sr1_25w": {
+  "points": 600000,
+  "dt_ns": 2.0,
+  "span_ms": 1.2,
+  "SW1": {
+   "low_v_p5": -1.22,
+   "high_v_p95": 25.618,
+   "min_v": -10.166,
+   "max_v": 29.278,
+   "mean_v": 12.514,
+   "duty_pct": 49.64,
+   "fsw_hz": 1449275.4,
+   "periods": 473,
+   "rising_edges": 474,
+   "resonant_crossings": {
+    "rising": 240,
+    "falling": 36
+   },
+   "period_us_p5_p50_p95": [
+    0.589,
+    0.69,
+    4.405
+   ],
+   "rise": {
+    "t_10_90_ns": {
+     "n": 233,
+     "median": 45.0001,
+     "p5": 41.7619,
+     "p95": 47.6352,
+     "max": 50.5834
+    },
+    "dvdt_max_v_per_ns": {
+     "n": 233,
+     "median": 4.88,
+     "p5": 4.2695,
+     "p95": 5.693,
+     "max": 7.9292
+    },
+    "overshoot_v": {
+     "n": 233,
+     "median": 2.44,
+     "p5": 2.034,
+     "p95": 2.847,
+     "max": 3.66
+    },
+    "ring_hz_mean_spectrum": 3571429
+   },
+   "fall": {
+    "t_10_90_ns": {
+     "n": 438,
+     "median": 4.8449,
+     "p5": 4.4031,
+     "p95": 276.1437,
+     "max": 299.4708
+    },
+    "dvdt_max_v_per_ns": {
+     "n": 438,
+     "median": 6.0995,
+     "p5": 1.8299,
+     "p95": 6.5064,
+     "max": 8.1325
+    },
+    "undershoot_v": {
+     "n": 438,
+     "median": 7.7262,
+     "p5": -0.4066,
+     "p95": 8.5395,
+     "max": 8.9461
+    },
+    "ring_hz_mean_spectrum": 3571429
+   },
+   "spectrum_bands": {
+    "0.15-0.5 MHz": {
+     "peak_dbuv": 142.9,
+     "at_hz": 200000
+    },
+    "0.5-5 MHz": {
+     "peak_dbuv": 130.1,
+     "at_hz": 1400000
+    },
+    "5-30 MHz": {
+     "peak_dbuv": 114.4,
+     "at_hz": 5800000
+    },
+    "30-100 MHz": {
+     "peak_dbuv": 94.8,
+     "at_hz": 37199167
+    }
+   },
+   "harmonics": [
+    {
+     "harmonic": 1,
+     "hz": 1450833,
+     "dbuv": 91.4
+    },
+    {
+     "harmonic": 2,
+     "hz": 2900000,
+     "dbuv": 88.6
+    },
+    {
+     "harmonic": 3,
+     "hz": 4349167,
+     "dbuv": 86.6
+    },
+    {
+     "harmonic": 5,
+     "hz": 7244167,
+     "dbuv": 80.6
+    },
+    {
+     "harmonic": 10,
+     "hz": 14490833,
+     "dbuv": 78.1
+    },
+    {
+     "harmonic": 25,
+     "hz": 36229167,
+     "dbuv": 74.4
+    },
+    {
+     "harmonic": 50,
+     "hz": 72462500,
+     "dbuv": 62.4
+    },
+    {
+     "harmonic": 100,
+     "hz": 144930000,
+     "dbuv": 56.0
+    }
+   ],
+   "bin_hz": 833.3
+  },
+  "SW2": {
+   "low_v_p5": -2.445,
+   "high_v_p95": 32.594,
+   "min_v": -9.371,
+   "max_v": 43.187,
+   "mean_v": 12.247,
+   "duty_pct": 41.83,
+   "fsw_hz": 435919.8,
+   "periods": 469,
+   "rising_edges": 470,
+   "resonant_crossings": {
+    "rising": 0,
+    "falling": 232
+   },
+   "period_us_p5_p50_p95": [
+    2.228,
+    2.294,
+    2.768
+   ],
+   "rise": {
+    "t_10_90_ns": {
+     "n": 233,
+     "median": 5.2807,
+     "p5": 5.0745,
+     "p95": 5.5509,
+     "max": 11.4229
+    },
+    "dvdt_max_v_per_ns": {
+     "n": 233,
+     "median": 7.5375,
+     "p5": 7.1296,
+     "p95": 7.741,
+     "max": 7.9445
+    },
+    "overshoot_v": {
+     "n": 233,
+     "median": 9.778,
+     "p5": 8.556,
+     "p95": 10.593,
+     "max": 10.593
+    },
+    "ring_hz_mean_spectrum": 10714286
+   },
+   "fall": {
+    "t_10_90_ns": null,
+    "dvdt_max_v_per_ns": null,
+    "undershoot_v": null,
+    "ring_hz_mean_spectrum": 3571429
+   },
+   "spectrum_bands": {
+    "0.15-0.5 MHz": {
+     "peak_dbuv": 145.4,
+     "at_hz": 200000
+    },
+    "0.5-5 MHz": {
+     "peak_dbuv": 132.2,
+     "at_hz": 600000
+    },
+    "5-30 MHz": {
+     "peak_dbuv": 111.8,
+     "at_hz": 6000000
+    },
+    "30-100 MHz": {
+     "peak_dbuv": 92.1,
+     "at_hz": 31601667
+    }
+   },
+   "harmonics": [
+    {
+     "harmonic": 1,
+     "hz": 435833,
+     "dbuv": 105.6
+    },
+    {
+     "harmonic": 2,
+     "hz": 870833,
+     "dbuv": 101.8
+    },
+    {
+     "harmonic": 3,
+     "hz": 1305000,
+     "dbuv": 96.5
+    },
+    {
+     "harmonic": 5,
+     "hz": 2180000,
+     "dbuv": 99.5
+    },
+    {
+     "harmonic": 10,
+     "hz": 4360000,
+     "dbuv": 90.5
+    },
+    {
+     "harmonic": 25,
+     "hz": 10898333,
+     "dbuv": 77.3
+    },
+    {
+     "harmonic": 50,
+     "hz": 21797500,
+     "dbuv": 89.5
+    },
+    {
+     "harmonic": 100,
+     "hz": 43593333,
+     "dbuv": 85.4
+    }
+   ],
+   "bin_hz": 833.3
+  }
+ },
+ "sw_28v_sr0_0w": {
+  "points": 600000,
+  "dt_ns": 2.0,
+  "span_ms": 1.2,
+  "SW1": {
+   "low_v_p5": -2.44,
+   "high_v_p95": 26.025,
+   "min_v": -8.54,
+   "max_v": 29.685,
+   "mean_v": 16.237,
+   "duty_pct": 68.34,
+   "fsw_hz": 400160.1,
+   "periods": 478,
+   "rising_edges": 479,
+   "resonant_crossings": {
+    "rising": 0,
+    "falling": 0
+   },
+   "period_us_p5_p50_p95": [
+    1.794,
+    2.499,
+    3.206
+   ],
+   "rise": {
+    "t_10_90_ns": {
+     "n": 479,
+     "median": 53.0,
+     "p5": 14.4992,
+     "p95": 57.4283,
+     "max": 57.9999
+    },
+    "dvdt_max_v_per_ns": {
+     "n": 479,
+     "median": 3.2535,
+     "p5": 2.8465,
+     "p95": 3.8632,
+     "max": 4.0662
+    },
+    "overshoot_v": {
+     "n": 479,
+     "median": 2.033,
+     "p5": 1.627,
+     "p95": 3.66,
+     "max": 3.66
+    },
+    "ring_hz_mean_spectrum": 10714286
+   },
+   "fall": {
+    "t_10_90_ns": {
+     "n": 480,
+     "median": 4.7222,
+     "p5": 3.5603,
+     "p95": 5.7712,
+     "max": 6.0455
+    },
+    "dvdt_max_v_per_ns": {
+     "n": 480,
+     "median": 6.3029,
+     "p5": 5.4896,
+     "p95": 8.7428,
+     "max": 8.9463
+    },
+    "undershoot_v": {
+     "n": 480,
+     "median": 3.8632,
+     "p5": 1.22,
+     "p95": 5.693,
+     "max": 6.0997
+    },
+    "ring_hz_mean_spectrum": 3571429
+   },
+   "spectrum_bands": {
+    "0.15-0.5 MHz": {
+     "peak_dbuv": 140.5,
+     "at_hz": 400000
+    },
+    "0.5-5 MHz": {
+     "peak_dbuv": 132.9,
+     "at_hz": 1000000
+    },
+    "5-30 MHz": {
+     "peak_dbuv": 120.5,
+     "at_hz": 5600000
+    },
+    "30-100 MHz": {
+     "peak_dbuv": 103.8,
+     "at_hz": 32799167
+    }
+   },
+   "harmonics": [
+    {
+     "harmonic": 1,
+     "hz": 400000,
+     "dbuv": 140.5
+    },
+    {
+     "harmonic": 2,
+     "hz": 800000,
+     "dbuv": 125.3
+    },
+    {
+     "harmonic": 3,
+     "hz": 1200000,
+     "dbuv": 129.7
+    },
+    {
+     "harmonic": 5,
+     "hz": 2000000,
+     "dbuv": 121.9
+    },
+    {
+     "harmonic": 10,
+     "hz": 4000000,
+     "dbuv": 116.5
+    },
+    {
+     "harmonic": 25,
+     "hz": 10005000,
+     "dbuv": 87.0
+    },
+    {
+     "harmonic": 50,
+     "hz": 20007500,
+     "dbuv": 80.8
+    },
+    {
+     "harmonic": 100,
+     "hz": 40013333,
+     "dbuv": 65.7
+    }
+   ],
+   "bin_hz": 833.3
+  },
+  "SW2": {
+   "low_v_p5": -2.445,
+   "high_v_p95": 33.409,
+   "min_v": -6.519,
+   "max_v": 42.372,
+   "mean_v": 16.017,
+   "duty_pct": 58.32,
+   "fsw_hz": 200000.0,
+   "periods": 239,
+   "rising_edges": 240,
+   "resonant_crossings": {
+    "rising": 0,
+    "falling": 22
+   },
+   "period_us_p5_p50_p95": [
+    4.998,
+    5.0,
+    5.002
+   ],
+   "rise": {
+    "t_10_90_ns": {
+     "n": 240,
+     "median": 5.2965,
+     "p5": 5.1158,
+     "p95": 5.4476,
+     "max": 6.2485
+    },
+    "dvdt_max_v_per_ns": {
+     "n": 240,
+     "median": 6.9263,
+     "p5": 6.7223,
+     "p95": 7.13,
+     "max": 7.537
+    },
+    "overshoot_v": {
+     "n": 240,
+     "median": 7.741,
+     "p5": 6.926,
+     "p95": 8.148,
+     "max": 8.963
+    },
+    "ring_hz_mean_spectrum": 10714286
+   },
+   "fall": {
+    "t_10_90_ns": {
+     "n": 206,
+     "median": 109.6012,
+     "p5": 108.9336,
+     "p95": 110.6674,
+     "max": 110.8004
+    },
+    "dvdt_max_v_per_ns": {
+     "n": 206,
+     "median": 1.63,
+     "p5": 1.6295,
+     "p95": 1.8335,
+     "max": 1.8335
+    },
+    "undershoot_v": {
+     "n": 206,
+     "median": 4.0743,
+     "p5": 3.6668,
+     "p95": 4.0743,
+     "max": 4.0743
+    },
+    "ring_hz_mean_spectrum": 14285714
+   },
+   "spectrum_bands": {
+    "0.15-0.5 MHz": {
+     "peak_dbuv": 145.5,
+     "at_hz": 200000
+    },
+    "0.5-5 MHz": {
+     "peak_dbuv": 133.6,
+     "at_hz": 600000
+    },
+    "5-30 MHz": {
+     "peak_dbuv": 114.6,
+     "at_hz": 5200000
+    },
+    "30-100 MHz": {
+     "peak_dbuv": 98.6,
+     "at_hz": 32199167
+    }
+   },
+   "harmonics": [
+    {
+     "harmonic": 1,
+     "hz": 200000,
+     "dbuv": 145.5
+    },
+    {
+     "harmonic": 2,
+     "hz": 400000,
+     "dbuv": 135.4
+    },
+    {
+     "harmonic": 3,
+     "hz": 600000,
+     "dbuv": 133.6
+    },
+    {
+     "harmonic": 5,
+     "hz": 1000000,
+     "dbuv": 119.5
+    },
+    {
+     "harmonic": 10,
+     "hz": 2000000,
+     "dbuv": 122.6
+    },
+    {
+     "harmonic": 25,
+     "hz": 5000000,
+     "dbuv": 111.5
+    },
+    {
+     "harmonic": 50,
+     "hz": 10000000,
+     "dbuv": 109.4
+    },
+    {
+     "harmonic": 100,
+     "hz": 19999167,
+     "dbuv": 101.7
+    }
+   ],
+   "bin_hz": 833.3
+  }
+ }
+}

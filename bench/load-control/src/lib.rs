@@ -67,6 +67,17 @@ impl Params {
         watchdog_ms: load_link::WATCHDOG_MS as u32,
     };
 
+    /// The 10 Ω / 10 W ballast overloaded to 25 W for short bench runs (Dan, 2026-10-19:
+    /// 5 s at 25 W next to the 25.3 Ω for 56 W at 28 V).  2.5x the resistor's rating:
+    /// arm it only for runs of a few seconds.  Faster setpoint rise so the 15.8 V
+    /// target is reached in about 0.8 s.
+    pub const BENCH_10R_OVERLOAD_25W: Params = Params {
+        p_ballast_max_mw: 25_000,
+        iout_trip_ma: 2_000,
+        slew_up_mv_per_ms: 20.0,
+        ..Params::BENCH_10R_10W
+    };
+
     /// Highest V_out the ballast allows: sqrt(P_max · R) [mV].
     pub fn vout_max_mv(&self) -> f32 {
         libm::sqrtf(self.p_ballast_max_mw as f32 * self.r_ballast_mohm as f32)
