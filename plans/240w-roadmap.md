@@ -289,7 +289,8 @@ Each change goes in before the power level that needs it.
   - Duty is feedforward (V_out/V_in in buck, 1 − V_in/V_out in boost) plus the current loop's
     correction.
   - COMP1 stays as the cycle-by-cycle backstop.
-- **Not peak current mode** (the LM5175 way), for three reasons:
+- **Not peak current mode** (the LM5175 way). Confirmed 2026-10-21: Dan's scope capture showed IL_MON (INA281)
+  bandwidth-limited against the modeled inductor current (`ccm-buck-50w.md` 8.3). The original three reasons:
   - IL_MON sits at SW2 and rings on every SW2 edge (500 ns blanking in boost today);
   - it is unidirectional;
   - at 48 V / 5 A the peak (16.6 A) is beyond its range, while the average (10.3 A) is inside.

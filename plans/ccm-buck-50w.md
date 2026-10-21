@@ -145,7 +145,8 @@ delay, node after the output switch):
 every point. A proportional term of 0.2 crosses again near 7 kHz once the bench-side ceramics
 are in the loop, so kp = 0.
 
-**Why not peak current mode** (COMP1 + the DAC3 sawtooth, RM0440 §28.3.21):
+**Why not peak current mode** (COMP1 + the DAC3 sawtooth, RM0440 §28.3.21). Since 2026-10-21 there is a decisive
+reason: IL_MON is bandwidth-limited (§8.3). The original reasons were:
 - It turns the inductor into a current source again, so it has the same load-step problem as DCM
   unless the outer loop runs per period.
 - The comparator has never been seen ending a pulse on this board (`regulator_config.h`
@@ -407,6 +408,16 @@ Bench: `bench/results/2026-10-21/README.md`. Host test: `STM32CubeIDE/final/test
 
 ### 8.3 Per-period L1 bound (`regulator_ccm_peak_ma`, off by default)
 
+**Not usable on this hardware (Dan, 2026-10-21).** A scope capture of IL_MON against the modeled inductor current
+showed the INA281's bandwidth limiting the signal. That explains the readings: 0.35–0.84× and nonlinear in CCM, and
+0–150 counts mid-pulse in DCM. It means:
+- peak current mode is ruled out on this board;
+- so is any per-period bound through COMP1;
+- COMP1's thresholds in amps, including the 9 A backstop, are not a reliable protection. The ADM1270 input trip and
+  the software limits are what bound current.
+
+A faster current-sense amplifier would be a hardware change. The capture itself is Dan's and is not in the repo.
+
 - **What it does:** COMP1's threshold in CCM, so Q1 ends early when L1 reaches it. Q2 still waits for its programmed
   edge; until then Q2's reverse conduction carries L1.
 - **Model:** it is the only mechanism fast enough for the L1–C ring of a capacitive dump. At 2–3 A average the dump's
@@ -423,11 +434,11 @@ Bench: `bench/results/2026-10-21/README.md`. Host test: `STM32CubeIDE/final/test
 ### 8.4 Before a LiPo on VBUS
 
 1. **The contract against the limit.** The PD stack detaches when VBUS leaves ±5 % (`USBPD_DPM_IsPowerReady`), and
-   `pd_vbus.c` adds a Hard Reset at 8 % for 200 ms. CC charging needs one of:
-   - a contract at or just above the pack voltage;
-   - a PPS/AVS-style mode;
-   - a bench-only exemption while `regulator_ccm_limiting` is set.
-   Dan's decision.
+   `pd_vbus.c` adds a Hard Reset at 8 % for 200 ms.
+   - **Decision (Dan, 2026-10-21): PPS.** Current limiting is part of a PPS contract: the sink requests an operating
+     current and the source folds the voltage in current-limit mode, so the CCM limit of 8.2 becomes the PPS
+     current limit and the ±5 % check does not apply while limiting.
+   - Not chosen: a fixed contract at the pack voltage; a bench-only exemption.
 2. **Hardware** (log 2026-10-20 section 6):
    - reverse blocking, because OUTPUT_DIS bleeds VBUS in IDLE/FAULT and the 5 V start back-feeds;
    - a connect step that waits for V_out ≈ V_pack.
