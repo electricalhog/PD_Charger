@@ -368,7 +368,7 @@ def build_parser() -> argparse.ArgumentParser:
     g = rg.add_parser("bench-ccm-pwm", help="buck forced-CCM gate program at a fixed on-time (IDLE, input path off); "
                                             "stop with 'bench-pwm off'")
     g.add_argument("--t-on-ns", type=int, required=True, help="Q1 on-time, ns (clamped to the CCM window)")
-    g.add_argument("--fsw", type=int, default=400, choices=[200, 400], help="switching frequency, kHz")
+    g.add_argument("--fsw", type=int, default=400, choices=[200, 400, 1000], help="switching frequency, kHz")
     g.add_argument("--timeout", type=float, default=3.0)
     g = rg.add_parser("set-voltage", help="new target (mV) while running or idle; the firmware slews to it")
     g.add_argument("mv", type=int); g.add_argument("--timeout", type=float, default=3.0)

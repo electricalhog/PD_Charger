@@ -807,6 +807,18 @@ _Static_assert(DCM_PULSE_START_TICKS + MAX_ON_TIME_COUNTS + DCM_REFRESH_DEADTIME
  */
 #define BUCK_FSW_KHZ_DEFAULT 400u
 #define BUCK_PERIOD_COUNTS_400 ((uint32_t)(HRTIM_PRESCALER_MUL * (SYSCLK_HZ / 400000UL)))
+/* 1 MHz (2026-10-21, light-load experiment): only with CCM_ENABLE_PINNED.
+ * DCM cannot run there: its window (period - 250 ns pulse start - 300 ns
+ * margin) is 450 ns and the 5 V on-time bound falls under DCM_MIN_ON_TIME_NS.
+ * CCM's longest pulse is 1000 - 260 - 20 - 60 = 660 ns, so at 24 V in the
+ * buck reaches about 15.8 V.  Model (ccm_buck.py): 1 MHz loses 0.3-0.4 W
+ * more than 200 kHz at light load (Q1's hard turn-on, Qoss V f, with too
+ * little valley current for soft switching), for 5x less ripple current. */
+#define BUCK_PERIOD_COUNTS_1000 ((uint32_t)(HRTIM_PRESCALER_MUL * (SYSCLK_HZ / 1000000UL)))
+_Static_assert(HRTIM_PERIOD_COUNTS == 5u * BUCK_PERIOD_COUNTS_1000,
+               "the 1 MHz buck period must divide the master (ADC trigger) period");
+_Static_assert(DCM_PULSE_START_TICKS + MAX_ON_TIME_COUNTS + DCM_REFRESH_DEADTIME_TICKS <
+               BUCK_PERIOD_COUNTS_1000, "DCM start-up pulses must fit the 1 MHz period");
 _Static_assert(HRTIM_PERIOD_COUNTS == 2u * BUCK_PERIOD_COUNTS_400,
                "the 400 kHz buck period must divide the master (ADC trigger) period");
 _Static_assert(DCM_PULSE_START_TICKS + MAX_ON_TIME_COUNTS + DCM_REFRESH_DEADTIME_TICKS <
@@ -912,6 +924,7 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
  */
 #define CCM_ENABLE_DEFAULT       0u
 #define CCM_ENABLE_FORCED        2u
+#define CCM_ENABLE_PINNED        3u      /* CCM from soft-start, no load/ramp/band exits (1 MHz) */
 #define CCM_KI_DEFAULT           3142.0f
 #define CCM_KP_DEFAULT           0.0f
 #define CCM_U_MIN_MV             (-1000)

@@ -89,8 +89,8 @@ def pulse_us(ms: float) -> int:
 
 def ccm_pwm_arg(t_on_ns: int, fsw_khz: int) -> int:
     """Pack BENCH_CCM_PWM's argument: t_on_ns | fsw_khz << 16 (the firmware clamps t_on to the CCM window)."""
-    if fsw_khz not in (200, 400):
-        raise ToolError("fsw must be 200 or 400 kHz")
+    if fsw_khz not in (200, 400, 1000):
+        raise ToolError("fsw must be 200, 400 or 1000 kHz")
     if not 0 <= t_on_ns <= 0xFFFF:
         raise ToolError("t_on must be 0..65535 ns")
     return t_on_ns | (fsw_khz << 16)
@@ -166,7 +166,7 @@ BENCH_RESULTS = {
     1: ("NOT_IDLE", "bench PWM is only allowed from IDLE (stop the regulator / clear the fault first)"),
     2: ("INPUT_PATH_ON", "INPUT_EN is high: bench PWM refuses while the input path could power the stage"),
     3: ("FAULT_LINE_LOW", "VS_GOOD or IS_GOOD is low, so the HRTIM hardware would hold the outputs off"),
-    4: ("BAD_ARG", "bench CCM PWM: fsw must be 200 or 400 kHz, and the dead time must give a valid CCM timing"),
+    4: ("BAD_ARG", "bench CCM PWM: fsw must be 200, 400 or 1000 kHz, and the dead time must give a valid CCM timing"),
 }
 CLEAR_RESULTS = {
     0: ("OK", "FAULT released, state IDLE with the input path off. Starting again is a separate step."),

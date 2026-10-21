@@ -167,5 +167,6 @@ def test_ccm_pwm_arg_packing():
     assert regulator.ccm_pwm_arg(2100, 400) == 2100 | (400 << 16)
     with pytest.raises(ToolError):
         regulator.ccm_pwm_arg(2100, 300)
+    assert regulator.ccm_pwm_arg(500, 1000) == 500 | (1000 << 16)
     with pytest.raises(ToolError):
         regulator.ccm_pwm_arg(70000, 400)

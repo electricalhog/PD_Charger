@@ -532,6 +532,10 @@ static void ccm_timing_cfg(BuckCcmTimingCfg *c)
 /** Period for a mode (see above). */
 static uint32_t mode_period_ticks(RegulatorMode mode)
 {
+    if (mode == REGULATOR_MODE_BUCK && regulator_ccm_enable == CCM_ENABLE_PINNED && regulator_buck_fsw_khz == 1000u)
+    {
+        return BUCK_PERIOD_COUNTS_1000;
+    }
     if (mode == REGULATOR_MODE_BUCK && regulator_ccm_enable && regulator_buck_fsw_khz == 400u)
     {
         return BUCK_PERIOD_COUNTS_400;
@@ -556,9 +560,14 @@ static void hrtim_set_switching_period(RegulatorMode mode)
     {
         HRTIM1->sTimerxRegs[idx[k]].PERxR = per;
     }
-    /* One IL_MON trigger per PID cycle at this period (ADC trigger 2). */
-    HRTIM1->sCommonRegs.ADCPS1 = (HRTIM1->sCommonRegs.ADCPS1 & ~HRTIM_ADCPS1_AD2PSC) |
-        (((1000000000u / PID_EXECUTION_RATE_HZ) / sw_period_ns - 1u) << HRTIM_ADCPS1_AD2PSC_Pos);
+    /* One IL_MON trigger per PID cycle at this period (ADC trigger 2); the
+     * post-scaler is 5 bits, so at 1 MHz (50 periods) it saturates at 32. */
+    {
+        uint32_t psc = (1000000000u / PID_EXECUTION_RATE_HZ) / sw_period_ns - 1u;
+        if (psc > (HRTIM_ADCPS1_AD2PSC_Msk >> HRTIM_ADCPS1_AD2PSC_Pos)) { psc = HRTIM_ADCPS1_AD2PSC_Msk >> HRTIM_ADCPS1_AD2PSC_Pos; }
+        HRTIM1->sCommonRegs.ADCPS1 = (HRTIM1->sCommonRegs.ADCPS1 & ~HRTIM_ADCPS1_AD2PSC) |
+                                     (psc << HRTIM_ADCPS1_AD2PSC_Pos);
+    }
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP4xR = per / 2u;
 }
 
@@ -1394,14 +1403,15 @@ RegulatorBenchResult regulator_bench_ccm_pwm(uint32_t t_on_ns, uint32_t fsw_khz)
     {
         return REGULATOR_BENCH_FAULT_LINE_LOW;
     }
-    if (fsw_khz != 200u && fsw_khz != 400u)
+    if (fsw_khz != 200u && fsw_khz != 400u && fsw_khz != 1000u)
     {
         return REGULATOR_BENCH_BAD_ARG;
     }
 
     /* The period for the asked frequency (as hrtim_set_switching_period),
      * the buck DCM legs as the base, then the CCM edges on top. */
-    const uint32_t per = (fsw_khz == 400u) ? BUCK_PERIOD_COUNTS_400 : HRTIM_PERIOD_COUNTS;
+    const uint32_t per = (fsw_khz == 1000u) ? BUCK_PERIOD_COUNTS_1000
+                       : (fsw_khz == 400u)  ? BUCK_PERIOD_COUNTS_400 : HRTIM_PERIOD_COUNTS;
     const uint32_t saved_ticks = sw_period_ticks, saved_ns = sw_period_ns;
     sw_period_ticks = per;
     sw_period_ns    = (per * 1000u) / BUCK_CCM_TICKS_PER_US;
@@ -1877,16 +1887,19 @@ void regulator_pid_tim7_isr(void)
         RegulatorCcmExit why = REGULATOR_CCM_EXIT_NONE;
         if (ccm_exit_request != REGULATOR_CCM_EXIT_NONE)   { why = ccm_exit_request; }
         else if (!regulator_ccm_enable)                    { why = REGULATOR_CCM_EXIT_DISABLED; }
-        else if (target_voltage_mv < regulator_commanded_mv) { why = REGULATOR_CCM_EXIT_RAMP_DOWN; }
+        else if (regulator_ccm_enable != CCM_ENABLE_PINNED &&
+                 target_voltage_mv < regulator_commanded_mv) { why = REGULATOR_CCM_EXIT_RAMP_DOWN; }
         else if (regulator_mode != REGULATOR_MODE_BUCK)    { why = REGULATOR_CCM_EXIT_MODE; }
         /* A SWITCH_PULSE keeps CCM: its reconnect is the bench's load step. */
-        else if (softstart_active || (!output_switch_on && !switch_pulse_active))
+        else if (regulator_ccm_enable != CCM_ENABLE_PINNED &&
+                 (softstart_active || (!output_switch_on && !switch_pulse_active)))
                                                            { why = REGULATOR_CCM_EXIT_SWITCH; }
         else if (!buck_ccm_cfg_valid(&ccm_cfg))            { why = REGULATOR_CCM_EXIT_BAD_CONFIG; }
         else if (v_in_mv > ccm_vin0_mv + CCM_VIN_RISE_MV)  { why = REGULATOR_CCM_EXIT_VIN_RISE; }
-        else if (ccm_over_count >= CCM_OVER_BAND_CYCLES)   { why = REGULATOR_CCM_EXIT_OVER_BAND; }
+        else if (regulator_ccm_enable != CCM_ENABLE_PINNED &&
+                 ccm_over_count >= CCM_OVER_BAND_CYCLES)   { why = REGULATOR_CCM_EXIT_OVER_BAND; }
         else if (ccm_clamp_cycles >= CCM_DUTY_CLAMP_CYCLES) { why = REGULATOR_CCM_EXIT_DUTY; }
-        else if (regulator_ccm_enable != CCM_ENABLE_FORCED && ccm_dwell >= CCM_MIN_DWELL &&
+        else if (regulator_ccm_enable == 1u && ccm_dwell >= CCM_MIN_DWELL &&
                  (float)regulator_il_avg_ma * 100.0f < (float)CCM_EXIT_PCT * i_max_ma)
         {
             why = REGULATOR_CCM_EXIT_LIGHT_LOAD;
@@ -1908,15 +1921,16 @@ void regulator_pid_tim7_isr(void)
         }
         else if (ccm_dwell < 0xFFFFu) { ccm_dwell++; }
     }
-    else if (regulator_ccm_enable && regulator_mode == REGULATOR_MODE_BUCK && !softstart_active &&
-             output_switch_on && ccm_hold == 0u && buck_ccm_cfg_valid(&ccm_cfg) &&
-             ccm_exit_request == REGULATOR_CCM_EXIT_NONE &&
-             target_voltage_mv >= regulator_commanded_mv &&
-             ccm_switch_cycles >= CCM_SWITCH_SETTLE &&
-             v_out_mv <= effective_setpoint_mv + skip_above_mv / 2u &&
+    else if (regulator_ccm_enable && regulator_mode == REGULATOR_MODE_BUCK && ccm_hold == 0u &&
+             buck_ccm_cfg_valid(&ccm_cfg) && ccm_exit_request == REGULATOR_CCM_EXIT_NONE &&
              effective_setpoint_mv * 100u <= ccm_v_cap_mv * CCM_DUTY_ENTER_PCT &&
-             (regulator_ccm_enable == CCM_ENABLE_FORCED ||
-              regulator_i_cmd_ma * 100.0f >= (float)CCM_ENTER_PCT * i_max_ma))
+             (regulator_ccm_enable == CCM_ENABLE_PINNED ||
+              (!softstart_active && output_switch_on &&
+               target_voltage_mv >= regulator_commanded_mv &&
+               ccm_switch_cycles >= CCM_SWITCH_SETTLE &&
+               v_out_mv <= effective_setpoint_mv + skip_above_mv / 2u &&
+               (regulator_ccm_enable == CCM_ENABLE_FORCED ||
+                regulator_i_cmd_ma * 100.0f >= (float)CCM_ENTER_PCT * i_max_ma))))
     {
         /* With the watchdog ISR held off: never enter with Q1 skipped, and
          * from here the window stays open (step 7b). */

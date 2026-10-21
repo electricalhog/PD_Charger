@@ -137,10 +137,14 @@ extern volatile uint16_t regulator_sr_off_ns;
 
 /** Buck forced CCM and the buck switching frequency (regulator_config.h
  *  section 6b, plans/ccm-buck-50w.md).  Runtime switches, written over SWD:
- *    regulator_ccm_enable        0 off, 1 by load, 2 forced (CCM_ENABLE_*);
+ *    regulator_ccm_enable        0 off, 1 by load, 2 forced, 3 pinned: CCM
+ *                                from soft-start, leaving only on a mode
+ *                                change, V_in rise, duty limit, disable,
+ *                                stop or fault (CCM_ENABLE_*);
  *                                set while IDLE so buck starts at
  *                                regulator_buck_fsw_khz
- *    regulator_buck_fsw_khz      200 or 400, taken when buck is entered
+ *    regulator_buck_fsw_khz      200, 400 or 1000 (1000 only with enable
+ *                                3), taken when buck is entered
  *    regulator_ccm_deadtime_ns   Q1/Q2 and Q3/Q4 dead time, clamped
  *    regulator_ccm_ki            integral gain [1/s]
  *    regulator_ccm_ocp_ma        SW_OCP level on the filtered ID_MON

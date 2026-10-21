@@ -86,8 +86,8 @@ static void play(const BuckCcmTimingCfg *c, const BuckCcmTiming *t)
 
 static void test_timing(void)
 {
-    const uint32_t periods[] = { 2500u, 5000u };
-    for (unsigned k = 0; k < 2; k++)
+    const uint32_t periods[] = { 1000u, 2500u, 5000u };
+    for (unsigned k = 0; k < 3; k++)
     {
         for (uint32_t dt = 10u; dt <= 40u; dt += 10u)
         {
@@ -105,7 +105,7 @@ static void test_timing(void)
     /* Longer refresh with the pulse start moved as regulator.c does
      * (refresh + 2 dt + 20 ns), every period and every 10 us. */
     const uint32_t refresh[] = { 200u, 300u, 600u };
-    for (unsigned k = 0; k < 2; k++)
+    for (unsigned k = 0; k < 3; k++)
     {
         for (unsigned r = 0; r < 3; r++)
         {
