@@ -162,7 +162,9 @@ typedef enum
     REGULATOR_CCM_EXIT_OVER_BAND  = 5u,  /**< V_out held over CCM_OVER_BAND_* (2 ms)   */
     REGULATOR_CCM_EXIT_VIN_RISE   = 6u,  /**< V_in rose CCM_VIN_RISE_MV               */
     REGULATOR_CCM_EXIT_STOP       = 7u,  /**< stop or fault                           */
-    REGULATOR_CCM_EXIT_BAD_CONFIG = 8u   /**< timing configuration rejected            */
+    REGULATOR_CCM_EXIT_BAD_CONFIG = 8u,  /**< timing configuration rejected            */
+    REGULATOR_CCM_EXIT_DUTY       = 9u,  /**< setpoint near V_in x the longest duty     */
+    REGULATOR_CCM_EXIT_RAMP_DOWN  = 10u  /**< downward setpoint transition              */
 } RegulatorCcmExit;
 
 extern volatile uint8_t  regulator_ccm_enable;
@@ -170,6 +172,8 @@ extern volatile uint16_t regulator_buck_fsw_khz;
 extern volatile uint16_t regulator_ccm_deadtime_ns;
 extern volatile float    regulator_ccm_ki;
 extern volatile uint16_t regulator_ccm_ocp_ma;
+extern volatile uint16_t regulator_ccm_refresh_ns;            /**< Q4 refresh length [ns]      */
+extern volatile uint16_t regulator_ccm_refresh_interval_ns;   /**< Timer B period; 0 = each period */
 extern volatile uint16_t regulator_fsw_khz;
 extern volatile uint8_t  regulator_ccm_active;
 extern volatile float    regulator_ccm_u_mv;
@@ -180,6 +184,17 @@ extern volatile int32_t  regulator_i_out_filt_ma;
 extern volatile int32_t  regulator_i_in_filt_ma;
 extern volatile int32_t  regulator_p_in_mw;
 extern volatile int32_t  regulator_p_out_mw;
+/** IL_MON sampled at the middle of the longer switching interval (HRTIM ADC
+ *  trigger 2), so in buck CCM the average inductor current = the output
+ *  current in steady state; POWER_FILTER_SHIFT low-pass, after
+ *  regulator_il_gain_permille and regulator_il_offset_ma (bench
+ *  calibration, runtime).  Meaningless in DCM.                           */
+extern volatile int32_t  regulator_il_avg_ma;
+/** Last 8 CCM exits: { uwTick, reason | entries << 8 }, next index.      */
+extern volatile uint32_t regulator_ccm_exit_log[8][2];
+extern volatile uint32_t regulator_ccm_exit_log_index;
+extern volatile int16_t  regulator_il_gain_permille;
+extern volatile int16_t  regulator_il_offset_ma;
 
 /**
  * max_consecutive_backstops — Consecutive backstop events before fault.

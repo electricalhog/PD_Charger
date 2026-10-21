@@ -43,7 +43,8 @@ static BuckCcmTimingCfg cfg(uint32_t period_ns, uint32_t dt_ns)
 static void play(const BuckCcmTimingCfg *c, const BuckCcmTiming *t)
 {
     const uint32_t pa = buck_ccm_ticks(c->period_ns);
-    const uint32_t a_cmp4 = buck_ccm_ticks(c->pulse_start_ns);
+    const uint32_t a_cmp4 = t->a_cmp4;
+    CHECK(a_cmp4 == buck_ccm_ticks(c->pulse_start_ns), "a_cmp4 %u", a_cmp4);
     const uint32_t dt = buck_ccm_ticks(c->dt_ns);
     CHECK(t->a_cmp2 < pa && t->c_cmp2 < pa, "compare beyond the period: a_cmp2 %u c_cmp2 %u period %u",
           t->a_cmp2, t->c_cmp2, pa);
@@ -101,6 +102,31 @@ static void test_timing(void)
             }
         }
     }
+    /* Longer refresh with the pulse start moved as regulator.c does
+     * (refresh + 2 dt + 20 ns), every period and every 10 us. */
+    const uint32_t refresh[] = { 200u, 300u, 600u };
+    for (unsigned k = 0; k < 2; k++)
+    {
+        for (unsigned r = 0; r < 3; r++)
+        {
+            for (uint32_t ivl = 0u; ivl < 2u; ivl++)
+            {
+                BuckCcmTimingCfg c = cfg(periods[k], 20u);
+                c.refresh_ns = refresh[r];
+                c.pulse_start_ns = refresh[r] + 2u * 20u + 20u;
+                if (c.pulse_start_ns < 250u) { c.pulse_start_ns = 250u; }
+                c.refresh_interval_ns = ivl ? 10000u : periods[k];
+                CHECK(buck_ccm_cfg_valid(&c), "refresh %u ivl %u invalid", c.refresh_ns, c.refresh_interval_ns);
+                for (uint32_t ton = 0u; ton <= c.period_ns; ton += 53u)
+                {
+                    BuckCcmTiming t;
+                    buck_ccm_timing(&c, ton, &t);
+                    play(&c, &t);
+                }
+            }
+        }
+    }
+
     /* Configurations the firmware must refuse. */
     BuckCcmTimingCfg bad = cfg(2500u, 60u);          /* refresh + 2 dt reaches the pulse start */
     CHECK(!buck_ccm_cfg_valid(&bad), "dt 60 ns accepted");

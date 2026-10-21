@@ -840,8 +840,18 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
  * CCM_U_MIN_MV/MAX_MV    integrator range (the losses the feedforward
  *                        misses: IR drop, dead time)
  * CCM_DEADTIME_NS_*      runtime regulator_ccm_deadtime_ns, clamped to
- *                        [MIN, MAX]; MAX keeps refresh + 2 dt inside the
- *                        250 ns pulse start (buck_ccm_cfg_valid)
+ *                        [MIN, MAX]
+ * CCM_REFRESH_NS_*       runtime regulator_ccm_refresh_ns (Q4 on) and
+ *                        regulator_ccm_refresh_interval_ns (Timer B period,
+ *                        a multiple of the switching period; 0 = every
+ *                        period).  Q1's turn-on moves to max(250 ns,
+ *                        refresh + 2 dt + CCM_PULSE_GUARD_NS) so the
+ *                        refresh always ends inside Q2's on-time.
+ *                        2026-10-20 bench, 9 V forced CCM at 200 kHz with
+ *                        150 ns every 10 us: Q3 dropped out once per PID
+ *                        cycle for ~10 us (driver UVLO suspected), SW2
+ *                        averaged 0.47 V under V_out, and VBUS carried a
+ *                        190 mV 20 kHz line
  * CCM_MIN_ON_NS          shortest Q1 pulse (comparator blanking 100 ns)
  * CCM_MIN_Q2_END_NS      Q2 on at least this long before the period ends
  *                        (> dead time: Q3 turns off one dead time early)
@@ -852,17 +862,53 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
  * CCM_REENTRY_HOLD       PID cycles after an exit before CCM may return;
  *                        short, because the DCM ceiling at 400 kHz is below
  *                        the load that put the buck into CCM
- * CCM_OVER_BAND_*        leave for DCM (pulse skipping) when V_out stays
- *                        above the setpoint by max(PERMILLE, MIN_MV) for
- *                        CYCLES: a held excursion, not a release overshoot
- *                        (ccm_buck.py: +0.9 V at 20 V, decaying in < 1 ms)
+ * CCM_OVER_BAND_CYCLES   leave for DCM when V_out is over the pulse-skip band
+ *                        (step 7b) this many PID cycles: CCM has no clamp
+ *                        above the setpoint, DCM's skipping is one.  At 5 V
+ *                        the relative OVP is only 0.5 V away (2026-10-20,
+ *                        400 kHz forced CCM: 5.0 -> 5.9 V in ~300 us after
+ *                        the output switch closed, SW_OVP).  CCM comes back
+ *                        CCM_REENTRY_HOLD later, bumpless
+ * CCM_SWITCH_SETTLE      CCM waits this long after the output switch closes
+ * CCM_ENTRY_GRACE        after an entry the over-band margin is doubled
+ *                        while the integrator settles.  Entry starts from
+ *                        the integrator value CCM last ran with (shifted to
+ *                        the measured V_out): 2026-10-20, 400 kHz, after
+ *                        the 20 -> 15 and 15 -> 9 V ramps a formula start
+ *                        missed the light-load offset (-0.3 to -0.46 V),
+ *                        each entry overshot the band, ~7700 handovers
  * CCM_VIN_RISE_MV        leave if V_in rises this far over its value at
  *                        entry: the bench supply cannot sink current
  * CCM_R_EST_MOHM         series resistance for the integrator's starting
  *                        value (L1, R5, Q3, the active FET; bumpless entry)
- * CCM_OCP_MA_DEFAULT     regulator_ccm_ocp_ma: filtered ID_MON above it for
- *                        CCM_OCP_CYCLES latches SW_OCP (the 50 W step is
- *                        2.5 A at 20 V; PDOs are 3 A)
+ * CCM_OCP_MA_DEFAULT     regulator_ccm_ocp_ma: regulator_il_avg_ma above it
+ *                        for CCM_OCP_CYCLES latches SW_OCP (the 50 W step
+ *                        is 2.5 A at 20 V; PDOs are 3 A).  ID_MON is not
+ *                        used: on the bench it read 31 mA at 0.8 A in CCM
+ *                        and 2.2x high in DCM (one conversion at a fixed
+ *                        phase, 2026-10-16 and 2026-10-20)
+ * CCM_MODE_SETTLE        a mode change while in CCM first leaves CCM, then
+ *                        waits this many PID cycles in DCM: cutting all
+ *                        four gates with amps in L1 latched HW_FLT1 at the
+ *                        buck -> buck-boost handover (2026-10-20, 22.5 V)
+ * Down-ramps run in DCM: CCM leaves when the target drops below the
+ *                        commanded setpoint and re-enters once the ramp is
+ *                        done and V_out is not above the setpoint by more
+ *                        than half the skip band (one-sided: a sag is
+ *                        exactly when CCM is needed; 400 kHz DCM carries
+ *                        only 0.54 A at 20 V).
+ *                        2026-10-20, 20 -> 15 V forced CCM at 200 kHz into
+ *                        25 ohm: 16 entries and exits in one ramp, a
+ *                        re-entry at V_out 18.8 V against 15 V stepped the
+ *                        duty, VBUS rang 14.6 -> 17.6 V and tripped SW_OVP.
+ *                        Entry is bumpless: the integrator starts where
+ *                        the duty reproduces the measured V_out.
+ * CCM_DUTY_*             CCM enters while V_in x the longest duty reaches
+ *                        the setpoint (400 kHz: 20.7 V at 24 V in) and
+ *                        leaves after CCM_DUTY_CLAMP_CYCLES at the longest
+ *                        pulse.  2026-10-20: a 92 / 96 % guard kept 20 V
+ *                        (duty 0.82 measured, maximum 0.864) out of CCM at
+ *                        400 kHz, where DCM carries only 0.54 A
  */
 #define CCM_ENABLE_DEFAULT       0u
 #define CCM_ENABLE_FORCED        2u
@@ -873,24 +919,32 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
 #define CCM_DEADTIME_NS_DEFAULT  20u
 #define CCM_DEADTIME_NS_MIN      10u
 #define CCM_DEADTIME_NS_MAX      40u
-#define CCM_REFRESH_NS           150u
-#define CCM_REFRESH_INTERVAL_NS  10000u
+#define CCM_REFRESH_NS           200u    /* default of regulator_ccm_refresh_ns */
+#define CCM_REFRESH_NS_MIN       100u
+#define CCM_REFRESH_NS_MAX       600u
+#define CCM_REFRESH_INTERVAL_NS  5000u   /* default of regulator_ccm_refresh_interval_ns */
+#define CCM_PULSE_GUARD_NS       20u     /* Q3 back on -> Q2 off margin (pulse start moves) */
 #define CCM_MIN_ON_NS            100u
 #define CCM_MIN_Q2_END_NS        60u
 #define CCM_ENTER_PCT            85u
 #define CCM_EXIT_PCT             50u
 #define CCM_MIN_DWELL            400u    /* 20 ms at 20 kHz */
 #define CCM_REENTRY_HOLD         20u     /* 1 ms: DCM cannot carry the load long */
-#define CCM_OVER_BAND_PERMILLE   50u
-#define CCM_OVER_BAND_MIN_MV     500u
-#define CCM_OVER_BAND_CYCLES     40u     /* 2 ms */
+#define CCM_OVER_BAND_CYCLES     2u      /* 100 us over the skip band: DCM (skipping) clamps it */
+#define CCM_SWITCH_SETTLE        400u    /* PID cycles (20 ms) after the output switch closes */
+#define CCM_ENTRY_GRACE          100u    /* PID cycles (5 ms) with twice the over-band margin */
 #define CCM_VIN_RISE_MV          2000u
 #define CCM_R_EST_MOHM           40u
 #define CCM_VSD_MV               2000u
-#define CCM_OCP_MA_DEFAULT       3300u
+#define CCM_OCP_MA_DEFAULT       3300u   /* on regulator_il_avg_ma (mid-interval IL_MON) */
+#define CCM_MODE_SETTLE          4u      /* PID cycles in DCM before a mode change after CCM */
+#define CCM_DUTY_ENTER_PCT       100u    /* CCM only while V_ref <= this % of V_in x D_max */
+#define CCM_DUTY_CLAMP_CYCLES    20u     /* leave after this many PID cycles at the longest pulse */
+#define CCM_ADC_LEAD_NS          150u    /* IL_MON trigger this far ahead of the mid-point */
 #define CCM_OCP_CYCLES           20u     /* 1 ms */
-_Static_assert(CCM_REFRESH_NS + 2u * CCM_DEADTIME_NS_MAX < BOOTSTRAP_REFRESH_NS + DCM_REFRESH_DEADTIME_NS,
-               "the CCM refresh and its dead times must end before Q2 turns off");
+_Static_assert(CCM_REFRESH_NS_MAX + 3u * CCM_DEADTIME_NS_MAX + CCM_PULSE_GUARD_NS + CCM_MIN_ON_NS +
+               CCM_MIN_Q2_END_NS < 1000000000u / 400000u,
+               "the longest refresh, its dead times and the shortest pulses must fit the 400 kHz period");
 _Static_assert(CCM_MIN_Q2_END_NS > CCM_DEADTIME_NS_MAX, "Q2 must be on before Q3 turns off");
 _Static_assert(CCM_EXIT_PCT < CCM_ENTER_PCT, "CCM entry/exit need hysteresis");
 

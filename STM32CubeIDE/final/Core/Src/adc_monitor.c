@@ -119,7 +119,22 @@ void adc_monitor_init(void)
          * group is VD_MON alone; stm32g4xx_hal_adc_ex.c), so JSQR held IL_MON
          * alone and JDR2/JDR3 (ID_MON, IS_MON) read 0 until 2026-10-16.  The
          * three ranks, software start (JEXTEN 0), written while JADSTART = 0. */
+        /* ADC_INJ_HRTIM_TRIGGER 1 starts the sequence on HRTIM ADC
+         * trigger 2 (JEXTSEL 19, rising edge), which the regulator places
+         * mid-interval once per PID cycle.  Off since 2026-10-20: so
+         * triggered, every channel read 0-64 counts in buck CCM at 0.8 A
+         * (IS_MON included, which reads 200-300 at the same instant in
+         * DCM), and IL_MON read 0-150 counts mid-pulse in DCM where the
+         * inductor carries about 1.5 A.  Cause open; software start, as
+         * before, until IL_MON has been on a scope.                       */
+#ifndef ADC_INJ_HRTIM_TRIGGER
+#define ADC_INJ_HRTIM_TRIGGER 0
+#endif
         ADC1->JSQR = ((3u - 1u) << ADC_JSQR_JL_Pos)
+#if ADC_INJ_HRTIM_TRIGGER
+                   | (19u << ADC_JSQR_JEXTSEL_Pos)
+                   | (1u  << ADC_JSQR_JEXTEN_Pos)
+#endif
                    | (2u  << ADC_JSQR_JSQ1_Pos)
                    | (7u  << ADC_JSQR_JSQ2_Pos)
                    | (15u << ADC_JSQR_JSQ3_Pos);

@@ -53,7 +53,7 @@ FAULT_BITS = {
     0x40: ("SW_OCP", "buck CCM: filtered ID_MON output current over regulator_ccm_ocp_ma for 1 ms"),
 }
 CCM_EXITS = {0: "NONE", 1: "DISABLED", 2: "MODE", 3: "SWITCH", 4: "LIGHT_LOAD", 5: "OVER_BAND", 6: "VIN_RISE",
-             7: "STOP", 8: "BAD_CONFIG"}
+             7: "STOP", 8: "BAD_CONFIG", 9: "DUTY", 10: "RAMP_DOWN"}
 CMD = {"clear-fault": 1, "stop": 2, "bench-pwm-on": 3, "bench-pwm-off": 4, "set-voltage": 5, "start": 6,
        "snapshot": 7, "trace-arm": 8, "switch-pulse": 9, "bench-ccm-pwm": 10}
 ARG_CMDS = ("set-voltage", "start")   # take a millivolt argument in regulator_debug.arg
@@ -197,11 +197,12 @@ _CONTROL = {"regulator_mode": "mode", "target_voltage_mv": "target_mv", "regulat
             "regulator_ccm_enable": "ccm_enable", "regulator_ccm_active": "ccm_active",
             "regulator_buck_fsw_khz": "buck_fsw_khz", "regulator_fsw_khz": "fsw_khz",
             "regulator_ccm_deadtime_ns": "ccm_deadtime_ns", "regulator_ccm_ocp_ma": "ccm_ocp_ma",
+            "regulator_ccm_refresh_ns": "ccm_refresh_ns", "regulator_ccm_refresh_interval_ns": "ccm_refresh_interval_ns",
             "regulator_ccm_entries": "ccm_entries", "regulator_ccm_exits": "ccm_exits",
             "regulator_ccm_exit_reason": "ccm_exit_reason"}
 # Signed 32-bit telemetry: filtered currents and powers (POWER_FILTER_SHIFT).
 _CONTROL_I = {"regulator_i_out_filt_ma": "i_out_filt_ma", "regulator_i_in_filt_ma": "i_in_filt_ma",
-              "regulator_p_in_mw": "p_in_mw", "regulator_p_out_mw": "p_out_mw"}
+              "regulator_p_in_mw": "p_in_mw", "regulator_p_out_mw": "p_out_mw", "regulator_il_avg_ma": "il_avg_ma"}
 # Float telemetry of the current-command loop (2026-10-12).
 _CONTROL_F = {"regulator_i_cmd_ma": "i_cmd_ma", "regulator_i_pk_ma": "i_pk_ma", "regulator_i_max_ma": "i_max_ma",
               "pid_kp": "kp_ma_per_mv", "pid_ki": "ki_ma_per_mv_s", "regulator_loop_fc_hz": "loop_fc_hz",

@@ -39,6 +39,7 @@ void buck_ccm_timing(const BuckCcmTimingCfg *c, uint32_t t_on_ns, BuckCcmTiming 
     if (t_on_ns < c->min_on_ns) { t_on_ns = c->min_on_ns; }
     const uint32_t dt = buck_ccm_ticks(c->dt_ns);
     out->t_on_ns = t_on_ns;
+    out->a_cmp4  = buck_ccm_ticks(c->pulse_start_ns);
     out->a_cmp2  = buck_ccm_ticks(c->pulse_start_ns + t_on_ns);
     out->c_cmp2  = out->a_cmp2 + dt;
     out->a_cmp3  = buck_ccm_ticks(c->pulse_start_ns) - dt;
@@ -71,9 +72,18 @@ uint32_t buck_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmTi
     if (t_on >= max_on)      { t_on = max_on; clamp = 1; }
     else if (t_on <= min_on) { t_on = min_on; clamp = -1; }
 
-    /* Conditional integration: at a clamp the integrator keeps its value
-     * when the error pushes further into it. */
-    if ((clamp > 0 && e > 0.0f) || (clamp < 0 && e < 0.0f)) { u = s->u_v; }
+    /* At a clamp the integrator tracks the value that just reaches it
+     * (back-calculation), so it unwinds from the boundary when the error
+     * turns: holding the old value left it up to the full ki e dt per cycle
+     * above, and a 20 V reconnect at 400 kHz (duty ceiling 0.86, need 0.82)
+     * overshot 1.7 V on the way back (bench 2026-10-20). */
+    if ((clamp > 0 && e > 0.0f) || (clamp < 0 && e < 0.0f))
+    {
+        const float u_edge = t_on * v_in_v / (float)c->period_ns - v_ff - g->kp * e;
+        u = (u_edge < s->u_v) == (clamp > 0) ? u_edge : s->u_v;
+        if (u > g->u_max_v) { u = g->u_max_v; }
+        if (u < g->u_min_v) { u = g->u_min_v; }
+    }
     s->u_v   = u;
     s->clamp = clamp;
     return (uint32_t)(t_on + 0.5f);

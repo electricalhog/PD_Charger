@@ -7,12 +7,23 @@ efficiently and stably, from the 24 V bench supply. This is roadmap Phase 3 (`24
 section 6) moved ahead of Phase 2, because buck CCM needs no new hardware and its current sense
 is quiet (SW2 static). The same modulator, at 5 A, is the 20 V / 100 W PDO.
 
-**Status.**
-- **Built:** firmware, host test and models. The build is 0 errors, 0 warnings.
-- **Not run on hardware.** Every flash in section 6 needs Dan's approval first.
-- **With `regulator_ccm_enable` = 0 (the default), the build behaves as the testing branch.**
-  The one difference: all HRTIM counters are re-synchronized while the outputs are off at a start
-  and at a mode change (section 3.1).
+**Status (2026-10-20 late, `bench/results/2026-10-20/README.md`).**
+- **Run on hardware**, remotely, at the 25.3 Ω only: forced CCM at 200 and 400 kHz holds 5–20 V, and
+  goes through contract sequences both ways, including the buck-boost handover, with no faults.
+- **Reconnect steps:** the dip is half of DCM's.
+- **Fixed after the first runs:**
+  - Q3's bootstrap: the refresh is now 200 ns every 5 µs; 150 ns every 10 µs dropped Q3 out;
+  - a pre-existing bug: the HRTIM hardware fault response was never enabled;
+  - transitions: down-ramps run in DCM, CCM leaves before mode changes, entry is bumpless.
+- **Open:**
+  - no current sensing usable in CCM (§4.5 of the log);
+  - large capacitive dumps overshoot (SW_OVP);
+  - so CCM-by-load (mode 1) and SW_OCP are not yet meaningful, and a LiPo on VBUS is not safe.
+- **With `regulator_ccm_enable` = 0 (the default), the build behaves as the testing branch,**
+  apart from these (verified at 5, 20 and 28 V):
+  - the HRTIM counters are re-synchronized at a start and a mode change;
+  - the hardware fault enable is now correct;
+  - FLT1/FLT2 have a 0.75 µs filter.
 
 Numbers marked *model* come from `plans/scripts/ccm_buck.py` (sources in its docstring). The rest
 come from the code, the datasheets cited there, and the bench logs named.

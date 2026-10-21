@@ -53,6 +53,7 @@ typedef struct
 
 typedef struct
 {
+    uint32_t a_cmp4;   /**< Q1 on (pulse start)       */
     uint32_t a_cmp2;   /**< Q1 off                    */
     uint32_t a_cmp3;   /**< Q2 off                    */
     uint32_t c_cmp2;   /**< Q2 on                     */
@@ -102,7 +103,7 @@ float buck_ccm_refresh_share(const BuckCcmTimingCfg *c);
 float buck_ccm_u_initial(const BuckCcmTimingCfg *c, float i_load_a, float r_series_ohm, float vsd_v);
 
 /** One PID cycle of the duty law; returns the Q1 on-time [ns], clamped,
- *  with conditional integration (no wind-up at either clamp). */
+ *  at a clamp the integrator tracks the value that reaches it (no wind-up). */
 uint32_t buck_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmTimingCfg *c,
                          float v_ref_v, float v_out_v, float v_in_v);
 
