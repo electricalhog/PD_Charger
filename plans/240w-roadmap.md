@@ -426,6 +426,13 @@ averages 20 board reads per step and stores them with the bench readings in `dat
 **Phase 3: buck forced CCM.**
 - Full current at 5, 9, 15 and 20 V (15, 27, 45 and 100 W).
 - Q3 static and Q4 refreshed, as the LM5175 does.
+- *Started 2026-10-20 ahead of Phase 2* (branch `claude/ccm-hf-buck-50w`, `plans/ccm-buck-50w.md`):
+  - 400 kHz buck; voltage mode with V_in feedforward and an integral trim at the PID rate
+    (not the average-current inner loop of section 5, which needs per-period updates);
+  - Q4 refreshing every 10 µs;
+  - a 50 W peak at 20 V as the first target.
+
+  Built, not run.
 
 **Phase 4: hardware for more than about 150 W.**
 - R5 and R25 to 2 mΩ; R6 to about 6 mΩ; R27 to a 1206.

@@ -365,6 +365,11 @@ def build_parser() -> argparse.ArgumentParser:
     g = rg.add_parser("stop", help="controlled stop: outputs off, input/output path off"); g.add_argument("--timeout", type=float, default=3.0)
     g = rg.add_parser("bench-pwm", help="open-loop gate-signal test (IDLE, input path off): TA1/TA2/TB1/TB2 at PER/CMP2/CMP3 + dead-time")
     g.add_argument("action", choices=["on", "off"]); g.add_argument("--timeout", type=float, default=3.0)
+    g = rg.add_parser("bench-ccm-pwm", help="buck forced-CCM gate program at a fixed on-time (IDLE, input path off); "
+                                            "stop with 'bench-pwm off'")
+    g.add_argument("--t-on-ns", type=int, required=True, help="Q1 on-time, ns (clamped to the CCM window)")
+    g.add_argument("--fsw", type=int, default=400, choices=[200, 400], help="switching frequency, kHz")
+    g.add_argument("--timeout", type=float, default=3.0)
     g = rg.add_parser("set-voltage", help="new target (mV) while running or idle; the firmware slews to it")
     g.add_argument("mv", type=int); g.add_argument("--timeout", type=float, default=3.0)
     g = rg.add_parser("sweep", help="set-voltage through MV,MV,...; per point: control telemetry, debug_log stats, "
@@ -453,7 +458,7 @@ EFFECTS = {
     "probe list": "read", "probe reset": "actuate", "flash": "actuate",
     "sym": "read", "layout": "read", "mem read": "read", "mem write": "actuate",
     "profile": "read", "pd status": "read", "pd trace": "read", "sink": "actuate", "load status": "read", "load pins": "read", "load sniff": "read", "load i2c": "read", "load edges": "read", "load glitch": "read", "load i2cpoll": "read", "load sartest": "actuate", "load sarscan": "actuate", "load drivetest": "actuate", "load padtest": "actuate", "load bootsel": "actuate", "load flash": "actuate", "load run": "actuate", "bench status": "read", "bench sweep": "actuate", "regulator status": "read", "regulator clear-fault": "actuate", "regulator stop": "actuate",
-    "regulator bench-pwm": "actuate", "regulator set-voltage": "actuate", "regulator sweep": "actuate", "regulator snapshot": "actuate", "regulator start": "actuate", "regulator trace-arm": "actuate", "regulator switch-pulse": "actuate", "regulator trace": "read",
+    "regulator bench-pwm": "actuate", "regulator bench-ccm-pwm": "actuate", "regulator set-voltage": "actuate", "regulator sweep": "actuate", "regulator snapshot": "actuate", "regulator start": "actuate", "regulator trace-arm": "actuate", "regulator switch-pulse": "actuate", "regulator trace": "read",
     "scope analyze": "read", "scope idn": "read", "scope state": "read", "scope measure": "read",
     "scope delay": "read", "scope screenshot": "read", "scope capture": "actuate",
     "la scan": "read", "la decoders": "read", "la decode": "read", "la edges": "read", "la capture": "read",
@@ -564,6 +569,8 @@ def dispatch(cfg: dict, a) -> dict:
                                      arg=regulator.trace_arg(a.trigger, a.post, a.threshold_mv))
         if a.op == "switch-pulse":
             return regulator.command(cfg, "switch-pulse", a.timeout, arg=regulator.pulse_us(a.ms))
+        if a.op == "bench-ccm-pwm":
+            return regulator.command(cfg, "bench-ccm-pwm", a.timeout, arg=regulator.ccm_pwm_arg(a.t_on_ns, a.fsw))
         name = f"bench-pwm-{a.action}" if a.op == "bench-pwm" else a.op
         return regulator.command(cfg, name, a.timeout, getattr(a, "force", False), getattr(a, "mv", None))
     if c == "scope":

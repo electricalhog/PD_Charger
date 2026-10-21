@@ -87,6 +87,7 @@ Times and JSON sizes are measured (typical). "Artifact" = file written to `bring
 | `regulator clear-fault [--force]` | actuate | firmware: ADM1270 cool-down → INPUT_EN toggle → verify → FAULT→IDLE | 0.1–0.5 s | 1.5 kB | – |
 | `regulator stop` | actuate | outputs off, power path off | 0.2 s | 1.5 kB | – |
 | `regulator bench-pwm on\|off` | actuate | open-loop gate test (IDLE, input path off, fault lines high) | 0.2 s | 1.5 kB | – |
+| `regulator bench-ccm-pwm --t-on-ns NS [--fsw 200\|400]` | actuate | buck forced-CCM gate program at a fixed Q1 on-time (same conditions as bench PWM; dead time from `regulator_ccm_deadtime_ns`); stop with `bench-pwm off` | 0.2 s | 1.5 kB | – |
 | `regulator set-voltage MV` | actuate | new regulation target through the mailbox (`arg` word); firmware slews to it | 0.3 s | 1.5 kB | – |
 | `regulator start MV` | actuate | set target and start from IDLE; refused (`PD_OWNS_VBUS`) in `PD_VBUS_PATH_CHARGER` builds, as is `set-voltage` | 0.3–1 s | 1.5 kB | – |
 | `regulator trace-arm [--trigger now\|switch\|ceiling\|error] [--post N] [--threshold-mv MV]` | actuate | arm the 20 kHz regulator trace (V_out, I_cmd, its ceiling, on-time, flags; 2048 samples); it freezes N samples after the trigger | 0.3 s | < 1 kB | – |
@@ -185,7 +186,7 @@ No root access is needed at runtime; the only sudo step is installing the scope'
 ### Agent / MCP policy
 - **`actuate` commands change real hardware.** With the power stage attached,
   `flash`, `mem write` (setpoints, gains, HRTIM registers), `regulator
-  clear-fault|bench-pwm|set-voltage|start` and `probe reset` need a human in the loop (see the
+  clear-fault|bench-pwm|bench-ccm-pwm|set-voltage|start` and `probe reset` need a human in the loop (see the
   skill's safety rules). On a bare Nucleo they are harmless.
 - `mem write` to write-only/self-clearing peripheral registers returns
   `ok: true, verified: false` (the programmer's read-back check can't pass);

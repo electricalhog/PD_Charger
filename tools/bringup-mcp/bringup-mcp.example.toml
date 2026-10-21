@@ -40,6 +40,7 @@ default_s = 30
 "regulator clear-fault" = 30
 "regulator stop" = 30
 "regulator bench-pwm" = 30
+"regulator bench-ccm-pwm" = 30
 "doctor" = 60
 
 [limits]

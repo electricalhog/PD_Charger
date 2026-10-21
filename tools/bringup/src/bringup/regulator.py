@@ -50,11 +50,15 @@ FAULT_BITS = {
     0x08: ("SW_UVP", "software output under-voltage"),
     0x10: ("SW_VIN_RANGE", "V_in out of range for the selected mode"),
     0x20: ("SW_BACKSTOP", "too many consecutive cycle-by-cycle backstop events"),
+    0x40: ("SW_OCP", "buck CCM: filtered ID_MON output current over regulator_ccm_ocp_ma for 1 ms"),
 }
+CCM_EXITS = {0: "NONE", 1: "DISABLED", 2: "MODE", 3: "SWITCH", 4: "LIGHT_LOAD", 5: "OVER_BAND", 6: "VIN_RISE",
+             7: "STOP", 8: "BAD_CONFIG"}
 CMD = {"clear-fault": 1, "stop": 2, "bench-pwm-on": 3, "bench-pwm-off": 4, "set-voltage": 5, "start": 6,
-       "snapshot": 7, "trace-arm": 8, "switch-pulse": 9}
+       "snapshot": 7, "trace-arm": 8, "switch-pulse": 9, "bench-ccm-pwm": 10}
 ARG_CMDS = ("set-voltage", "start")   # take a millivolt argument in regulator_debug.arg
 RAW_ARG_CMDS = ("trace-arm", "switch-pulse")   # take a packed argument (trace_arg) or microseconds
+BENCH_ARG_CMDS = ("bench-ccm-pwm",)             # packed argument (ccm_pwm_arg), BENCH_RESULTS
 TRACE_TRIGGERS = {"now": 0, "switch": 1, "ceiling": 2, "error": 3}
 TRACE_STATES = {0: "IDLE", 1: "ARMED", 2: "TRIGGERED", 3: "DONE"}
 TRACE_RESULTS = {
@@ -69,7 +73,7 @@ TRACE_SAMPLE = struct.Struct("<5H")      # v_out_mv, i_cmd_ma, i_max_ma, t_on_ns
 TRACE_CTL = struct.Struct("<10I")        # state, trigger, post, threshold_mv, write_index, trigger_index, count,
                                          # remaining, pulse_us, pulse_cycles (the last two since TIM4 timing)
 TRACE_FLAGS = {0x04: "skipping", 0x08: "switch_on", 0x10: "rectifier", 0x20: "at_limit", 0x40: "pulse_open",
-               0x80: "trigger"}
+               0x80: "trigger", 0x100: "ccm"}
 PID_HZ = 20000
 CPU_HZ = 170_000_000                     # DWT->CYCCNT, for the measured pulse
 PULSE_MAX_US = 50000
@@ -81,6 +85,15 @@ def pulse_us(ms: float) -> int:
     if not 1 <= us <= PULSE_MAX_US:
         raise ToolError(f"pulse must be 0.001-{PULSE_MAX_US / 1000:g} ms")
     return us
+
+
+def ccm_pwm_arg(t_on_ns: int, fsw_khz: int) -> int:
+    """Pack BENCH_CCM_PWM's argument: t_on_ns | fsw_khz << 16 (the firmware clamps t_on to the CCM window)."""
+    if fsw_khz not in (200, 400):
+        raise ToolError("fsw must be 200 or 400 kHz")
+    if not 0 <= t_on_ns <= 0xFFFF:
+        raise ToolError("t_on must be 0..65535 ns")
+    return t_on_ns | (fsw_khz << 16)
 
 
 def trace_arg(trigger: str, post: int, threshold_mv: int = 0) -> int:
@@ -111,10 +124,12 @@ def trace_read(cfg: dict) -> dict:
     trig_pos = next((k for k, r in enumerate(rows) if r[0] == trig_i and r[5] & 0x80), None)
     path = out_file(cfg, "regulator_trace", "csv")
     with path.open("w") as f:
-        f.write("t_ms,v_out_mv,i_cmd_ma,i_max_ma,t_on_ns,mode,skipping,switch_on,rectifier,at_limit,pulse_open,trigger\n")
+        # ccm (2026-10-20): in CCM samples i_cmd_ma holds the filtered ID_MON output current.
+        f.write("t_ms,v_out_mv,i_cmd_ma,i_max_ma,t_on_ns,mode,skipping,switch_on,rectifier,at_limit,pulse_open,trigger,"
+                "ccm\n")
         for k, (_, v, ic, im, ton, fl) in enumerate(rows):
             t_ms = (k - (trig_pos if trig_pos is not None else 0)) * 1000.0 / PID_HZ
-            bits = [int(bool(fl & b)) for b in (0x04, 0x08, 0x10, 0x20, 0x40, 0x80)]
+            bits = [int(bool(fl & b)) for b in (0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x100)]
             f.write(f"{t_ms:.2f},{v},{ic},{im},{ton},{MODES.get(fl & 3, fl & 3)}," + ",".join(map(str, bits)) + "\n")
     out = {"ok": True, "state": TRACE_STATES.get(state, state),
            "trigger": next((k for k, v in TRACE_TRIGGERS.items() if v == trigger), trigger),
@@ -129,6 +144,7 @@ def trace_read(cfg: dict) -> dict:
         out["i_cmd_ma_max"] = max(r[2] for r in rows)
         out["at_limit_samples"] = sum(1 for r in rows if r[5] & 0x20)
         out["skipping_samples"] = sum(1 for r in rows if r[5] & 0x04)
+        out["ccm_samples"] = sum(1 for r in rows if r[5] & 0x100)
         sw = [bool(r[5] & 0x08) for r in rows]
         out["switch_edges_ms"] = [round((k - (trig_pos or 0)) * 1000.0 / PID_HZ, 2)
                                   for k in range(1, len(sw)) if sw[k] != sw[k - 1]]
@@ -150,6 +166,7 @@ BENCH_RESULTS = {
     1: ("NOT_IDLE", "bench PWM is only allowed from IDLE (stop the regulator / clear the fault first)"),
     2: ("INPUT_PATH_ON", "INPUT_EN is high: bench PWM refuses while the input path could power the stage"),
     3: ("FAULT_LINE_LOW", "VS_GOOD or IS_GOOD is low, so the HRTIM hardware would hold the outputs off"),
+    4: ("BAD_ARG", "bench CCM PWM: fsw must be 200 or 400 kHz, and the dead time must give a valid CCM timing"),
 }
 CLEAR_RESULTS = {
     0: ("OK", "FAULT released, state IDLE with the input path off. Starting again is a separate step."),
@@ -175,11 +192,21 @@ _CONTROL = {"regulator_mode": "mode", "target_voltage_mv": "target_mv", "regulat
             "regulator_pulses_skipped": "pulses_skipped",
             # Predictive synchronous rectification (2026-10-15)
             "regulator_sr_enable": "sr_enable", "regulator_sr_on_ns": "sr_on_ns", "regulator_sr_off_ns": "sr_off_ns",
-            "regulator_sr_blend": "sr_blend"}
+            "regulator_sr_blend": "sr_blend",
+            # Buck forced CCM and the buck switching frequency (2026-10-20, plans/ccm-buck-50w.md)
+            "regulator_ccm_enable": "ccm_enable", "regulator_ccm_active": "ccm_active",
+            "regulator_buck_fsw_khz": "buck_fsw_khz", "regulator_fsw_khz": "fsw_khz",
+            "regulator_ccm_deadtime_ns": "ccm_deadtime_ns", "regulator_ccm_ocp_ma": "ccm_ocp_ma",
+            "regulator_ccm_entries": "ccm_entries", "regulator_ccm_exits": "ccm_exits",
+            "regulator_ccm_exit_reason": "ccm_exit_reason"}
+# Signed 32-bit telemetry: filtered currents and powers (POWER_FILTER_SHIFT).
+_CONTROL_I = {"regulator_i_out_filt_ma": "i_out_filt_ma", "regulator_i_in_filt_ma": "i_in_filt_ma",
+              "regulator_p_in_mw": "p_in_mw", "regulator_p_out_mw": "p_out_mw"}
 # Float telemetry of the current-command loop (2026-10-12).
 _CONTROL_F = {"regulator_i_cmd_ma": "i_cmd_ma", "regulator_i_pk_ma": "i_pk_ma", "regulator_i_max_ma": "i_max_ma",
               "pid_kp": "kp_ma_per_mv", "pid_ki": "ki_ma_per_mv_s", "regulator_loop_fc_hz": "loop_fc_hz",
-              "regulator_c_int_uf": "c_int_uf", "regulator_c_ext_uf": "c_ext_uf"}
+              "regulator_c_int_uf": "c_int_uf", "regulator_c_ext_uf": "c_ext_uf",
+              "regulator_ccm_ki": "ccm_ki_per_s", "regulator_ccm_u_mv": "ccm_u_mv"}
 
 
 def _u(data: bytes) -> int:
@@ -192,7 +219,7 @@ def read_raw(cfg: dict) -> dict:
     if "regulator_debug" in missing:
         raise ToolError("firmware has no regulator_debug mailbox; flash a build from the agentic-bringup-tools branch",
                         missing=missing)
-    names = [v for v in list(_VARS) + list(_CONTROL) + list(_CONTROL_F) if v in syms]
+    names = [v for v in list(_VARS) + list(_CONTROL) + list(_CONTROL_F) + list(_CONTROL_I) if v in syms]
     regions = [syms[v] for v in names] + [(GPIOA_IDR, 4), (GPIOC_ODR, 4), (HRTIM_ISR, 16)]
     data = probe.read_regions(cfg, regions)
     raw = dict(zip(names, data[:len(names)]))
@@ -230,10 +257,16 @@ def decode(raw: dict) -> dict:
     for sym, key in _CONTROL.items():
         if sym in raw:
             v = _u(raw[sym])
-            ctl[key] = MODES.get(v, v) if key == "mode" else v
+            ctl[key] = (MODES.get(v, v) if key == "mode" else
+                        CCM_EXITS.get(v, v) if key == "ccm_exit_reason" else v)
     for sym, key in _CONTROL_F.items():
         if sym in raw:
             ctl[key] = round(struct.unpack("<f", raw[sym][:4])[0], 4)
+    for sym, key in _CONTROL_I.items():
+        if sym in raw:
+            ctl[key] = struct.unpack("<i", raw[sym][:4])[0]
+    if ctl.get("p_in_mw", 0) > 0 and "p_out_mw" in ctl:
+        ctl["efficiency_board_sensors"] = round(ctl["p_out_mw"] / ctl["p_in_mw"], 4)
     if ctl:
         s["control"] = ctl
     if "adc_measurements" in raw:
@@ -363,7 +396,7 @@ def command(cfg: dict, name: str, timeout: float = 3.0, force: bool = False, mv:
         if size < 20:
             raise ToolError(f"firmware mailbox has no arg field: '{name}' needs a newer build", mailbox_size=size)
         probe.mem_write(cfg, f"{addr + 16:#x}", str(int(mv)), "u32")
-    if name in RAW_ARG_CMDS:
+    if name in RAW_ARG_CMDS or name in BENCH_ARG_CMDS:
         if arg is None:
             raise ToolError(f"'{name}' needs an argument")
         if size < 20:
@@ -401,7 +434,7 @@ def command(cfg: dict, name: str, timeout: float = 3.0, force: bool = False, mv:
     elif name in RAW_ARG_CMDS:
         code, text = TRACE_RESULTS.get(res, (str(res), "unknown result"))
         out.update(ok=code == "OK", result=code, arg=arg, **({"explanation": text} if text else {}))
-    elif name.startswith("bench-pwm"):
+    elif name.startswith("bench-"):
         code, text = BENCH_RESULTS.get(res, (str(res), "unknown result"))
         out.update(ok=code == "OK", result=code, **({"explanation": text} if text else {}))
     return out

@@ -85,7 +85,8 @@ typedef enum
     REGULATOR_FAULT_SW_OVP         = 0x04u, /**< Software overvoltage protection */
     REGULATOR_FAULT_SW_UVP         = 0x08u, /**< Software undervoltage protection */
     REGULATOR_FAULT_SW_VIN_RANGE   = 0x10u, /**< V_in out of range for mode */
-    REGULATOR_FAULT_SW_BACKSTOP    = 0x20u  /**< Too many consecutive backstop events */
+    REGULATOR_FAULT_SW_BACKSTOP    = 0x20u, /**< Too many consecutive backstop events */
+    REGULATOR_FAULT_SW_OCP         = 0x40u  /**< Buck CCM: filtered ID_MON over regulator_ccm_ocp_ma */
 } RegulatorFaultSource;
 
 /**
@@ -133,6 +134,52 @@ extern volatile uint32_t regulator_commanded_mv;
 extern volatile uint8_t  regulator_sr_enable;
 extern volatile uint16_t regulator_sr_on_ns;
 extern volatile uint16_t regulator_sr_off_ns;
+
+/** Buck forced CCM and the buck switching frequency (regulator_config.h
+ *  section 6b, plans/ccm-buck-50w.md).  Runtime switches, written over SWD:
+ *    regulator_ccm_enable        0 off, 1 by load, 2 forced (CCM_ENABLE_*);
+ *                                set while IDLE so buck starts at
+ *                                regulator_buck_fsw_khz
+ *    regulator_buck_fsw_khz      200 or 400, taken when buck is entered
+ *    regulator_ccm_deadtime_ns   Q1/Q2 and Q3/Q4 dead time, clamped
+ *    regulator_ccm_ki            integral gain [1/s]
+ *    regulator_ccm_ocp_ma        SW_OCP level on the filtered ID_MON
+ *  Telemetry:
+ *    regulator_fsw_khz           switching frequency in use
+ *    regulator_ccm_active        1 while the buck runs forced CCM
+ *    regulator_ccm_u_mv          the duty law's integrator [mV]
+ *    regulator_ccm_entries / _exits, regulator_ccm_exit_reason (RegulatorCcmExit)
+ *    regulator_i_out_filt_ma, regulator_i_in_filt_ma, regulator_p_in_mw,
+ *    regulator_p_out_mw          POWER_FILTER_SHIFT low-pass of ID_MON,
+ *                                IS_MON, V_in x IS_MON and V_out x ID_MON */
+typedef enum
+{
+    REGULATOR_CCM_EXIT_NONE       = 0u,
+    REGULATOR_CCM_EXIT_DISABLED   = 1u,  /**< regulator_ccm_enable cleared            */
+    REGULATOR_CCM_EXIT_MODE       = 2u,  /**< left buck                               */
+    REGULATOR_CCM_EXIT_SWITCH     = 3u,  /**< output switch open or soft-start        */
+    REGULATOR_CCM_EXIT_LIGHT_LOAD = 4u,  /**< load under CCM_EXIT_PCT of the DCM ceiling */
+    REGULATOR_CCM_EXIT_OVER_BAND  = 5u,  /**< V_out held over CCM_OVER_BAND_* (2 ms)   */
+    REGULATOR_CCM_EXIT_VIN_RISE   = 6u,  /**< V_in rose CCM_VIN_RISE_MV               */
+    REGULATOR_CCM_EXIT_STOP       = 7u,  /**< stop or fault                           */
+    REGULATOR_CCM_EXIT_BAD_CONFIG = 8u   /**< timing configuration rejected            */
+} RegulatorCcmExit;
+
+extern volatile uint8_t  regulator_ccm_enable;
+extern volatile uint16_t regulator_buck_fsw_khz;
+extern volatile uint16_t regulator_ccm_deadtime_ns;
+extern volatile float    regulator_ccm_ki;
+extern volatile uint16_t regulator_ccm_ocp_ma;
+extern volatile uint16_t regulator_fsw_khz;
+extern volatile uint8_t  regulator_ccm_active;
+extern volatile float    regulator_ccm_u_mv;
+extern volatile uint32_t regulator_ccm_entries;
+extern volatile uint32_t regulator_ccm_exits;
+extern volatile uint8_t  regulator_ccm_exit_reason;
+extern volatile int32_t  regulator_i_out_filt_ma;
+extern volatile int32_t  regulator_i_in_filt_ma;
+extern volatile int32_t  regulator_p_in_mw;
+extern volatile int32_t  regulator_p_out_mw;
 
 /**
  * max_consecutive_backstops — Consecutive backstop events before fault.
@@ -299,9 +346,13 @@ typedef enum
                                                result = 0, or 1 if not RUNNING */
     REGULATOR_DEBUG_CMD_TRACE_ARM   = 8u, /**< arg = trigger | post << 4 | threshold_10mv << 16
                                                (regulator_trace); result = RegulatorTraceResult */
-    REGULATOR_DEBUG_CMD_SWITCH_PULSE = 9u /**< arg = us (1..50000) the output switch stays open:
+    REGULATOR_DEBUG_CMD_SWITCH_PULSE = 9u, /**< arg = us (1..50000) the output switch stays open:
                                                the PID ISR opens it, TIM4 (one-pulse, 1 us)
                                                reconnects it; result = RegulatorTraceResult */
+    REGULATOR_DEBUG_CMD_BENCH_CCM_PWM = 10u /**< arg = t_on_ns | fsw_khz << 16: the buck CCM edge
+                                               program at a fixed on-time, unpowered, as bench
+                                               PWM (stop with BENCH_PWM_OFF);
+                                               result = RegulatorBenchResult */
 } RegulatorDebugCmd;
 
 /**
@@ -349,6 +400,9 @@ typedef enum
 #define REGULATOR_TRACE_FLAG_AT_LIMIT    0x0020u  /**< on-time clamped at its window limit   */
 #define REGULATOR_TRACE_FLAG_PULSE_OPEN  0x0040u  /**< SWITCH_PULSE holding the switch open  */
 #define REGULATOR_TRACE_FLAG_TRIGGER     0x0080u  /**< the trigger sample                    */
+#define REGULATOR_TRACE_FLAG_CCM         0x0100u  /**< buck forced CCM: i_cmd_ma holds the
+                                                       filtered ID_MON current, t_on_ns Q1's
+                                                       on-time, i_max_ma the DCM ceiling      */
 
 typedef struct
 {
@@ -385,8 +439,10 @@ typedef enum
     REGULATOR_BENCH_OK              = 0u,
     REGULATOR_BENCH_NOT_IDLE        = 1u, /**< only allowed from IDLE              */
     REGULATOR_BENCH_INPUT_PATH_ON   = 2u, /**< INPUT_EN must be low (no power)     */
-    REGULATOR_BENCH_FAULT_LINE_LOW  = 3u  /**< VS_GOOD/IS_GOOD low: HRTIM would
+    REGULATOR_BENCH_FAULT_LINE_LOW  = 3u, /**< VS_GOOD/IS_GOOD low: HRTIM would
                                                hold the outputs off               */
+    REGULATOR_BENCH_BAD_ARG         = 4u  /**< BENCH_CCM_PWM: fsw not 200/400 kHz or
+                                               the CCM timing configuration invalid */
 } RegulatorBenchResult;
 
 /**
@@ -405,6 +461,16 @@ typedef enum
  * while bench PWM is active.
  */
 RegulatorBenchResult regulator_bench_pwm(bool on);
+
+/**
+ * regulator_bench_ccm_pwm — Buck forced-CCM gate program (buck_ccm.h) at a
+ * fixed Q1 on-time and switching frequency (200 or 400 kHz), with the
+ * present regulator_ccm_deadtime_ns, under the same conditions as bench PWM
+ * (IDLE, input path off, fault lines high).  For scoping dead times and the
+ * Q4 refresh with the power stage unpowered (hw-bringup rule) before the
+ * first powered CCM run.  regulator_bench_pwm(false) stops it.
+ */
+RegulatorBenchResult regulator_bench_ccm_pwm(uint32_t t_on_ns, uint32_t fsw_khz);
 
 /** True while bench PWM is running (read by tools/bringup). */
 extern volatile bool regulator_bench_pwm_active;

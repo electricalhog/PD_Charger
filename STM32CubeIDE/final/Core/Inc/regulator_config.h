@@ -276,9 +276,13 @@ extern "C" {
 #define HRTIM_PRESCALER_MUL  32UL
 
 /**
- * HRTIM_SWITCHING_FREQ_HZ — Target switching frequency.
+ * HRTIM_SWITCHING_FREQ_HZ — Base switching frequency.
  * Units  : Hz
- * Value  : 200 kHz (5.0 µs period).  Target upgrade: 500 kHz → 10 880 counts.
+ * Value  : 200 kHz (5.0 µs period).  The master timer runs at it in every
+ *          mode (the ADC1 trigger, ADC_VD_SAMPLE_END_NS), and so do Timers
+ *          A-D in boost and buck-boost.  Buck may run at BUCK_FSW_KHZ_400
+ *          (section 6b), an integer multiple, so the ADC trigger keeps its
+ *          phase in the switching period.
  */
 #define HRTIM_SWITCHING_FREQ_HZ  200000UL
 
@@ -781,6 +785,123 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <
 _Static_assert(DCM_PULSE_START_TICKS + MAX_ON_TIME_COUNTS + DCM_REFRESH_DEADTIME_TICKS <
                HRTIM_PERIOD_COUNTS,
                "DCM charge pulse must end before the next refresh pulse");
+
+/* =========================================================================
+ * SECTION 6b: BUCK FORCED CCM AND 400 kHz BUCK (2026-10-20,
+ *             plans/ccm-buck-50w.md)
+ * =========================================================================*/
+
+/**
+ * Buck switching frequency.  regulator_buck_fsw_khz (runtime, 200 or 400,
+ * BUCK_FSW_KHZ_DEFAULT at boot) applies only while regulator_ccm_enable is
+ * set when buck is entered (regulator_start, a mode change): the DCM
+ * ceiling halves at 400 kHz (20 V: 0.54 A against the 25 ohm's 0.8 A), so a
+ * build with CCM off behaves exactly as at 200 kHz.  Boost and buck-boost
+ * stay at HRTIM_SWITCHING_FREQ_HZ (DCM, energy per pulse).  The period
+ * changes only with the outputs off, and every counter (master included) is
+ * then reset together, so the ADC trigger keeps its place.
+ * Why 400 kHz (plans/scripts/ccm_buck.py --loss): at 9-15 V / 3 A the
+ * 200 kHz ripple is 6 A p-p and the valley sits at 0 A, on the CCM
+ * boundary; at 400 kHz it is 3 A p-p, valley +1.5 A, peak 4.5 A.  The cost
+ * is about 0.15 W at 20 V / 2.5 A (98.1 against 98.4 %, model).
+ */
+#define BUCK_FSW_KHZ_DEFAULT 400u
+#define BUCK_PERIOD_COUNTS_400 ((uint32_t)(HRTIM_PRESCALER_MUL * (SYSCLK_HZ / 400000UL)))
+_Static_assert(HRTIM_PERIOD_COUNTS == 2u * BUCK_PERIOD_COUNTS_400,
+               "the 400 kHz buck period must divide the master (ADC trigger) period");
+_Static_assert(DCM_PULSE_START_TICKS + MAX_ON_TIME_COUNTS + DCM_REFRESH_DEADTIME_TICKS <
+               BUCK_PERIOD_COUNTS_400, "DCM pulse must fit the 400 kHz period");
+_Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
+               "buck_ccm.h BUCK_CCM_TICKS_PER_US assumes 170 MHz x 32");
+
+/**
+ * CCM_ENABLE_DEFAULT — regulator_ccm_enable at boot (runtime switch).  0:
+ *          the build behaves as the DCM firmware; 1: CCM by load (enter
+ *          and exit thresholds below); CCM_ENABLE_FORCED (2): CCM whenever
+ *          the buck runs with the output connected, whatever the load (first
+ *          light at a few watts; no light-load exit, so no down-ramps at no
+ *          load: the inductor current then goes negative on average).  Set
+ *          it while IDLE so buck starts at regulator_buck_fsw_khz.
+ *
+ * Buck forced CCM (Core/Src/buck_ccm.c): Q1/Q2 complementary with
+ * CCM_DEADTIME_NS, Q3 held on, Q4 refreshing Q3's bootstrap once every
+ * CCM_REFRESH_INTERVAL_NS (Timer B's period in CCM) for CCM_REFRESH_NS,
+ * inside Q2's on-time.  Duty is voltage mode with V_in feedforward and an
+ * integral trim at the PID rate:
+ *   t_on = T (V_ref (1 - r) + u) / V_in,  u += CCM_KI e dt
+ * so the inductor is a voltage-defined source and a load step rings the
+ * L1-C network (dip about dI sqrt(L/C)) instead of waiting for the loop:
+ * plans/scripts/ccm_buck.py --steps puts 0.8 -> 2.5 A at 20 V at -0.98 V
+ * (inside vSrcValid) where the DCM current loop dips volts.
+ *
+ * CCM_KI_DEFAULT         [1/s] crossover 2 pi 500 Hz; integral only: kp
+ *                        0.2 crossed again near 7 kHz with the bench-side
+ *                        ceramics in the loop (ccm_buck.py --loop)
+ * CCM_U_MIN_MV/MAX_MV    integrator range (the losses the feedforward
+ *                        misses: IR drop, dead time)
+ * CCM_DEADTIME_NS_*      runtime regulator_ccm_deadtime_ns, clamped to
+ *                        [MIN, MAX]; MAX keeps refresh + 2 dt inside the
+ *                        250 ns pulse start (buck_ccm_cfg_valid)
+ * CCM_MIN_ON_NS          shortest Q1 pulse (comparator blanking 100 ns)
+ * CCM_MIN_Q2_END_NS      Q2 on at least this long before the period ends
+ *                        (> dead time: Q3 turns off one dead time early)
+ * CCM_ENTER_PCT          enter when the DCM command reaches this share of
+ *                        the DCM ceiling (step 5)
+ * CCM_EXIT_PCT           leave when the filtered ID_MON load falls under
+ *                        this share of the DCM ceiling, after CCM_MIN_DWELL
+ * CCM_REENTRY_HOLD       PID cycles after an exit before CCM may return;
+ *                        short, because the DCM ceiling at 400 kHz is below
+ *                        the load that put the buck into CCM
+ * CCM_OVER_BAND_*        leave for DCM (pulse skipping) when V_out stays
+ *                        above the setpoint by max(PERMILLE, MIN_MV) for
+ *                        CYCLES: a held excursion, not a release overshoot
+ *                        (ccm_buck.py: +0.9 V at 20 V, decaying in < 1 ms)
+ * CCM_VIN_RISE_MV        leave if V_in rises this far over its value at
+ *                        entry: the bench supply cannot sink current
+ * CCM_R_EST_MOHM         series resistance for the integrator's starting
+ *                        value (L1, R5, Q3, the active FET; bumpless entry)
+ * CCM_OCP_MA_DEFAULT     regulator_ccm_ocp_ma: filtered ID_MON above it for
+ *                        CCM_OCP_CYCLES latches SW_OCP (the 50 W step is
+ *                        2.5 A at 20 V; PDOs are 3 A)
+ */
+#define CCM_ENABLE_DEFAULT       0u
+#define CCM_ENABLE_FORCED        2u
+#define CCM_KI_DEFAULT           3142.0f
+#define CCM_KP_DEFAULT           0.0f
+#define CCM_U_MIN_MV             (-1000)
+#define CCM_U_MAX_MV             2000
+#define CCM_DEADTIME_NS_DEFAULT  20u
+#define CCM_DEADTIME_NS_MIN      10u
+#define CCM_DEADTIME_NS_MAX      40u
+#define CCM_REFRESH_NS           150u
+#define CCM_REFRESH_INTERVAL_NS  10000u
+#define CCM_MIN_ON_NS            100u
+#define CCM_MIN_Q2_END_NS        60u
+#define CCM_ENTER_PCT            85u
+#define CCM_EXIT_PCT             50u
+#define CCM_MIN_DWELL            400u    /* 20 ms at 20 kHz */
+#define CCM_REENTRY_HOLD         20u     /* 1 ms: DCM cannot carry the load long */
+#define CCM_OVER_BAND_PERMILLE   50u
+#define CCM_OVER_BAND_MIN_MV     500u
+#define CCM_OVER_BAND_CYCLES     40u     /* 2 ms */
+#define CCM_VIN_RISE_MV          2000u
+#define CCM_R_EST_MOHM           40u
+#define CCM_VSD_MV               2000u
+#define CCM_OCP_MA_DEFAULT       3300u
+#define CCM_OCP_CYCLES           20u     /* 1 ms */
+_Static_assert(CCM_REFRESH_NS + 2u * CCM_DEADTIME_NS_MAX < BOOTSTRAP_REFRESH_NS + DCM_REFRESH_DEADTIME_NS,
+               "the CCM refresh and its dead times must end before Q2 turns off");
+_Static_assert(CCM_MIN_Q2_END_NS > CCM_DEADTIME_NS_MAX, "Q2 must be on before Q3 turns off");
+_Static_assert(CCM_EXIT_PCT < CCM_ENTER_PCT, "CCM entry/exit need hysteresis");
+
+/**
+ * POWER_FILTER_SHIFT — Low-pass on the power and current telemetry
+ * (regulator_p_in_mw, regulator_p_out_mw, regulator_i_out_filt_ma):
+ * filtered += (sample - filtered) >> shift per PID cycle; 5 is 1.6 ms.
+ * The currents are one injected conversion per PID cycle (adc_monitor.c),
+ * so these are averages over many cycles, not over the switching period.
+ */
+#define POWER_FILTER_SHIFT 5u
 
 /* =========================================================================
  * SECTION 7: SLOPE COMPENSATION TIMER (TIM6) CONSTANTS

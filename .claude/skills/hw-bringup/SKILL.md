@@ -154,6 +154,10 @@ on-time, pulse skipping) when the firmware has those symbols.
 work with no power stage (IDLE, input path off, fault lines high): TA1 = CMP2
 backstop, TB1 = static leg, configured dead-time. Validated 2026-09-27:
 199.995 kHz, TA1 84.755 % (4.2379 us), dead-time 11.79/12.40 ns vs 11.76 ns.
+`bu regulator bench-ccm-pwm --t-on-ns NS [--fsw 200|400]` does the same for
+the buck forced-CCM edge program (plans/ccm-buck-50w.md, Core/Src/buck_ccm.c):
+Q1/Q2 complementary with `regulator_ccm_deadtime_ns`, Q3 held, Q4 refreshing
+every 10 us. Scope it before the first powered CCM run; `bench-pwm off` stops it.
 
 `clear-fault` does **not** restart switching. After an `INPUT_OVERCURRENT`
 result the tool refuses to retry without `--force`: only use that after the

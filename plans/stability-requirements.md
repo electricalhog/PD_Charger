@@ -88,6 +88,20 @@ for loads ≥ 60 mA; load steps in 25 % increments at 150 mA/µs; asserted at th
 | F5 | Build identity per run (git HEAD, dirty flag, ELF SHA-256) | Open | Not recorded for the 2026-10-17/18 runs (R§3) |
 | F6 | Bench supply output impedance and capacitance | Open | Enters C7 and E4 |
 
+## G. Buck forced CCM, 400 kHz (branch `claude/ccm-hf-buck-50w`, `plans/ccm-buck-50w.md`)
+
+Firmware built, not run. Model numbers are from `plans/scripts/ccm_buck.py` (averaged plant with the PID ISR's
+sampling, node after the output switch, board ceramics only unless noted).
+
+| ID | Requirement and acceptance | Basis | Status | Evidence | Next test |
+|---|---|---|---|---|---|
+| G1 | 20 V CCM holds 10 s at 0.8 A and 2.5 A: no limit cycle, trace σ ≤ 50 mV, no line near 3.9 kHz or fsw/2 | [Prop] | Calc | Integral-only loop at 500 Hz: PM 78°, min\|1+T\| 0.83 at 5–20 V (`--loop`) | Ladder step 3 |
+| G2 | Reconnect 0 → 2.5 A at 20 V inside vSrcValid, ≤ 5 ms outside vSrcNew (A1 for CCM) | [PD]; [Prop] | Calc | −1.37 V; 25 % steps 0.31–0.49 V at 5–20 V, all inside vSrcValid | Ladder step 4 |
+| G3 | Release 2.5 A → 0 at 20 V under +5 % with no fault and no CCM OVER_BAND exit (A2/A3 for CCM) | [PD] | Calc; fails with board ceramics alone | +1.36 V (6.8 %); +0.80 V with the QT Py's ceramics in the loop | Ladder step 4 |
+| G4 | DCM ↔ CCM: one entry per load rise, at most one exit per load fall, V_out within 2 % across each | [Prop] | Open | `regulator_ccm_entries` / `_exits` / `_exit_reason` | Ladder steps 3–4 |
+| G5 | No regeneration: no VIN_RISE exit and V_in ≤ 26 V through a 20 → 5 V down-ramp with 25 Ω | [Plan] roadmap section 5 | Open | — | Ladder step 7 |
+| G6 | The ring after a CCM step matches the L1–C model within 20 % in frequency (checks the plant the duty law assumes) | [Prop] | Calc | 10–18 kHz depending on the bench-side capacitance | Ladder step 4 |
+
 ## Order and dependencies
 
 1. F5 (trivial) and one more 5 V record for D5 (ground-spring tip; decides whether the 100 kHz line is real), then A3 (the unexplained fault is the open failure closest to this test).

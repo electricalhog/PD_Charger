@@ -47,6 +47,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
     Core/Src/pd_policy.c
     Core/Src/pd_vbus.c
+    Core/Src/buck_ccm.c
 )
 
 # USB-PD VBUS path.  ON: the Type-C VBUS is this board's regulator output
@@ -161,7 +162,7 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
 # period ISR 2 us of 5 us, starving every lower-priority interrupt and task
 # (bench, 2026-09-28 evening, DWT counts in regulator_cyc_*).
 set_source_files_properties(
-    Core/Src/regulator.c Core/Src/adc_monitor.c Core/Src/pid_controller.c
+    Core/Src/regulator.c Core/Src/adc_monitor.c Core/Src/pid_controller.c Core/Src/buck_ccm.c
     Core/Src/slope_comp.c Core/Src/debug_log.c Core/Src/stm32g4xx_it.c
     DIRECTORY ${CMAKE_SOURCE_DIR}
     PROPERTIES COMPILE_OPTIONS "-O2")

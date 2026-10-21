@@ -142,7 +142,7 @@ def test_trace_read_orders_the_ring_and_aligns_the_trigger(monkeypatch, tmp_path
     for idx in range(n):
         age = (idx - 100) % n                       # 0 = oldest
         switch_on = 0x08 if not (900 <= age < 1000) else 0
-        flags = 2 | switch_on | (0x80 if idx == 1000 else 0)
+        flags = 2 | switch_on | (0x80 if idx == 1000 else 0) | (0x100 if age >= 2000 else 0)
         regulator.TRACE_SAMPLE.pack_into(buf, idx * regulator.TRACE_SAMPLE.size, 28000 + age % 7, 1400, 1680, 1790, flags)
     ctl = regulator.TRACE_CTL.pack(3, 1, 1147, 0, 100, 1000, n + 500, 0, 5000, 850_034)
     monkeypatch.setattr(probe, "symbols", lambda cfg: {"regulator_trace_ctl": (0x1000, 40),
@@ -157,4 +157,15 @@ def test_trace_read_orders_the_ring_and_aligns_the_trigger(monkeypatch, tmp_path
     assert out["pulse_us"] == 5000 and out["pulse_us_measured"] == 5000.2
     lines = (tmp_path / "regulator_trace.csv").read_text().splitlines()
     assert lines[0].startswith("t_ms,v_out_mv") and lines[1].startswith("-45.00,28000,")
-    assert lines[901].split(",")[-1] == "1"            # the trigger row
+    cols = lines[0].split(",")
+    assert lines[901].split(",")[cols.index("trigger")] == "1"     # the trigger row
+    assert lines[2001].split(",")[cols.index("ccm")] == "1" and lines[1].split(",")[cols.index("ccm")] == "0"
+    assert out["ccm_samples"] == n - 2000
+
+
+def test_ccm_pwm_arg_packing():
+    assert regulator.ccm_pwm_arg(2100, 400) == 2100 | (400 << 16)
+    with pytest.raises(ToolError):
+        regulator.ccm_pwm_arg(2100, 300)
+    with pytest.raises(ToolError):
+        regulator.ccm_pwm_arg(70000, 400)

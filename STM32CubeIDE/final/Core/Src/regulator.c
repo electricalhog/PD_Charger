@@ -61,6 +61,7 @@
 #include "regulator.h"
 #include "regulator_config.h"
 #include "pid_controller.h"
+#include "buck_ccm.h"
 #include "slope_comp.h"
 #include "adc_monitor.h"
 #include "pd_interface.h"
@@ -454,6 +455,136 @@ static void hrtim_park_sr(void)
     regulator_sr_on_ns  = 0u;
     regulator_sr_off_ns = 0u;
 }
+/* =========================================================================
+ * Switching period and buck forced CCM (regulator_config.h section 6b,
+ * Core/Src/buck_ccm.c, plans/ccm-buck-50w.md)
+ *
+ * Timers A-D run at sw_period_ticks: HRTIM_PERIOD_COUNTS in boost and
+ * buck-boost, and in buck BUCK_PERIOD_COUNTS_400 when regulator_ccm_enable
+ * and regulator_buck_fsw_khz == 400 at entry.  The master (ADC1 trigger)
+ * stays at HRTIM_PERIOD_COUNTS.  hrtim_set_switching_period() changes it
+ * with the outputs off and resets every counter together.
+ *
+ * In CCM the PID ISR stops the DCM modulator and pulse skipping, holds the
+ * DCM loop's integrator, and computes Q1's on-time from buck_ccm_update();
+ * the timing comes from buck_ccm_timing().  Timer B's period becomes
+ * CCM_REFRESH_INTERVAL_NS so Q4 refreshes Q3's bootstrap once per interval
+ * (buck_ccm.h).  Entering and leaving only rewrites preloaded registers:
+ * Timers A, C, D take them at their next roll-over and Timer B at its own,
+ * which is always also a Timer A roll-over.
+ * =========================================================================*/
+static uint32_t sw_period_ticks = HRTIM_PERIOD_COUNTS;
+static uint32_t sw_period_ns    = (uint32_t)(1000000000ull / HRTIM_SWITCHING_FREQ_HZ);
+
+volatile uint8_t  regulator_ccm_enable      = CCM_ENABLE_DEFAULT;
+volatile uint16_t regulator_buck_fsw_khz    = BUCK_FSW_KHZ_DEFAULT;
+volatile uint16_t regulator_ccm_deadtime_ns = CCM_DEADTIME_NS_DEFAULT;
+volatile float    regulator_ccm_ki          = CCM_KI_DEFAULT;
+volatile uint16_t regulator_ccm_ocp_ma      = CCM_OCP_MA_DEFAULT;
+volatile uint16_t regulator_fsw_khz         = (uint16_t)(HRTIM_SWITCHING_FREQ_HZ / 1000u);
+volatile uint8_t  regulator_ccm_active      = 0u;
+volatile float    regulator_ccm_u_mv        = 0.0f;
+volatile uint32_t regulator_ccm_entries     = 0u;
+volatile uint32_t regulator_ccm_exits       = 0u;
+volatile uint8_t  regulator_ccm_exit_reason = REGULATOR_CCM_EXIT_NONE;
+volatile int32_t  regulator_i_out_filt_ma   = 0;
+volatile int32_t  regulator_i_in_filt_ma    = 0;
+volatile int32_t  regulator_p_in_mw         = 0;
+volatile int32_t  regulator_p_out_mw        = 0;
+
+static BuckCcmState ccm_state;
+static uint16_t ccm_dwell     = 0u;   /* PID cycles since entry (saturating)  */
+static uint16_t ccm_hold      = 0u;   /* PID cycles before re-entry is allowed */
+static uint16_t ccm_ocp_count = 0u;
+static uint16_t ccm_over_count = 0u;
+static uint32_t ccm_vin0_mv   = 0u;   /* V_in at entry (CCM_VIN_RISE_MV)       */
+
+static void ccm_timing_cfg(BuckCcmTimingCfg *c)
+{
+    uint32_t dt = regulator_ccm_deadtime_ns;
+    if (dt < CCM_DEADTIME_NS_MIN) { dt = CCM_DEADTIME_NS_MIN; }
+    if (dt > CCM_DEADTIME_NS_MAX) { dt = CCM_DEADTIME_NS_MAX; }
+    c->period_ns           = sw_period_ns;
+    c->pulse_start_ns      = BOOTSTRAP_REFRESH_NS + DCM_REFRESH_DEADTIME_NS;
+    c->dt_ns               = dt;
+    c->refresh_ns          = CCM_REFRESH_NS;
+    c->refresh_interval_ns = CCM_REFRESH_INTERVAL_NS;
+    c->min_on_ns           = CCM_MIN_ON_NS;
+    c->min_q2_end_ns       = CCM_MIN_Q2_END_NS;
+}
+
+/** Period for a mode (see above). */
+static uint32_t mode_period_ticks(RegulatorMode mode)
+{
+    if (mode == REGULATOR_MODE_BUCK && regulator_ccm_enable && regulator_buck_fsw_khz == 400u)
+    {
+        return BUCK_PERIOD_COUNTS_400;
+    }
+    return HRTIM_PERIOD_COUNTS;
+}
+
+/** Outputs must be off.  Timers A-D to the mode's period (preloaded: the
+ *  caller's hrtim_update_now() transfers it; the mode's leg functions set
+ *  the compares that depend on it); hrtim_restart_counters() then aligns
+ *  everything.  Change regulator_ccm_enable or regulator_buck_fsw_khz while
+ *  IDLE: the period follows them only here. */
+static void hrtim_set_switching_period(RegulatorMode mode)
+{
+    const uint32_t per = mode_period_ticks(mode);
+    sw_period_ticks = per;
+    sw_period_ns    = (per * 1000u) / BUCK_CCM_TICKS_PER_US;
+    regulator_fsw_khz = (uint16_t)(1000000u / sw_period_ns);
+    const uint32_t idx[4] = { HRTIM_TIMERINDEX_TIMER_A, HRTIM_TIMERINDEX_TIMER_B,
+                              HRTIM_TIMERINDEX_TIMER_C, HRTIM_TIMERINDEX_TIMER_D };
+    for (uint32_t k = 0u; k < 4u; k++)
+    {
+        HRTIM1->sTimerxRegs[idx[k]].PERxR = per;
+    }
+}
+
+/** Reset the master and Timers A-D together (outputs off): Timer A's period
+ *  start returns to the master's, where the ADC trigger is placed. */
+static void hrtim_restart_counters(void)
+{
+    HRTIM1->sCommonRegs.CR2 |= HRTIM_CR2_MRST | HRTIM_CR2_TARST | HRTIM_CR2_TBRST |
+                               HRTIM_CR2_TCRST | HRTIM_CR2_TDRST;
+}
+
+/** Write one CCM edge set (preloaded; the caller holds or forces the update). */
+static void hrtim_write_ccm_timing(const BuckCcmTiming *t)
+{
+    HRTIM_Timerx_TypeDef *ta = &HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A];
+    HRTIM_Timerx_TypeDef *tb = &HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B];
+    ta->CMP2xR = t->a_cmp2;
+    ta->CMP3xR = t->a_cmp3;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP2xR = t->c_cmp2;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP3xR = HRTIM_CMP_PARKED;
+    tb->PERxR  = t->b_per;
+    tb->CMP2xR = t->b_cmp2;
+    tb->CMP3xR = t->b_cmp3;
+    tb->CMP4xR = t->b_cmp4;
+    tb->SETx1R = HRTIM_SET1R_CMP4;
+    tb->RSTx1R = HRTIM_RST1R_CMP2;
+    tb->SETx2R = HRTIM_SET2R_PER;
+    tb->RSTx2R = HRTIM_RST2R_CMP3;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_D].CMP3xR = HRTIM_CMP_PARKED;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_D].CMP4xR = HRTIM_CMP_PARKED;
+}
+
+/** Bench CCM PWM is running (regulator_bench_ccm_pwm); restored differently. */
+static bool bench_ccm = false;
+
+static void ccm_leave(RegulatorCcmExit why)
+{
+    if (regulator_ccm_active)
+    {
+        regulator_ccm_exits++;
+        regulator_ccm_exit_reason = (uint8_t)why;
+    }
+    regulator_ccm_active = 0u;
+    ccm_hold = CCM_REENTRY_HOLD;
+}
+
 _Static_assert(PEAK_PROTECT_COUNTS_BOOST <= PID_OUTPUT_MAX, "PEAK_PROTECT_COUNTS_BOOST over the DAC range");
 _Static_assert(PEAK_PROTECT_COUNTS_BB <= PID_OUTPUT_MAX, "PEAK_PROTECT_COUNTS_BB over the DAC range");
 _Static_assert(BUCK_BOOST_ENABLED, "mode selection relies on buck-boost to cross V_in (2026-10-12)");
@@ -550,6 +681,7 @@ static void enter_fault(RegulatorFaultSource source);
 static bool software_safety_checks_pass(uint32_t v_out_mv, uint32_t v_in_mv,
                                          uint32_t v_setpoint_mv, uint32_t ovp_ref_mv,
                                          RegulatorMode mode);
+static void record_fault_snapshot(uint32_t v_out_mv, uint32_t v_in_mv, uint32_t v_setpoint_mv);
 
 /* =========================================================================
  * regulator_init
@@ -756,6 +888,20 @@ void regulator_start(void)
     softstart_setpoint_mv = v_out_now_mv;
     softstart_active      = true;
 
+    /* CCM starts off (step 5b enters it once the output carries load), and
+     * the period follows the mode (regulator_config.h section 6b). */
+    regulator_ccm_active = 0u;
+    ccm_hold = 0u;
+    ccm_dwell = 0u;
+    ccm_ocp_count = 0u;
+    ccm_state.u_v = 0.0f;
+    ccm_state.clamp = 0;
+    regulator_i_out_filt_ma = 0;
+    regulator_i_in_filt_ma  = 0;
+    regulator_p_in_mw       = 0;
+    regulator_p_out_mw      = 0;
+    hrtim_set_switching_period(regulator_mode);
+
     /* --- Apply forced-HIGH to the static leg for the selected mode --- */
     if (regulator_mode == REGULATOR_MODE_BUCK)
     {
@@ -777,6 +923,7 @@ void regulator_start(void)
     hrtim_fault_irq_rearm();
     hrtim_park_sr();
     hrtim_update_now();
+    hrtim_restart_counters();
     buck_phase2_on = (regulator_mode == REGULATOR_MODE_BUCK) && regulator_sr_enable;
 
     /* --- Enable HRTIM switching outputs for the active legs (§5.5) --- */
@@ -828,6 +975,7 @@ void regulator_stop(void)
 
     /* Disable all HRTIM switching outputs immediately (§11.3) */
     hrtim_disable_all_outputs();
+    ccm_leave(REGULATOR_CCM_EXIT_STOP);
     bench_pwm_restore();
 
     /* Stop slope compensation and zero DAC */
@@ -1017,7 +1165,9 @@ static void regulator_debug_poll_isr(void)
     }
     else if (cmd == REGULATOR_DEBUG_CMD_SNAPSHOT)
     {
-        if (regulator_state != REGULATOR_STATE_RUNNING)
+        /* Not in CCM: holding Q1 off with Q2 and Q3 on drives the inductor
+         * current negative (the marker is a DCM skip). */
+        if (regulator_state != REGULATOR_STATE_RUNNING || regulator_ccm_active)
         {
             debug_complete(cmd, 1u);
             return;
@@ -1080,6 +1230,10 @@ void regulator_debug_poll(void)
             break;
         case REGULATOR_DEBUG_CMD_BENCH_PWM_OFF:
             result = (uint32_t)regulator_bench_pwm(false);
+            break;
+        case REGULATOR_DEBUG_CMD_BENCH_CCM_PWM:
+            result = (uint32_t)regulator_bench_ccm_pwm(regulator_debug.arg & 0xFFFFu,
+                                                       regulator_debug.arg >> 16);
             break;
         case REGULATOR_DEBUG_CMD_TRACE_ARM:
             result = trace_arm(regulator_debug.arg);   /* not RUNNING: the ISR is idle */
@@ -1195,14 +1349,86 @@ RegulatorBenchResult regulator_bench_pwm(bool on)
     return REGULATOR_BENCH_OK;
 }
 
+RegulatorBenchResult regulator_bench_ccm_pwm(uint32_t t_on_ns, uint32_t fsw_khz)
+{
+    if (regulator_bench_pwm_active)
+    {
+        return REGULATOR_BENCH_NOT_IDLE;   /* stop the running bench PWM first */
+    }
+    if (regulator_state != REGULATOR_STATE_IDLE)
+    {
+        return REGULATOR_BENCH_NOT_IDLE;
+    }
+    if (HAL_GPIO_ReadPin(PIN_INPUT_EN_PORT, PIN_INPUT_EN_PIN) == GPIO_PIN_SET)
+    {
+        return REGULATOR_BENCH_INPUT_PATH_ON;
+    }
+    if (!vs_good() || !is_good())
+    {
+        return REGULATOR_BENCH_FAULT_LINE_LOW;
+    }
+    if (fsw_khz != 200u && fsw_khz != 400u)
+    {
+        return REGULATOR_BENCH_BAD_ARG;
+    }
+
+    /* The period for the asked frequency (as hrtim_set_switching_period),
+     * the buck DCM legs as the base, then the CCM edges on top. */
+    const uint32_t per = (fsw_khz == 400u) ? BUCK_PERIOD_COUNTS_400 : HRTIM_PERIOD_COUNTS;
+    const uint32_t saved_ticks = sw_period_ticks, saved_ns = sw_period_ns;
+    sw_period_ticks = per;
+    sw_period_ns    = (per * 1000u) / BUCK_CCM_TICKS_PER_US;
+    BuckCcmTimingCfg c;
+    ccm_timing_cfg(&c);
+    if (!buck_ccm_cfg_valid(&c))
+    {
+        sw_period_ticks = saved_ticks;
+        sw_period_ns    = saved_ns;
+        return REGULATOR_BENCH_BAD_ARG;
+    }
+    regulator_fsw_khz = (uint16_t)fsw_khz;
+    const uint32_t idx[4] = { HRTIM_TIMERINDEX_TIMER_A, HRTIM_TIMERINDEX_TIMER_B,
+                              HRTIM_TIMERINDEX_TIMER_C, HRTIM_TIMERINDEX_TIMER_D };
+    for (uint32_t k = 0u; k < 4u; k++)
+    {
+        HRTIM1->sTimerxRegs[idx[k]].PERxR = per;
+    }
+    hrtim_apply_buck_mode_static_leg();
+    BuckCcmTiming t;
+    buck_ccm_timing(&c, t_on_ns, &t);
+    hrtim_write_ccm_timing(&t);
+    regulator_on_time_ns = (uint16_t)t.t_on_ns;
+    hrtim_update_now();
+    hrtim_restart_counters();
+    bench_ccm = true;
+    regulator_bench_pwm_active = true;
+
+    hrtim_fault_irq_rearm();
+    HAL_HRTIM_WaveformOutputStart(&hhrtim1, HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2 |
+                                            HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2);
+    return REGULATOR_BENCH_OK;
+}
+
 /**
- * bench_pwm_restore — Put back the set/reset sources saved by bench PWM.
+ * bench_pwm_restore — Put back the set/reset sources saved by bench PWM, or,
+ * after bench CCM PWM, the base period and the buck DCM legs.
  * Register writes only: safe from the fault ISR.  Outputs must already be off.
  */
 static void bench_pwm_restore(void)
 {
     if (!regulator_bench_pwm_active)
     {
+        return;
+    }
+    if (bench_ccm)
+    {
+        hrtim_set_switching_period(REGULATOR_MODE_BOOST);   /* the base period */
+        hrtim_apply_buck_mode_static_leg();
+        hrtim_park_sr();
+        hrtim_update_now();
+        hrtim_restart_counters();
+        bench_ccm = false;
+        regulator_bench_pwm_active = false;
         return;
     }
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].SETx1R = bench_saved_set_rst[0];
@@ -1271,6 +1497,12 @@ void regulator_adc1_awd_isr(void)
     if (regulator_state != REGULATOR_STATE_RUNNING)
     {
         ADC1->IER &= ~ADC_IER_AWD1IE;
+        return;
+    }
+    /* No pulse skipping in CCM (the window is held open, step 7b): turning
+     * Q1 off alone would leave Q2 and Q3 on and pull the current negative. */
+    if (regulator_ccm_active)
+    {
         return;
     }
     /* Software filter: act only if the last AWD_FILTER_SAMPLES samples are
@@ -1552,13 +1784,13 @@ void regulator_pid_tim7_isr(void)
     const float k_per_v = (regulator_mode == REGULATOR_MODE_BUCK) ? (1.0f / chg_v + 1.0f / dis_v)
                                                                   : (1.0f / dis_v);
     const float l_h     = (float)INDUCTOR_VALUE_NH * 1e-9f;
-    const float t_sw_s  = 1.0f / (float)HRTIM_SWITCHING_FREQ_HZ;
+    const float t_sw_s  = (float)sw_period_ns * 1e-9f;
 
     /* Longest pulse: the current must reach zero inside the window after
      * the pulse start, t_on + t_off <= window, so
      * t_on <= window * discharge / (charge + discharge); and at most
      * DCM_ON_TIME_CEIL_NS.  With the mode's peak limit that sets the ceiling. */
-    const uint32_t window_ns = (uint32_t)(1000000000ull / HRTIM_SWITCHING_FREQ_HZ)
+    const uint32_t window_ns = sw_period_ns
                                - (BOOTSTRAP_REFRESH_NS + DCM_REFRESH_DEADTIME_NS)
                                - DCM_WINDOW_MARGIN_NS;
     uint32_t t_lim_ns = (window_ns * dis_mv) / (chg_mv + dis_mv);   /* < 5000 * 70000 */
@@ -1570,10 +1802,122 @@ void regulator_pid_tim7_isr(void)
     if (i_pk_lim_a > peak_max_a) { i_pk_lim_a = peak_max_a; }
     const float i_max_ma = 1e3f * 0.5f * l_h * i_pk_lim_a * i_pk_lim_a * k_per_v / t_sw_s;
 
-    pid_config.output_min = 0.0f;
-    pid_config.output_max = i_max_ma;
-    const float i_cmd_ma = pid_update(&pid_state, &pid_config,
-                                      (float)effective_setpoint_mv, (float)v_out_mv);
+    /* --- 5a. Current and power telemetry (POWER_FILTER_SHIFT): ID_MON, IS_MON
+     * and the products with V_out and V_in, for CCM's exit and OCP and for
+     * the efficiency the bench reads (regulator.h). --- */
+    {
+        const int32_t i_out = (int32_t)adc_measurements.i_out_ma;
+        const int32_t i_in  = (int32_t)adc_measurements.i_in_ma;
+        const int32_t p_out = (int32_t)((v_out_mv * (uint32_t)i_out) / 1000u);   /* < 70000 * 5500 */
+        const int32_t p_in  = (int32_t)((v_in_mv * (uint32_t)i_in) / 1000u);     /* < 70000 * 13200 */
+        regulator_i_out_filt_ma += (i_out - regulator_i_out_filt_ma) / (1 << POWER_FILTER_SHIFT);
+        regulator_i_in_filt_ma  += (i_in  - regulator_i_in_filt_ma)  / (1 << POWER_FILTER_SHIFT);
+        regulator_p_out_mw      += (p_out - regulator_p_out_mw)      / (1 << POWER_FILTER_SHIFT);
+        regulator_p_in_mw       += (p_in  - regulator_p_in_mw)       / (1 << POWER_FILTER_SHIFT);
+    }
+
+    /* The skip band (step 7b). */
+    uint32_t skip_above_mv = (effective_setpoint_mv * regulator_skip_above_permille) / 1000u;
+    if (skip_above_mv < PULSE_SKIP_ABOVE_MV) { skip_above_mv = PULSE_SKIP_ABOVE_MV; }
+
+    /* --- 5b. Buck forced CCM: enter and leave (regulator_config.h section
+     * 6b).  Enter when the DCM loop's command reaches CCM_ENTER_PCT of the
+     * DCM ceiling with the output connected; leave on light load (filtered
+     * ID_MON), V_out held over CCM_OVER_BAND (DCM then skips), V_in rising
+     * (regeneration), or a switch, mode or enable change.  The DCM loop's
+     * integrator is held in CCM and preset to the load current on exit. --- */
+    BuckCcmTimingCfg ccm_cfg;
+    ccm_timing_cfg(&ccm_cfg);
+    bool ccm_enter_now = false, ccm_exit_now = false;
+    if (ccm_hold != 0u) { ccm_hold--; }
+    if (regulator_ccm_active)
+    {
+        /* Held above the band: a release overshoot decays within 1 ms. */
+        uint32_t over_mv = (effective_setpoint_mv * CCM_OVER_BAND_PERMILLE) / 1000u;
+        if (over_mv < CCM_OVER_BAND_MIN_MV) { over_mv = CCM_OVER_BAND_MIN_MV; }
+        if (v_out_mv > effective_setpoint_mv + over_mv) { if (ccm_over_count < 0xFFFFu) { ccm_over_count++; } }
+        else                                            { ccm_over_count = 0u; }
+        RegulatorCcmExit why = REGULATOR_CCM_EXIT_NONE;
+        if (!regulator_ccm_enable)                         { why = REGULATOR_CCM_EXIT_DISABLED; }
+        else if (regulator_mode != REGULATOR_MODE_BUCK)    { why = REGULATOR_CCM_EXIT_MODE; }
+        /* A SWITCH_PULSE keeps CCM: its reconnect is the bench's load step. */
+        else if (softstart_active || (!output_switch_on && !switch_pulse_active))
+                                                           { why = REGULATOR_CCM_EXIT_SWITCH; }
+        else if (!buck_ccm_cfg_valid(&ccm_cfg))            { why = REGULATOR_CCM_EXIT_BAD_CONFIG; }
+        else if (v_in_mv > ccm_vin0_mv + CCM_VIN_RISE_MV)  { why = REGULATOR_CCM_EXIT_VIN_RISE; }
+        else if (ccm_over_count >= CCM_OVER_BAND_CYCLES)   { why = REGULATOR_CCM_EXIT_OVER_BAND; }
+        else if (regulator_ccm_enable != CCM_ENABLE_FORCED && ccm_dwell >= CCM_MIN_DWELL &&
+                 (float)regulator_i_out_filt_ma * 100.0f < (float)CCM_EXIT_PCT * i_max_ma)
+        {
+            why = REGULATOR_CCM_EXIT_LIGHT_LOAD;
+        }
+        if (why != REGULATOR_CCM_EXIT_NONE)
+        {
+            ccm_leave(why);
+            ccm_exit_now = true;
+            float i0 = (float)regulator_i_out_filt_ma;
+            if (i0 > i_max_ma) { i0 = i_max_ma; }
+            if (i0 < 0.0f)     { i0 = 0.0f; }
+            pid_state.integrator     = i0;
+            pid_state.previous_error = 0.0f;
+        }
+        else if (ccm_dwell < 0xFFFFu) { ccm_dwell++; }
+    }
+    else if (regulator_ccm_enable && regulator_mode == REGULATOR_MODE_BUCK && !softstart_active &&
+             output_switch_on && ccm_hold == 0u && buck_ccm_cfg_valid(&ccm_cfg) &&
+             (regulator_ccm_enable == CCM_ENABLE_FORCED ||
+              regulator_i_cmd_ma * 100.0f >= (float)CCM_ENTER_PCT * i_max_ma))
+    {
+        /* With the watchdog ISR held off: never enter with Q1 skipped, and
+         * from here the window stays open (step 7b). */
+        __disable_irq();
+        if (regulator_pulses_skipped == 0u)
+        {
+            regulator_ccm_active = 1u;
+            adc_monitor_awd_window(0u, 0xFFFu);
+        }
+        __enable_irq();
+        if (regulator_ccm_active)
+        {
+            ccm_enter_now = true;
+            regulator_ccm_entries++;
+            ccm_dwell      = 0u;
+            ccm_ocp_count  = 0u;
+            ccm_over_count = 0u;
+            ccm_vin0_mv   = v_in_mv;
+            ccm_state.u_v = buck_ccm_u_initial(&ccm_cfg, regulator_i_cmd_ma * 1e-3f,
+                                               (float)CCM_R_EST_MOHM * 1e-3f, (float)CCM_VSD_MV * 1e-3f);
+            ccm_state.clamp = 0;
+        }
+    }
+
+    /* --- 5c. CCM over-current (SW_OCP) on the filtered ID_MON --- */
+    if (regulator_ccm_active && regulator_i_out_filt_ma > (int32_t)regulator_ccm_ocp_ma)
+    {
+        if (++ccm_ocp_count >= CCM_OCP_CYCLES)
+        {
+            record_fault_snapshot(v_out_mv, v_in_mv, commanded_mv);
+            enter_fault(REGULATOR_FAULT_SW_OCP);
+            return;
+        }
+    }
+    else
+    {
+        ccm_ocp_count = 0u;
+    }
+
+    float i_cmd_ma;
+    if (regulator_ccm_active)
+    {
+        i_cmd_ma = (float)regulator_i_out_filt_ma;   /* telemetry: the DCM loop is held */
+    }
+    else
+    {
+        pid_config.output_min = 0.0f;
+        pid_config.output_max = i_max_ma;
+        i_cmd_ma = pid_update(&pid_state, &pid_config,
+                              (float)effective_setpoint_mv, (float)v_out_mv);
+    }
 
     /* --- 6. Modulator: I_cmd -> peak current -> on-time (Timer A/B CMP2) ---
      * The charge this period is Q = I_cmd T_sw, so I_pk = sqrt(2 Q / (L k))
@@ -1614,7 +1958,7 @@ void regulator_pid_tim7_isr(void)
             uint32_t off_ns = end_ns + (uint32_t)(((uint64_t)t_dis_ns * SR_END_FRACTION_PCT * blend) /
                                                   (100u * SR_BLEND_FULL));
             off_ns = (off_ns > end_ns + SR_END_MARGIN_NS) ? (off_ns - SR_END_MARGIN_NS) : 0u;
-            const uint32_t latest_ns = (uint32_t)(1000000000ull / HRTIM_SWITCHING_FREQ_HZ) - 2u * SR_DEADTIME_NS;
+            const uint32_t latest_ns = sw_period_ns - 2u * SR_DEADTIME_NS;
             if (off_ns > latest_ns) { off_ns = latest_ns; }
             const uint32_t on_ns = end_ns + SR_DEADTIME_NS;
             if (off_ns >= on_ns + SR_MIN_WINDOW_NS)
@@ -1629,7 +1973,8 @@ void regulator_pid_tim7_isr(void)
     regulator_sr_on_ns  = (uint16_t)sr_on_ns;
     regulator_sr_off_ns = (uint16_t)sr_off_ns;
 
-    if (regulator_mode == REGULATOR_MODE_BUCK && (regulator_sr_enable != 0u) != buck_phase2_on)
+    if (!regulator_ccm_active && !ccm_exit_now &&
+        regulator_mode == REGULATOR_MODE_BUCK && (regulator_sr_enable != 0u) != buck_phase2_on)
     {
         buck_phase2_on = (regulator_sr_enable != 0u);
         if (buck_phase2_on) { HRTIM1->sCommonRegs.OENR  = HRTIM_OUTPUT_TB2 | (regulator_pulses_skipped ? 0u : HRTIM_OUTPUT_TB1); }
@@ -1639,6 +1984,35 @@ void regulator_pid_tim7_isr(void)
     /* One consistent set of edges per period: hold the preload transfers of
      * Timers A-D while writing, release together. */
     HRTIM1->sCommonRegs.CR1 |= HRTIM_TIMER_ABCD_UDIS;
+    if (regulator_ccm_active)
+    {
+        /* --- 6c. Buck forced CCM (buck_ccm.h): Q1 from the duty law, Q2 its
+         * complement through the period boundary, Q3 held, Q4 refreshing
+         * once per Timer B period.  Timer D is not used. --- */
+        const BuckCcmGains g = {
+            .ki = regulator_ccm_ki, .kp = CCM_KP_DEFAULT,
+            .u_min_v = (float)CCM_U_MIN_MV * 1e-3f, .u_max_v = (float)CCM_U_MAX_MV * 1e-3f,
+            .dt_s = 1.0f / (float)PID_EXECUTION_RATE_HZ,
+        };
+        const uint32_t ton = buck_ccm_update(&ccm_state, &g, &ccm_cfg, (float)effective_setpoint_mv * 1e-3f,
+                                             (float)v_out_mv * 1e-3f, (float)v_in_mv * 1e-3f);
+        BuckCcmTiming t;
+        buck_ccm_timing(&ccm_cfg, ton, &t);
+        hrtim_write_ccm_timing(&t);
+        regulator_on_time_ns = (uint16_t)t.t_on_ns;
+        regulator_ccm_u_mv   = ccm_state.u_v * 1e3f;
+        regulator_sr_on_ns   = 0u;
+        regulator_sr_off_ns  = 0u;
+        trace_at_limit       = (ccm_state.clamp > 0);
+    }
+    else
+    {
+    if (ccm_exit_now)
+    {
+        /* Back to the buck DCM legs (Timer A CMP3, Timer B period and
+         * sources); the writes below then set this cycle's DCM edges. */
+        hrtim_apply_buck_mode_static_leg();
+    }
     if (regulator_mode != REGULATOR_MODE_BOOST)
     {
         HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP2xR = cmp2;
@@ -1670,7 +2044,23 @@ void regulator_pid_tim7_isr(void)
         HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_D].CMP3xR = q3_on;
         HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_D].CMP4xR = sr_off;
     }
+    }   /* DCM */
     HRTIM1->sCommonRegs.CR1 &= ~HRTIM_TIMER_ABCD_UDIS;
+
+    /* CCM drives both legs; on leaving, buck's phase 2 follows the
+     * rectifier switch again.  The registers above land at the next
+     * roll-over, the enables now: for that part of a period Timer B runs its
+     * old sources (buck_ccm.h). */
+    if (ccm_enter_now)
+    {
+        HRTIM1->sCommonRegs.OENR = HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2 | HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2;
+        buck_phase2_on = true;
+    }
+    if (ccm_exit_now && regulator_mode == REGULATOR_MODE_BUCK)
+    {
+        buck_phase2_on = (regulator_sr_enable != 0u);
+        if (!buck_phase2_on) { HRTIM1->sCommonRegs.ODISR = HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2; }
+    }
 
     /* The peak-current comparator (COMP1 -> EEV4) is a protection backstop
      * only, PEAK_PROTECT_PCT above the mode's peak limit: the on-time ends
@@ -1708,8 +2098,7 @@ void regulator_pid_tim7_isr(void)
      * respected.  Raw counts = mV * 4096 / the calibrated VD_MON full
      * scale.                                                               */
     {
-        uint32_t above_mv = (effective_setpoint_mv * regulator_skip_above_permille) / 1000u;
-        if (above_mv < PULSE_SKIP_ABOVE_MV) { above_mv = PULSE_SKIP_ABOVE_MV; }
+        const uint32_t above_mv = skip_above_mv;
         uint32_t on = ((effective_setpoint_mv + above_mv)
                        * ADC_FULL_SCALE_COUNTS) / VD_MON_FULL_SCALE_MV;   /* < 70000 * 4096 */
         if (on > 0xFFEu) { on = 0xFFEu; }
@@ -1717,8 +2106,9 @@ void regulator_pid_tim7_isr(void)
         __disable_irq();   /* the watchdog ISR writes the window too */
         regulator_skip_raw_threshold = (uint16_t)on;
         regulator_skip_off_raw       = (uint16_t)off;
-        if (regulator_pulses_skipped) { adc_monitor_awd_window(off, 0xFFFu); }
-        else                          { adc_monitor_awd_window(0u, on); }
+        if (regulator_ccm_active)          { adc_monitor_awd_window(0u, 0xFFFu); }   /* no skipping in CCM */
+        else if (regulator_pulses_skipped) { adc_monitor_awd_window(off, 0xFFFu); }
+        else                               { adc_monitor_awd_window(0u, on); }
         __enable_irq();
     }   /* < 70000 * 4096 */
 
@@ -1794,6 +2184,7 @@ void regulator_pid_tim7_isr(void)
         if (regulator_sr_blend != 0u)    { flags |= REGULATOR_TRACE_FLAG_RECTIFIER; }
         if (trace_at_limit)              { flags |= REGULATOR_TRACE_FLAG_AT_LIMIT; }
         if (switch_pulse_active)         { flags |= REGULATOR_TRACE_FLAG_PULSE_OPEN; }
+        if (regulator_ccm_active)        { flags |= REGULATOR_TRACE_FLAG_CCM; }
         if (fire)                        { flags |= REGULATOR_TRACE_FLAG_TRIGGER; }
         const uint32_t w = tc->write_index;
         regulator_trace[w].v_out_mv = (uint16_t)(v_out_mv > 65535u ? 65535u : v_out_mv);
@@ -2177,7 +2568,9 @@ static void hrtim_apply_buck_mode_static_leg(void)
         DCM_PULSE_START_TICKS + HRTIM_BLANKING_TICKS_BUCK;
 
     /* TA2 (Q2): bootstrap refresh from the period start to CMP3, and the
-     * rectifier window (Timer C CMP2 on, CMP3 off). */
+     * rectifier window (Timer C CMP2 on, CMP3 off).  CCM moves CMP3 to one
+     * dead time before Q1 (step 6c); this is the DCM value. */
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP3xR = BOOTSTRAP_REFRESH_TICKS;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].SETx2R = HRTIM_SET2R_PER | HRTIM_SET2R_TIMEVNT3;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].RSTx2R = HRTIM_RST2R_CMP3 | HRTIM_RST2R_TIMEVNT4;
 
@@ -2188,7 +2581,10 @@ static void hrtim_apply_buck_mode_static_leg(void)
      * and is off by CMP2 = one dead time before the next refresh in any
      * case.  Off outside that window, so the DCM ring cannot push charge
      * back through it (2026-10-12, Q3 held on: 163 against 47 mA). */
-    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP2xR = HRTIM_PERIOD_COUNTS - DCM_REFRESH_DEADTIME_TICKS;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP2xR = sw_period_ticks - DCM_REFRESH_DEADTIME_TICKS;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].PERxR  = sw_period_ticks;   /* CCM stretches it */
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP3xR = BOOTSTRAP_REFRESH_TICKS;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP4xR = DCM_PULSE_START_TICKS;   /* Q4 pulse start in boost/buck-boost */
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx1R = HRTIM_SET1R_TIMEVNT5;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].RSTx1R = HRTIM_RST1R_TIMEVNT6 | HRTIM_RST1R_CMP2;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx2R = HRTIM_SET2R_PER;
@@ -2235,18 +2631,21 @@ static void hrtim_apply_boost_mode_static_leg(void)
      * DCM_REFRESH_DEADTIME_NS before the period reset, and back on at CMP4,
      * the same margin after Q2 turns off.                                  */
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP2xR =
-        HRTIM_PERIOD_COUNTS - DCM_REFRESH_DEADTIME_TICKS;
+        sw_period_ticks - DCM_REFRESH_DEADTIME_TICKS;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].RSTx1R = HRTIM_RST1R_CMP2;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].SETx1R = HRTIM_OUTPUTSET_TIMCMP4;
 #endif
 
     /* TA2 (Q2): the refresh only; no rectifier on the input leg in boost. */
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP3xR = BOOTSTRAP_REFRESH_TICKS;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].SETx2R = HRTIM_SET2R_PER;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].RSTx2R = HRTIM_RST2R_CMP3;
 
     /* Timer B: Q4 (TB2) charges L1 from CMP4 to CMP2 (or the peak
      * comparator); Q3 (TB1) rectifies from Timer D CMP3 to CMP4 and is off
      * at the period start in any case, a pulse start (CMP4) before Q4. */
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].PERxR  = sw_period_ticks;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP4xR = DCM_PULSE_START_TICKS;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx2R = HRTIM_SET2R_CMP4;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].RSTx2R = HRTIM_RST2R_CMP2 | HRTIM_RST2R_EXTVNT4;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].SETx1R = HRTIM_SET1R_TIMEVNT5;
@@ -2342,6 +2741,14 @@ static void change_mode_while_running(RegulatorMode new_mode, uint32_t v_out_mv,
         regulator_mode_log_index++;
     }
     regulator_mode = new_mode;
+    if (regulator_ccm_active)
+    {
+        /* The DCM loop was held through CCM: resume it at the load. */
+        pid_state.integrator     = (regulator_i_out_filt_ma > 0) ? (float)regulator_i_out_filt_ma : 0.0f;
+        pid_state.previous_error = 0.0f;
+    }
+    ccm_leave(REGULATOR_CCM_EXIT_MODE);
+    hrtim_set_switching_period(new_mode);
 
     /* Reconfigure the static and switching legs for the new mode */
     if (regulator_mode == REGULATOR_MODE_BUCK)
@@ -2358,6 +2765,7 @@ static void change_mode_while_running(RegulatorMode new_mode, uint32_t v_out_mv,
     }
     hrtim_park_sr();      /* the next PID cycle programs the new mode's window */
     hrtim_update_now();
+    hrtim_restart_counters();
     buck_phase2_on = (regulator_mode == REGULATOR_MODE_BUCK) && regulator_sr_enable;
     HAL_HRTIM_WaveformOutputStart(&hhrtim1, mode_switching_outputs(regulator_mode));
     skip_state_reset_pulsing();
@@ -2477,6 +2885,7 @@ static void enter_fault(RegulatorFaultSource source)
     /* Disable switching outputs (belt-and-suspenders: hardware fault logic
      * already forces them to INACTIVE, but also do it in software)          */
     hrtim_disable_all_outputs();
+    ccm_leave(REGULATOR_CCM_EXIT_STOP);
     bench_pwm_restore();
 
     /* Zero DAC — comparator threshold = 0 → additional safety (§4.4) */
