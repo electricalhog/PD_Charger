@@ -86,7 +86,7 @@ typedef enum
     REGULATOR_FAULT_SW_UVP         = 0x08u, /**< Software undervoltage protection */
     REGULATOR_FAULT_SW_VIN_RANGE   = 0x10u, /**< V_in out of range for mode */
     REGULATOR_FAULT_SW_BACKSTOP    = 0x20u, /**< Too many consecutive backstop events */
-    REGULATOR_FAULT_SW_OCP         = 0x40u  /**< Buck CCM: filtered IL_MON over regulator_ccm_ocp_ma */
+    REGULATOR_FAULT_SW_OCP         = 0x40u  /**< Buck CCM: regulator_ccm_i_avg_ma over regulator_ccm_ocp_ma */
 } RegulatorFaultSource;
 
 /**
@@ -143,11 +143,12 @@ extern volatile uint16_t regulator_sr_off_ns;
  *    regulator_buck_fsw_khz      200 or 400, taken when buck is entered
  *    regulator_ccm_deadtime_ns   Q1/Q2 and Q3/Q4 dead time, clamped
  *    regulator_ccm_ki            integral gain [1/s]
- *    regulator_ccm_ocp_ma        SW_OCP level on regulator_il_avg_ma
+ *    regulator_ccm_ocp_ma        SW_OCP level on regulator_ccm_i_avg_ma
  *    regulator_ccm_ilim_ma       current limit in CCM, 0 off (buck_ccm.h)
  *    regulator_ccm_ilim_kl       its integral gain [V/(A s)]
- *    regulator_ccm_ilim_src      its current: 0 IL_MON (regulator_il_ma),
- *                                1 ID_MON (regulator_id_gain/offset applied)
+ *    regulator_ccm_ilim_src      CCM's current (limit, SW_OCP, light-load
+ *                                exit): 1 ID_MON (default, regulator_id_gain/
+ *                                offset applied), 0 IL_MON (regulator_il_ma)
  *    regulator_ccm_peak_ma       peak comparator threshold in CCM, 0 = the
  *                                9 A backstop (CCM_PEAK_MA_DEFAULT)
  *  Telemetry:
@@ -157,7 +158,8 @@ extern volatile uint16_t regulator_sr_off_ns;
  *    regulator_ccm_entries / _exits, regulator_ccm_exit_reason (RegulatorCcmExit)
  *    regulator_ccm_limiting      1 while the current limit sets the duty
  *    regulator_ccm_v_lim_mv      its voltage reference while it does
- *    regulator_ccm_i_lim_meas_ma the current it acts on, this cycle
+ *    regulator_ccm_i_lim_meas_ma CCM's current this cycle, and
+ *    regulator_ccm_i_avg_ma      filtered (POWER_FILTER_SHIFT)
  *    regulator_ccm_limit_entries times the limit took over
  *    regulator_i_out_filt_ma, regulator_i_in_filt_ma, regulator_p_in_mw,
  *    regulator_p_out_mw          POWER_FILTER_SHIFT low-pass of ID_MON,
@@ -216,6 +218,7 @@ extern volatile uint16_t regulator_ccm_peak_ma;
 extern volatile uint8_t  regulator_ccm_limiting;
 extern volatile float    regulator_ccm_v_lim_mv;
 extern volatile int32_t  regulator_ccm_i_lim_meas_ma;
+extern volatile int32_t  regulator_ccm_i_avg_ma;
 extern volatile uint32_t regulator_ccm_limit_entries;
 
 /**

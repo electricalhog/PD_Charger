@@ -857,8 +857,8 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
  *                        (> dead time: Q3 turns off one dead time early)
  * CCM_ENTER_PCT          enter when the DCM command reaches this share of
  *                        the DCM ceiling (step 5)
- * CCM_EXIT_PCT           leave when regulator_il_avg_ma (IL_MON, period
- *                        mean) falls under this share of the DCM
+ * CCM_EXIT_PCT           leave when regulator_ccm_i_avg_ma (CCM's current,
+ *                        below) falls under this share of the DCM
  *                        ceiling, after CCM_MIN_DWELL
  * CCM_REENTRY_HOLD       PID cycles after an exit before CCM may return;
  *                        short, because the DCM ceiling at 400 kHz is below
@@ -882,7 +882,7 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
  *                        entry: the bench supply cannot sink current
  * CCM_R_EST_MOHM         series resistance for the integrator's starting
  *                        value (L1, R5, Q3, the active FET; bumpless entry)
- * CCM_OCP_MA_DEFAULT     regulator_ccm_ocp_ma: regulator_il_avg_ma above it
+ * CCM_OCP_MA_DEFAULT     regulator_ccm_ocp_ma: regulator_ccm_i_avg_ma above it
  *                        for CCM_OCP_CYCLES latches SW_OCP.  The backstop
  *                        behind the current limit, so above it by the
  *                        limit's transient: a 2 -> 4 A step into a 3 A
@@ -892,10 +892,8 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
  *                        was 3.3 A on a single IL_MON conversion per PID
  *                        cycle, which read nothing usable in CCM
  * CCM_ILIM_MA_DEFAULT    regulator_ccm_ilim_ma, the current limit in CCM
- *                        (0: off), on regulator_ccm_ilim_src's current:
- *                        0 IL_MON (default; per-cycle period mean, gain,
- *                        offset and the clipping correction applied), 1
- *                        ID_MON.  buck_ccm.h: the duty is built on
+ *                        (0: off), on CCM's current (CCM_ILIM_SRC_DEFAULT).
+ *                        buck_ccm.h: the duty is built on
  *                        min(V_ref, v_lim), v_lim += kl (I_lim - I) dt,
  *                        the voltage integrator held while it limits
  * CCM_ILIM_KL_DEFAULT    regulator_ccm_ilim_kl [V/(A s)]: the loop gain is
@@ -905,6 +903,18 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
  *                        800 rang there in the host test, 400 is 2x under).
  *                        Into 25.3 ohm the fold then has a 63 ms time
  *                        constant (0.79 -> 0.5 A settles in about 90 ms)
+ * CCM_ILIM_SRC_DEFAULT   regulator_ccm_ilim_src, CCM's current for the
+ *                        limit, SW_OCP and the light-load exit: 1 ID_MON
+ *                        (output shunt R6, after regulator_id_gain_permille
+ *                        and _offset_ma), 0 IL_MON (after the IL gain,
+ *                        offset and clipping correction).  Bench 2026-10-21,
+ *                        forced CCM at 400 kHz into 25.3 ohm, 5-20 V: ID_MON
+ *                        read 1.050 x V/R + 24 mA (the QT Py's idle draw is
+ *                        in the offset), IL_MON 0.35-0.84 x and nonlinear
+ *                        (1.22 x the clipped-triangle mean - 0.33 A).  ID_MON
+ *                        reads to 5.5 A (ADC_ID_FULL_SCALE_MA), and sees the
+ *                        output, not L1 (the board ceramics are before it)
+ * ID_GAIN_PERMILLE_DEFAULT  regulator_id_gain_permille: 1 / 1.050
  * CCM_PEAK_MA_DEFAULT    regulator_ccm_peak_ma: the peak comparator's
  *                        threshold (COMP1 -> EEV4 ends Q1) while in CCM;
  *                        0 keeps the 9 A backstop.  A per-period bound is
@@ -914,10 +924,13 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
  *                        23.2 V (bench 22.9 V, SW_OVP at 22 V) unbounded,
  *                        21.5 V with L1 held to 3 A average, 20.8 V at
  *                        2 A.  The threshold is a peak: average + ripple/2.
- *                        Off by default: the comparator has not yet been
- *                        seen ending a CCM pulse on this board, and when it
- *                        does, Q2 still waits for its programmed edge (Q2's
- *                        reverse conduction carries L1 until then)
+ *                        Off by default: when it ends a pulse, Q2 still
+ *                        waits for its programmed edge (Q2's reverse
+ *                        conduction carries L1 until then), and on the
+ *                        bench (2026-10-21, 3500 mA) the switch-pulse
+ *                        reconnect then recharged the VBUS side too slowly:
+ *                        V_out 20 -> 10 V in 150 us, SW_UVP.  The VBUS-side
+ *                        capacitance is far above the model's 8 uF
  * CCM_MODE_SETTLE        a mode change while in CCM first leaves CCM, then
  *                        waits this many PID cycles in DCM: cutting all
  *                        four gates with amps in L1 latched HW_FLT1 at the
@@ -971,6 +984,8 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
 #define CCM_ILIM_MA_DEFAULT      3000u   /* the PDO current; 0 = off */
 #define CCM_ILIM_KL_DEFAULT      400.0f  /* [V/(A s)] */
 #define CCM_PEAK_MA_DEFAULT      0u      /* 0 = the PEAK_PROTECT backstop */
+#define CCM_ILIM_SRC_DEFAULT     1u      /* ID_MON */
+#define ID_GAIN_PERMILLE_DEFAULT 952
 #define CCM_MODE_SETTLE          4u      /* PID cycles in DCM before a mode change after CCM */
 #define CCM_DUTY_ENTER_PCT       100u    /* CCM only while V_ref <= this % of V_in x D_max */
 #define CCM_DUTY_CLAMP_CYCLES    20u     /* leave after this many PID cycles at the longest pulse */

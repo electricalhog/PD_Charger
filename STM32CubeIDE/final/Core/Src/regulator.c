@@ -493,16 +493,17 @@ volatile int32_t  regulator_p_out_mw        = 0;
 volatile int32_t  regulator_il_avg_ma       = 0;
 volatile int16_t  regulator_il_gain_permille = 1000;
 volatile int16_t  regulator_il_offset_ma    = 0;
-volatile int16_t  regulator_id_gain_permille = 1000;
+volatile int16_t  regulator_id_gain_permille = ID_GAIN_PERMILLE_DEFAULT;
 volatile int16_t  regulator_id_offset_ma    = 0;
 volatile int32_t  regulator_il_ma           = 0;
 volatile uint16_t regulator_ccm_ilim_ma     = CCM_ILIM_MA_DEFAULT;
 volatile float    regulator_ccm_ilim_kl     = CCM_ILIM_KL_DEFAULT;
-volatile uint8_t  regulator_ccm_ilim_src    = 0u;
+volatile uint8_t  regulator_ccm_ilim_src    = CCM_ILIM_SRC_DEFAULT;
 volatile uint16_t regulator_ccm_peak_ma     = CCM_PEAK_MA_DEFAULT;
 volatile uint8_t  regulator_ccm_limiting    = 0u;
 volatile float    regulator_ccm_v_lim_mv    = 0.0f;
 volatile int32_t  regulator_ccm_i_lim_meas_ma = 0;
+volatile int32_t  regulator_ccm_i_avg_ma    = 0;
 volatile uint32_t regulator_ccm_limit_entries = 0u;
 static RegulatorCcmExit ccm_exit_request = REGULATOR_CCM_EXIT_NONE;
 volatile uint32_t regulator_ccm_exit_log[8][2];
@@ -939,6 +940,7 @@ void regulator_start(void)
     ccm_u_last_valid = false;
     regulator_i_out_filt_ma = 0;
     regulator_i_in_filt_ma  = 0;
+    regulator_ccm_i_avg_ma  = 0;
     regulator_p_in_mw       = 0;
     regulator_p_out_mw      = 0;
     hrtim_set_switching_period(regulator_mode);
@@ -1847,14 +1849,15 @@ void regulator_pid_tim7_isr(void)
     const float i_max_ma = 1e3f * 0.5f * l_h * i_pk_lim_a * i_pk_lim_a * k_per_v / t_sw_s;
 
     /* --- 5a. Currents and power (POWER_FILTER_SHIFT): ID_MON, IS_MON and
-     * the products with V_out and V_in for the efficiency the bench reads;
-     * IL_MON per cycle (regulator_il_ma) for CCM's current limit and
-     * filtered (regulator_il_avg_ma) for its exit and SW_OCP.  Each is a
-     * mean over the switching period (adc_monitor.c).  IL_MON's INA281
-     * reads 0 for negative current, so in CCM, where a light load puts the
-     * valley below 0, the mean is corrected for the clipped part of the
-     * triangle (buck_ccm_unclip_a) with the ripple of the last on-time.
-     * In DCM the current never goes negative and the mean is the load. --- */
+     * the products with V_out and V_in for the efficiency the bench reads,
+     * and IL_MON.  Each is a mean over the switching period (adc_monitor.c).
+     * CCM's current (regulator_ccm_ilim_src, ID_MON by default): per cycle
+     * for the limit, filtered (regulator_ccm_i_avg_ma) for the light-load
+     * exit, SW_OCP and the DCM loop's restart.  IL_MON's INA281 reads 0 for
+     * negative current, so in CCM its mean is corrected for the clipped part
+     * of the triangle (buck_ccm_unclip_a) with the ripple of the last
+     * on-time; on the bench (2026-10-21) it still read 0.35-0.84x at
+     * 0.2-0.8 A, and ID_MON 1.05x + 24 mA, so ID_MON is the default. --- */
     {
         const int32_t i_out = (int32_t)adc_measurements.i_out_ma;
         const int32_t i_in  = (int32_t)adc_measurements.i_in_ma;
@@ -1875,6 +1878,11 @@ void regulator_pid_tim7_isr(void)
         regulator_il_ma          = il;
         regulator_il_avg_ma     += (il    - regulator_il_avg_ma)     / (1 << POWER_FILTER_SHIFT);
     }
+    const int32_t i_lim_meas_ma = (regulator_ccm_ilim_src == 1u)
+        ? ((int32_t)adc_measurements.i_out_ma * regulator_id_gain_permille) / 1000 + regulator_id_offset_ma
+        : regulator_il_ma;
+    regulator_ccm_i_lim_meas_ma = i_lim_meas_ma;
+    regulator_ccm_i_avg_ma += (i_lim_meas_ma - regulator_ccm_i_avg_ma) / (1 << POWER_FILTER_SHIFT);
 
     /* The skip band (step 7b). */
     uint32_t skip_above_mv = (effective_setpoint_mv * regulator_skip_above_permille) / 1000u;
@@ -1914,7 +1922,7 @@ void regulator_pid_tim7_isr(void)
         else if (ccm_over_count >= CCM_OVER_BAND_CYCLES)   { why = REGULATOR_CCM_EXIT_OVER_BAND; }
         else if (ccm_clamp_cycles >= CCM_DUTY_CLAMP_CYCLES) { why = REGULATOR_CCM_EXIT_DUTY; }
         else if (regulator_ccm_enable != CCM_ENABLE_FORCED && ccm_dwell >= CCM_MIN_DWELL &&
-                 (float)regulator_il_avg_ma * 100.0f < (float)CCM_EXIT_PCT * i_max_ma)
+                 (float)regulator_ccm_i_avg_ma * 100.0f < (float)CCM_EXIT_PCT * i_max_ma)
         {
             why = REGULATOR_CCM_EXIT_LIGHT_LOAD;
         }
@@ -1924,10 +1932,10 @@ void regulator_pid_tim7_isr(void)
             ccm_exit_now = true;
             ccm_exit_request = REGULATOR_CCM_EXIT_NONE;
             ccm_mode_settle  = CCM_MODE_SETTLE;
-            /* The DCM loop restarts at the measured load (IL_MON, period
-             * mean), at least 30 % of its ceiling: too low sags the
+            /* The DCM loop restarts at the measured load (CCM's current,
+             * filtered), at least 30 % of its ceiling: too low sags the
              * output, too high is clipped by pulse skipping. */
-            float i0 = (float)regulator_il_avg_ma;
+            float i0 = (float)regulator_ccm_i_avg_ma;
             if (i0 < 0.3f * i_max_ma) { i0 = 0.3f * i_max_ma; }
             if (i0 > i_max_ma)        { i0 = i_max_ma; }
             pid_state.integrator     = i0;
@@ -1975,9 +1983,9 @@ void regulator_pid_tim7_isr(void)
         }
     }
 
-    /* --- 5c. CCM over-current (SW_OCP) on the filtered IL_MON: the backstop
-     * behind the current limit (6c), CCM_OCP_MA_DEFAULT --- */
-    if (regulator_ccm_active && regulator_il_avg_ma > (int32_t)regulator_ccm_ocp_ma)
+    /* --- 5c. CCM over-current (SW_OCP) on CCM's filtered current: the
+     * backstop behind the current limit (6c), CCM_OCP_MA_DEFAULT --- */
+    if (regulator_ccm_active && regulator_ccm_i_avg_ma > (int32_t)regulator_ccm_ocp_ma)
     {
         if (++ccm_ocp_count >= CCM_OCP_CYCLES)
         {
@@ -1992,11 +2000,6 @@ void regulator_pid_tim7_isr(void)
     }
 
     float i_cmd_ma;
-    /* The current CCM's limit acts on (CCM_ILIM_MA_DEFAULT). */
-    const int32_t i_lim_meas_ma = (regulator_ccm_ilim_src == 1u)
-        ? ((int32_t)adc_measurements.i_out_ma * regulator_id_gain_permille) / 1000 + regulator_id_offset_ma
-        : regulator_il_ma;
-    regulator_ccm_i_lim_meas_ma = i_lim_meas_ma;
     if (regulator_ccm_active)
     {
         i_cmd_ma = (float)i_lim_meas_ma;   /* telemetry: the DCM loop is held */

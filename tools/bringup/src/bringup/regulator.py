@@ -50,7 +50,7 @@ FAULT_BITS = {
     0x08: ("SW_UVP", "software output under-voltage"),
     0x10: ("SW_VIN_RANGE", "V_in out of range for the selected mode"),
     0x20: ("SW_BACKSTOP", "too many consecutive cycle-by-cycle backstop events"),
-    0x40: ("SW_OCP", "buck CCM: filtered IL_MON (regulator_il_avg_ma) over regulator_ccm_ocp_ma for 1 ms"),
+    0x40: ("SW_OCP", "buck CCM: CCM's filtered current (regulator_ccm_i_avg_ma, ID_MON by default) over regulator_ccm_ocp_ma for 1 ms"),
 }
 CCM_EXITS = {0: "NONE", 1: "DISABLED", 2: "MODE", 3: "SWITCH", 4: "LIGHT_LOAD", 5: "OVER_BAND", 6: "VIN_RISE",
              7: "STOP", 8: "BAD_CONFIG", 9: "DUTY", 10: "RAMP_DOWN"}
@@ -125,7 +125,7 @@ def trace_read(cfg: dict) -> dict:
     path = out_file(cfg, "regulator_trace", "csv")
     with path.open("w") as f:
         # ccm (2026-10-20): in CCM samples i_cmd_ma holds the current the CCM limit acts on (since 2026-10-21,
-        # per cycle; IL_MON's period mean by default).  ilim: the limit set the duty.
+        # per cycle; ID_MON's period mean by default).  ilim: the limit set the duty.
         f.write("t_ms,v_out_mv,i_cmd_ma,i_max_ma,t_on_ns,mode,skipping,switch_on,rectifier,at_limit,pulse_open,trigger,"
                 "ccm,ilim\n")
         for k, (_, v, ic, im, ton, fl) in enumerate(rows):
@@ -209,7 +209,8 @@ _CONTROL = {"regulator_mode": "mode", "target_voltage_mv": "target_mv", "regulat
 # Signed 32-bit telemetry: filtered currents and powers (POWER_FILTER_SHIFT).
 _CONTROL_I = {"regulator_i_out_filt_ma": "i_out_filt_ma", "regulator_i_in_filt_ma": "i_in_filt_ma",
               "regulator_p_in_mw": "p_in_mw", "regulator_p_out_mw": "p_out_mw", "regulator_il_avg_ma": "il_avg_ma",
-              "regulator_il_ma": "il_ma", "regulator_ccm_i_lim_meas_ma": "ccm_i_lim_meas_ma"}
+              "regulator_il_ma": "il_ma", "regulator_ccm_i_lim_meas_ma": "ccm_i_ma",
+              "regulator_ccm_i_avg_ma": "ccm_i_avg_ma"}
 # Signed 16-bit: the runtime current calibrations.
 _CONTROL_I16 = {"regulator_il_gain_permille": "il_gain_permille", "regulator_il_offset_ma": "il_offset_ma",
                 "regulator_id_gain_permille": "id_gain_permille", "regulator_id_offset_ma": "id_offset_ma"}

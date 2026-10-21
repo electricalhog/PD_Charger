@@ -15,10 +15,18 @@ is quiet (SW2 static). The same modulator, at 5 A, is the 20 V / 100 W PDO.
   - Q3's bootstrap: the refresh is now 200 ns every 5 µs; 150 ns every 10 µs dropped Q3 out;
   - a pre-existing bug: the HRTIM hardware fault response was never enabled;
   - transitions: down-ramps run in DCM, CCM leaves before mode changes, entry is bumpless.
-- **Open:**
+- **Open after 2026-10-20:**
   - no current sensing usable in CCM (§4.5 of the log);
   - large capacitive dumps overshoot (SW_OVP);
   - so CCM-by-load (mode 1) and SW_OCP are not yet meaningful, and a LiPo on VBUS is not safe.
+- **2026-10-21 (section 8, `bench/results/2026-10-21/README.md`):**
+  - **Current sensing:** the currents are means over the switching period. ID_MON reads 1.05× in CCM and is now CCM's
+    current. IL_MON is not usable below ~1 A.
+  - **Current limit:** a limit in the duty law holds 0.5 A into 25.3 Ω at a 20 V contract (VBUS 12.65 V, no fault).
+    The PD stack detaches any fold beyond 5 %.
+  - **Large capacitive dumps (switch-pulse 20 ms):** still fault. A per-period L1 bound trades the SW_OVP for an SW_UVP.
+  - **LiPo:** still not safe on VBUS. The current limit and the measurement exist now; what remains is the PD-contract
+    decision and the reverse-blocking hardware (section 8.4).
 - **With `regulator_ccm_enable` = 0 (the default), the build behaves as the testing branch,**
   apart from these (verified at 5, 20 and 28 V):
   - the HRTIM counters are re-synchronized at a start and a mode change;
@@ -196,7 +204,8 @@ are in the loop, so kp = 0.
 ### 2.5 Protection added
 
 - **SW_OCP (0x40).** The filtered ID_MON stays over `regulator_ccm_ocp_ma` (3.3 A) for 1 ms in
-  CCM. The PDOs are 3 A.
+  CCM. The PDOs are 3 A. *Since 2026-10-21 (section 8):* CCM's period-mean current (ID_MON by default) over 5 A, as the
+  backstop behind the current limit.
 - **Unchanged:** the 9 A cycle-by-cycle comparator, the relative and absolute OVP, UVP, the
   ADM1270, and the HRTIM fault inputs.
 
@@ -337,3 +346,92 @@ hardware.
     a third 25 Ω or a bigger load;
   - boost CCM (roadmap Phase 2) needs the same leg structure mirrored: Q1 held, Q2 refresh
     inside Q4's on-time.
+
+## 8. Current sensing and the current limit (2026-10-21)
+
+Bench: `bench/results/2026-10-21/README.md`. Host test: `STM32CubeIDE/final/tests/buck_ccm/` (`make -C …`).
+
+### 8.1 Period-mean currents (`adc_monitor.c`)
+
+- **ADC2:** IL_MON (PA1, ADC12_IN2) and ID_MON (PC1, ADC12_IN7) moved here, auto-injected (JAUTO) after VS_MON on the
+  same software start.
+  - Each is 16 conversions of 25 ADC cycles (9.4 µs).
+  - The sequence ends 32.8 µs into the 50 µs PID cycle, and the next cycle reads it.
+- **ADC1:** IS_MON is alone on the injected group, 8× (4.7 µs).
+  - It now costs one VD_MON trigger per PID cycle: 9 samples instead of 10, and VOUT_MEDIAN_SAMPLES is 9.
+  - The HRTIM-triggered injected start of 2026-10-20 is gone.
+- **Why 25-cycle conversions:**
+  - No power-of-two ratio of the available conversion times makes a window that is a whole number of both the 200 and
+    400 kHz periods (that needs 425 ADC cycles).
+  - 25-cycle spacing spreads the samples over the period best of what fits. The ripple fundamental is attenuated to
+    0.063–0.067 of its amplitude: ≤ 0.1 A at 200 kHz, ≤ 0.05 A at 400 kHz, as a fixed bias.
+- **Bench, forced CCM at 400 kHz, 5–20 V into 25.3 Ω:**
+  - ID_MON = 1.050 × V/R + 24 mA. The offset includes the QT Py's idle draw.
+  - IS_MON gives P_out / P_in 0.75–0.93, including housekeeping.
+  - IL_MON reads 0.35–0.84 × the clipped-triangle mean, and 0.51× in DCM. It needs a probe before it is trusted, and
+    so do the COMP1 thresholds in amps.
+- **CCM's current** (limit, SW_OCP, light-load exit, DCM restart) is `regulator_ccm_ilim_src`. The default is 1:
+  ID_MON × `regulator_id_gain_permille` (952).
+  - IL_MON stays available. In CCM it is corrected for the INA281 clipping its negative valley
+    (`buck_ccm_unclip_a`).
+  - ID_MON sees the output, after the board ceramics, and reads to 5.5 A.
+
+### 8.2 The limit (`buck_ccm.c`)
+
+- **Law:** the duty is built on min(V_ref, v_lim).
+  - v_lim starts at the measured V_out once I > I_lim.
+  - It moves as v_lim += kl (I_lim − I) dt.
+  - It hands back when it reaches V_ref.
+  - The voltage integrator holds while v_lim is the lower (anti-windup).
+- **Gain:** kl = 400 V/(A s), runtime `regulator_ccm_ilim_kl`.
+  - At the PID rate the CCM buck is a voltage source, so the loop gain is kl / the load's incremental resistance.
+  - kl is set for a battery behind the output switch (about 45 mΩ: 0.45 per PID cycle). 800 V/(A s) rang there in the
+    host test.
+  - Into 25.3 Ω the fold is slow by design: model 63 ms time constant, bench about 50 ms.
+- **Rejected:** a current PI referenced to the measured V_out. The delay of the V_out mean made it the same voltage
+  source, and its second integrator rang with 25 Ω (ζ 0.07, host test).
+- **Duty resolution:** the CCM on-time is in HRTIM ticks (184 ps). 1 ns steps are 9.6 mV at 24 V, which is a 0.2 A
+  dither into a battery.
+- **Defaults:**
+  - `regulator_ccm_ilim_ma` 3000, the PDO current.
+  - SW_OCP 5000 mA on the filtered CCM current: the backstop behind the limit. A 2 → 4 A step into a 3 A limit takes
+    25 ms to settle.
+- **Host test:** an averaged plant with the ISR's sampling. It reproduces the 2026-10-20 switch-pulse: 14.8 / 23.2 V
+  against −5.2 / +2.9 V on the bench. It checks:
+  - the 25.3 Ω fold and its release;
+  - batteries of 10–200 mΩ, both under a contract change and hot-plugged;
+  - a step through the limit;
+  - no action under the limit;
+  - the integrator freeze;
+  - the clipping inversion.
+
+### 8.3 Per-period L1 bound (`regulator_ccm_peak_ma`, off by default)
+
+- **What it does:** COMP1's threshold in CCM, so Q1 ends early when L1 reaches it. Q2 still waits for its programmed
+  edge; until then Q2's reverse conduction carries L1.
+- **Model:** it is the only mechanism fast enough for the L1–C ring of a capacitive dump. At 2–3 A average the dump's
+  peak drops from 23.2 V to 20.8–21.5 V.
+- **Bench, 3500 mA, switch-pulse 20 ms at 20 V:** SW_UVP. V_out fell 20 → 10 V in 150 µs while recharging the drained
+  VBUS side.
+  - That capacitance is far above the model's 8 µF.
+  - L1 seemed to deliver only about 1 A, so the comparator may act below its nominal level.
+- Left off. The fix needs the VBUS-side capacitance measured (register F6), and then one of:
+  - a UVP that waits while L1 is bounded;
+  - a higher bound;
+  - more output capacitance.
+
+### 8.4 Before a LiPo on VBUS
+
+1. **The contract against the limit.** The PD stack detaches when VBUS leaves ±5 % (`USBPD_DPM_IsPowerReady`), and
+   `pd_vbus.c` adds a Hard Reset at 8 % for 200 ms. CC charging needs one of:
+   - a contract at or just above the pack voltage;
+   - a PPS/AVS-style mode;
+   - a bench-only exemption while `regulator_ccm_limiting` is set.
+   Dan's decision.
+2. **Hardware** (log 2026-10-20 section 6):
+   - reverse blocking, because OUTPUT_DIS bleeds VBUS in IDLE/FAULT and the 5 V start back-feeds;
+   - a connect step that waits for V_out ≈ V_pack.
+3. **Exits to DCM drop the limit.** DCM's command is capped only by its ceiling. Capping it at the limit as well is
+   untested.
+4. **ID_MON range:** 5.5 A full scale.
+
