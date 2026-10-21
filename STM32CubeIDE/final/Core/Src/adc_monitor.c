@@ -2,9 +2,11 @@
  * @file    adc_monitor.c
  * @brief   ADC measurement subsystem implementation (NLSpec §14).
  *
- * ADC1: 4-channel circular DMA scan (VD_MON, IL_MON, ID_MON, IS_MON).
- * ADC2: One software-triggered conversion (VS_MON / V_in), 16x
- *       oversampled, started by the TIM7 PID ISR and read the next cycle.
+ * ADC1: VD_MON, 8x oversampled once per switching period into a circular
+ *       DMA ring; IS_MON as its injected group, 8x, once per PID cycle.
+ * ADC2: one software-triggered sequence per PID cycle: VS_MON (V_in), then
+ *       IL_MON and ID_MON auto-injected, each 16x oversampled, read the
+ *       next cycle (adc_monitor_init).
  *
  * Scaling formulas (§14.2, Appendix D), voltages with the per-channel
  * bench-calibrated full scales in regulator_config.h:
@@ -90,54 +92,48 @@ void adc_monitor_init(void)
          * with un-calibrated ADC during bring-up.                           */
     }
 
-    /* Injected group: the current monitors (see adc_monitor.h), software
-     * start, 8x oversampled like the regular group (the ratio is shared). */
+    /* Currents, averaged over the switching period (2026-10-21).  Until
+     * then ADC1's injected group converted IL_MON, ID_MON and IS_MON once
+     * per PID cycle at one point of the switching period: in buck CCM
+     * that read ID_MON 31 mA at 0.8 A and IS_MON implied efficiencies of
+     * 1.2 to 5 (bench 2026-10-20 section 4.5).  Each is now a hardware mean
+     * of conversions spaced 25 ADC cycles (0.588 us) apart, which spreads
+     * them over the period: at 400 and 200 kHz the 200/400 kHz fundamental
+     * of a triangle ripple is attenuated to 0.067 (8 samples) or 0.0625 (16)
+     * of its amplitude, the 3rd harmonic further (12.5-cycle samples beat
+     * 6.5 / 24.5 / 47.5 for every ratio that fits; a window that is a whole
+     * number of both periods needs 425 ADC cycles, which no power-of-two
+     * ratio of the available conversion times makes).
+     *
+     * ADC1 injected: IS_MON alone, 8x (the ratio and shift are shared with
+     * the regular VD_MON group: JDR1 is the sum of 8), 4.7 us, started by
+     * software from the PID ISR (adc_monitor_update).  With JOVSE and ROVSE
+     * both set, a VD_MON conversion it interrupts restarts (RM0440 21.4.29):
+     * one VD_MON trigger per PID cycle can be lost (regulator_adc_per_pid).
+     * The HRTIM-triggered start (ADC trigger 2, JEXTSEL 19) of 2026-10-20
+     * is gone: every channel read 0-64 counts in CCM, cause never found.
+     *
+     * The HAL sets the channel's sampling time but writes JSQR for rank 1
+     * only while ScanConvMode is ADC_SCAN_DISABLE (stm32g4xx_hal_adc_ex.c),
+     * and clears JOVSE with oversampling off, so both are written after it,
+     * with JADSTART = 0. */
     {
-        static const uint32_t ch[3] = { ADC_CHANNEL_2, ADC_CHANNEL_7, ADC_CHANNEL_15 };
-        static const uint32_t rk[3] = { ADC_INJECTED_RANK_1, ADC_INJECTED_RANK_2, ADC_INJECTED_RANK_3 };
         ADC_InjectionConfTypeDef j = {0};
+        j.InjectedChannel               = ADC_CHANNEL_15;
+        j.InjectedRank                  = ADC_INJECTED_RANK_1;
         j.InjectedSamplingTime          = ADC_SAMPLETIME_12CYCLES_5;
         j.InjectedSingleDiff            = ADC_SINGLE_ENDED;
         j.InjectedOffsetNumber          = ADC_OFFSET_NONE;
-        j.InjectedNbrOfConversion       = 3u;
+        j.InjectedNbrOfConversion       = 1u;
         j.InjectedDiscontinuousConvMode = DISABLE;
         j.AutoInjectedConv              = DISABLE;
         j.QueueInjectedContext          = DISABLE;
         j.ExternalTrigInjecConv         = ADC_INJECTED_SOFTWARE_START;
         j.ExternalTrigInjecConvEdge     = ADC_EXTERNALTRIGINJECCONV_EDGE_NONE;
-        j.InjecOversamplingMode         = DISABLE;   /* 8x took 14 us and cost 2 regular triggers per PID period */
-        j.InjecOversampling.Ratio         = ADC_OVERSAMPLING_RATIO_8;
-        j.InjecOversampling.RightBitShift = ADC_RIGHTBITSHIFT_NONE;   /* shared with regular */
-        for (uint32_t k = 0u; k < 3u; k++)
-        {
-            j.InjectedChannel = ch[k];
-            j.InjectedRank    = rk[k];
-            (void)HAL_ADCEx_InjectedConfigChannel(&hadc1, &j);
-        }
-        /* The HAL sets the channels' sampling times above but writes JSQR
-         * for rank 1 only while ScanConvMode is ADC_SCAN_DISABLE (the regular
-         * group is VD_MON alone; stm32g4xx_hal_adc_ex.c), so JSQR held IL_MON
-         * alone and JDR2/JDR3 (ID_MON, IS_MON) read 0 until 2026-10-16.  The
-         * three ranks, software start (JEXTEN 0), written while JADSTART = 0. */
-        /* ADC_INJ_HRTIM_TRIGGER 1 starts the sequence on HRTIM ADC
-         * trigger 2 (JEXTSEL 19, rising edge), which the regulator places
-         * mid-interval once per PID cycle.  Off since 2026-10-20: so
-         * triggered, every channel read 0-64 counts in buck CCM at 0.8 A
-         * (IS_MON included, which reads 200-300 at the same instant in
-         * DCM), and IL_MON read 0-150 counts mid-pulse in DCM where the
-         * inductor carries about 1.5 A.  Cause open; software start, as
-         * before, until IL_MON has been on a scope.                       */
-#ifndef ADC_INJ_HRTIM_TRIGGER
-#define ADC_INJ_HRTIM_TRIGGER 0
-#endif
-        ADC1->JSQR = ((3u - 1u) << ADC_JSQR_JL_Pos)
-#if ADC_INJ_HRTIM_TRIGGER
-                   | (19u << ADC_JSQR_JEXTSEL_Pos)
-                   | (1u  << ADC_JSQR_JEXTEN_Pos)
-#endif
-                   | (2u  << ADC_JSQR_JSQ1_Pos)
-                   | (7u  << ADC_JSQR_JSQ2_Pos)
-                   | (15u << ADC_JSQR_JSQ3_Pos);
+        j.InjecOversamplingMode         = DISABLE;
+        (void)HAL_ADCEx_InjectedConfigChannel(&hadc1, &j);
+        ADC1->JSQR  = (0u << ADC_JSQR_JL_Pos) | (15u << ADC_JSQR_JSQ1_Pos);
+        ADC1->CFGR2 |= ADC_CFGR2_JOVSE;
     }
 
     /* ADC2 (VS_MON, V_in): 16 conversions of 24.5 + 12.5 ADC cycles
@@ -147,12 +143,21 @@ void adc_monitor_init(void)
      * was one 2.5-cycle (59 ns) sample (MX_ADC2_Init) wherever in the period
      * the PID ISR started: VS_MON is a 100k/5.82k divider with no capacitor,
      * wired beside PHASE_2_P/N to the MCU, and at 28 V boost with 3 W 0.2 %
-     * of cycles read 1 to 5 V off (19.1 to 27.6 V around 24.4 V).  Written
-     * here, with ADC2 not yet enabled.                                     */
+     * of cycles read 1 to 5 V off (19.1 to 27.6 V around 24.4 V).
+     * Then, auto-injected (JAUTO) after it on the same start: IL_MON (PA1,
+     * ADC12_IN2) and ID_MON (PC1, ADC12_IN7), 16 x 25 cycles each (9.4 us,
+     * 12-bit means in JDR1 and JDR2), done 32.8 us after the start, read by
+     * the next PID cycle.  Oversampled auto-injected sequences need ROVSE
+     * and JOVSE together (RM0440 21.4.29).  Written here, with ADC2 not yet
+     * enabled.                                                             */
     LL_ADC_SetChannelSamplingTime(ADC2, LL_ADC_CHANNEL_17, LL_ADC_SAMPLINGTIME_24CYCLES_5);
+    LL_ADC_SetChannelSamplingTime(ADC2, LL_ADC_CHANNEL_2,  LL_ADC_SAMPLINGTIME_12CYCLES_5);
+    LL_ADC_SetChannelSamplingTime(ADC2, LL_ADC_CHANNEL_7,  LL_ADC_SAMPLINGTIME_12CYCLES_5);
     LL_ADC_ConfigOverSamplingRatioShift(ADC2, LL_ADC_OVS_RATIO_16, LL_ADC_OVS_SHIFT_RIGHT_4);
     LL_ADC_SetOverSamplingDiscont(ADC2, LL_ADC_OVS_REG_CONT);
-    LL_ADC_SetOverSamplingScope(ADC2, LL_ADC_OVS_GRP_REGULAR_CONTINUED);
+    LL_ADC_SetOverSamplingScope(ADC2, LL_ADC_OVS_GRP_INJ_REG_RESUMED);
+    ADC2->JSQR = (1u << ADC_JSQR_JL_Pos) | (2u << ADC_JSQR_JSQ1_Pos) | (7u << ADC_JSQR_JSQ2_Pos);
+    ADC2->CFGR |= ADC_CFGR_JAUTO;
 
     /* Run factory offset calibration on ADC2 */
     if (HAL_ADCEx_Calibration_Start(&hadc2, ADC_SINGLE_ENDED) != HAL_OK)
@@ -210,24 +215,18 @@ uint16_t adc_monitor_update(uint32_t n)
     }
     adc_measurements.v_out_mv = scale_voltage_mv(newest, VD_MON_FULL_SCALE_MV);
 
-    /* Currents: the injected sequence started one PID period ago (3
-     * conversions, about 1.8 us), then start the next.                   */
+    /* IS_MON: the injected sequence started one PID period ago (8 x 25
+     * cycles, 4.7 us; JDR1 is the sum), then start the next.  IL_MON and
+     * ID_MON come from ADC2 (adc_monitor_trigger_vin).                    */
     if (ADC1->ISR & ADC_ISR_JEOS)
     {
-        adc_measurements.i_inductor_ma = scale_current_il_ma((uint16_t)ADC1->JDR1);
-        adc_measurements.i_out_ma      = scale_current_id_ma((uint16_t)ADC1->JDR2);
-        adc_measurements.i_in_ma       = scale_current_il_ma((uint16_t)ADC1->JDR3);
+        adc_measurements.i_in_ma = scale_current_il_ma((uint16_t)(ADC1->JDR1 >> ADC1_OVS_SUM_SHIFT));
         ADC1->ISR = ADC_ISR_JEOS | ADC_ISR_JEOC;
     }
-#ifndef ADC_INJECTED_CURRENTS
-#define ADC_INJECTED_CURRENTS 1
-#endif
-#if ADC_INJECTED_CURRENTS
     if ((ADC1->CR & ADC_CR_JADSTART) == 0u)
     {
         ADC1->CR |= ADC_CR_JADSTART;
     }
-#endif
     return (uint16_t)((vsum - vmin - vmax) / ((n - 2u) << ADC1_OVS_SUM_SHIFT));
 }
 
@@ -272,20 +271,58 @@ void adc_monitor_start_adc1_dma(void)
     __HAL_ADC_DISABLE_IT(&hadc1, ADC_IT_OVR);
 }
 
+/** ADC2 started and its injected currents not yet read; start attempts
+ *  skipped while it was (adc_monitor_trigger_vin). */
+static bool    adc2_busy  = false;
+static uint8_t adc2_waits = 0u;
+volatile uint32_t adc_monitor_adc2_aborts = 0u;
+
+bool adc_monitor_poll_currents(void)
+{
+    if ((ADC2->ISR & ADC_ISR_JEOS) == 0u)
+    {
+        return false;
+    }
+    const uint16_t il = (uint16_t)ADC2->JDR1;   /* 12-bit means (shift 4) */
+    const uint16_t id = (uint16_t)ADC2->JDR2;
+    ADC2->ISR = ADC_ISR_JEOS | ADC_ISR_JEOC;
+    adc_measurements.i_inductor_ma = scale_current_il_ma(il);
+    adc_measurements.i_out_ma      = scale_current_id_ma(id);
+    adc2_busy = false;
+    return true;
+}
+
 void adc_monitor_trigger_vin(void)
 {
-    /* Start one software-triggered ADC2 conversion (16 oversampled, 13.9 us,
-     * see adc_monitor_init).  Non-blocking: read the result with
-     * adc_monitor_poll_vin_result() or adc_monitor_read_vin_result().
+    /* Start one software-triggered ADC2 sequence: VS_MON (16 oversampled,
+     * 13.9 us), then IL_MON and ID_MON auto-injected (2 x 9.4 us), see
+     * adc_monitor_init.  Non-blocking: read V_in with
+     * adc_monitor_poll_vin_result() or adc_monitor_read_vin_result(); the
+     * currents are taken here, before the next start.
      * Register-level once ADC2 is enabled: HAL_ADC_Start at -O0 cost
      * several microseconds of the PID ISR (2026-09-28 evening).           */
     if ((ADC2->CR & ADC_CR_ADEN) == 0u)
     {
         HAL_ADC_Start(&hadc2);   /* first call enables the ADC */
+        adc2_busy = true;
         return;
     }
-    ADC2->ISR = ADC_ISR_EOC | ADC_ISR_EOS | ADC_ISR_OVR;   /* write-1-to-clear */
+    (void)adc_monitor_poll_currents();
+    if (adc2_busy)
+    {
+        /* The injected part is still converting (ADSTART clears at the end
+         * of the regular part): setting ADSTART now is not defined for
+         * JAUTO.  Skip; after ADC2_MAX_WAITS skips abort it (ADSTP stops
+         * both groups in JAUTO) and start over. */
+        if (adc2_waits < ADC2_MAX_WAITS) { adc2_waits++; return; }
+        ADC2->CR |= ADC_CR_ADSTP;
+        for (uint32_t spin = 0u; spin < 2000u && (ADC2->CR & ADC_CR_ADSTP) != 0u; spin++) { }
+        adc_monitor_adc2_aborts++;
+    }
+    adc2_waits = 0u;
+    ADC2->ISR = ADC_ISR_EOC | ADC_ISR_EOS | ADC_ISR_OVR | ADC_ISR_JEOC | ADC_ISR_JEOS;   /* write-1-to-clear */
     ADC2->CR |= ADC_CR_ADSTART;
+    adc2_busy = true;
 }
 
 bool adc_monitor_poll_vin_result(void)
@@ -318,12 +355,13 @@ void adc_monitor_scale_adc1_buffer(void)
 {
     /* V_out: the newest regular result (telemetry; the regulator uses the
      * trimmed mean from adc_monitor_update).  Currents: the last injected
-     * results, which the PID ISR refreshes (adc_monitor_update).          */
+     * results, which the PID ISR refreshes (adc_monitor_update, ADC1
+     * IS_MON; adc_monitor_trigger_vin, ADC2 IL_MON and ID_MON).          */
     uint32_t scan = adc_monitor_latest_scan();
     adc_measurements.v_out_mv = scale_voltage_mv(adc_monitor_vd_at(scan), VD_MON_FULL_SCALE_MV);
-    adc_measurements.i_inductor_ma = scale_current_il_ma((uint16_t)ADC1->JDR1);
-    adc_measurements.i_out_ma      = scale_current_id_ma((uint16_t)ADC1->JDR2);
-    adc_measurements.i_in_ma       = scale_current_il_ma((uint16_t)ADC1->JDR3);
+    adc_measurements.i_inductor_ma = scale_current_il_ma((uint16_t)ADC2->JDR1);
+    adc_measurements.i_out_ma      = scale_current_id_ma((uint16_t)ADC2->JDR2);
+    adc_measurements.i_in_ma       = scale_current_il_ma((uint16_t)(ADC1->JDR1 >> ADC1_OVS_SUM_SHIFT));
 }
 
 /* =========================================================================

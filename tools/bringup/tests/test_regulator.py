@@ -142,7 +142,8 @@ def test_trace_read_orders_the_ring_and_aligns_the_trigger(monkeypatch, tmp_path
     for idx in range(n):
         age = (idx - 100) % n                       # 0 = oldest
         switch_on = 0x08 if not (900 <= age < 1000) else 0
-        flags = 2 | switch_on | (0x80 if idx == 1000 else 0) | (0x100 if age >= 2000 else 0)
+        flags = (2 | switch_on | (0x80 if idx == 1000 else 0) | (0x100 if age >= 2000 else 0)
+                 | (0x200 if age >= 2040 else 0))
         regulator.TRACE_SAMPLE.pack_into(buf, idx * regulator.TRACE_SAMPLE.size, 28000 + age % 7, 1400, 1680, 1790, flags)
     ctl = regulator.TRACE_CTL.pack(3, 1, 1147, 0, 100, 1000, n + 500, 0, 5000, 850_034)
     monkeypatch.setattr(probe, "symbols", lambda cfg: {"regulator_trace_ctl": (0x1000, 40),
@@ -161,6 +162,19 @@ def test_trace_read_orders_the_ring_and_aligns_the_trigger(monkeypatch, tmp_path
     assert lines[901].split(",")[cols.index("trigger")] == "1"     # the trigger row
     assert lines[2001].split(",")[cols.index("ccm")] == "1" and lines[1].split(",")[cols.index("ccm")] == "0"
     assert out["ccm_samples"] == n - 2000
+    assert lines[2041].split(",")[cols.index("ilim")] == "1" and lines[2001].split(",")[cols.index("ilim")] == "0"
+    assert out["ilim_samples"] == n - 2040
+
+
+def test_decode_ccm_limit_telemetry():
+    raw = _raw(state=2, src=0)
+    raw.update({"regulator_ccm_ilim_ma": struct.pack("<H", 500), "regulator_ccm_limiting": bytes([1]),
+                "regulator_il_ma": struct.pack("<i", -120), "regulator_ccm_v_lim_mv": struct.pack("<f", 12650.5),
+                "regulator_il_gain_permille": struct.pack("<h", 1032), "regulator_il_offset_ma": struct.pack("<h", -15)})
+    ctl = regulator.decode(raw)["control"]
+    assert ctl["ccm_ilim_ma"] == 500 and ctl["ccm_limiting"] == 1 and ctl["il_ma"] == -120
+    assert ctl["ccm_v_lim_mv"] == 12650.5
+    assert ctl["il_gain_permille"] == 1032 and ctl["il_offset_ma"] == -15
 
 
 def test_ccm_pwm_arg_packing():

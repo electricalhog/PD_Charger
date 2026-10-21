@@ -857,8 +857,9 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
  *                        (> dead time: Q3 turns off one dead time early)
  * CCM_ENTER_PCT          enter when the DCM command reaches this share of
  *                        the DCM ceiling (step 5)
- * CCM_EXIT_PCT           leave when the filtered ID_MON load falls under
- *                        this share of the DCM ceiling, after CCM_MIN_DWELL
+ * CCM_EXIT_PCT           leave when regulator_il_avg_ma (IL_MON, period
+ *                        mean) falls under this share of the DCM
+ *                        ceiling, after CCM_MIN_DWELL
  * CCM_REENTRY_HOLD       PID cycles after an exit before CCM may return;
  *                        short, because the DCM ceiling at 400 kHz is below
  *                        the load that put the buck into CCM
@@ -882,11 +883,41 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
  * CCM_R_EST_MOHM         series resistance for the integrator's starting
  *                        value (L1, R5, Q3, the active FET; bumpless entry)
  * CCM_OCP_MA_DEFAULT     regulator_ccm_ocp_ma: regulator_il_avg_ma above it
- *                        for CCM_OCP_CYCLES latches SW_OCP (the 50 W step
- *                        is 2.5 A at 20 V; PDOs are 3 A).  ID_MON is not
- *                        used: on the bench it read 31 mA at 0.8 A in CCM
- *                        and 2.2x high in DCM (one conversion at a fixed
- *                        phase, 2026-10-16 and 2026-10-20)
+ *                        for CCM_OCP_CYCLES latches SW_OCP.  The backstop
+ *                        behind the current limit, so above it by the
+ *                        limit's transient: a 2 -> 4 A step into a 3 A
+ *                        limit at 20 V settles in 25 ms (host test), and
+ *                        5 A is the 100 W rating (peak 5.9 A at 400 kHz,
+ *                        under the 9 A comparator).  Until 2026-10-21 it
+ *                        was 3.3 A on a single IL_MON conversion per PID
+ *                        cycle, which read nothing usable in CCM
+ * CCM_ILIM_MA_DEFAULT    regulator_ccm_ilim_ma, the current limit in CCM
+ *                        (0: off), on regulator_ccm_ilim_src's current:
+ *                        0 IL_MON (default; per-cycle period mean, gain,
+ *                        offset and the clipping correction applied), 1
+ *                        ID_MON.  buck_ccm.h: the duty is built on
+ *                        min(V_ref, v_lim), v_lim += kl (I_lim - I) dt,
+ *                        the voltage integrator held while it limits
+ * CCM_ILIM_KL_DEFAULT    regulator_ccm_ilim_kl [V/(A s)]: the loop gain is
+ *                        kl / the load's incremental resistance, so it is
+ *                        set for a battery behind the output switch (45
+ *                        mOhm with 10 mOhm in the pack: 0.45 per PID cycle;
+ *                        800 rang there in the host test, 400 is 2x under).
+ *                        Into 25.3 ohm the fold then has a 63 ms time
+ *                        constant (0.79 -> 0.5 A settles in about 90 ms)
+ * CCM_PEAK_MA_DEFAULT    regulator_ccm_peak_ma: the peak comparator's
+ *                        threshold (COMP1 -> EEV4 ends Q1) while in CCM;
+ *                        0 keeps the 9 A backstop.  A per-period bound is
+ *                        the only thing that reaches the L1-C ring of a
+ *                        capacitive dump (the PID-rate limit cannot): the
+ *                        host test's switch-pulse 20 ms at 20 V peaks at
+ *                        23.2 V (bench 22.9 V, SW_OVP at 22 V) unbounded,
+ *                        21.5 V with L1 held to 3 A average, 20.8 V at
+ *                        2 A.  The threshold is a peak: average + ripple/2.
+ *                        Off by default: the comparator has not yet been
+ *                        seen ending a CCM pulse on this board, and when it
+ *                        does, Q2 still waits for its programmed edge (Q2's
+ *                        reverse conduction carries L1 until then)
  * CCM_MODE_SETTLE        a mode change while in CCM first leaves CCM, then
  *                        waits this many PID cycles in DCM: cutting all
  *                        four gates with amps in L1 latched HW_FLT1 at the
@@ -936,11 +967,13 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
 #define CCM_VIN_RISE_MV          2000u
 #define CCM_R_EST_MOHM           40u
 #define CCM_VSD_MV               2000u
-#define CCM_OCP_MA_DEFAULT       3300u   /* on regulator_il_avg_ma (mid-interval IL_MON) */
+#define CCM_OCP_MA_DEFAULT       5000u   /* on regulator_il_avg_ma (IL_MON, period mean) */
+#define CCM_ILIM_MA_DEFAULT      3000u   /* the PDO current; 0 = off */
+#define CCM_ILIM_KL_DEFAULT      400.0f  /* [V/(A s)] */
+#define CCM_PEAK_MA_DEFAULT      0u      /* 0 = the PEAK_PROTECT backstop */
 #define CCM_MODE_SETTLE          4u      /* PID cycles in DCM before a mode change after CCM */
 #define CCM_DUTY_ENTER_PCT       100u    /* CCM only while V_ref <= this % of V_in x D_max */
 #define CCM_DUTY_CLAMP_CYCLES    20u     /* leave after this many PID cycles at the longest pulse */
-#define CCM_ADC_LEAD_NS          150u    /* IL_MON trigger this far ahead of the mid-point */
 #define CCM_OCP_CYCLES           20u     /* 1 ms */
 _Static_assert(CCM_REFRESH_NS_MAX + 3u * CCM_DEADTIME_NS_MAX + CCM_PULSE_GUARD_NS + CCM_MIN_ON_NS +
                CCM_MIN_Q2_END_NS < 1000000000u / 400000u,
@@ -950,10 +983,10 @@ _Static_assert(CCM_EXIT_PCT < CCM_ENTER_PCT, "CCM entry/exit need hysteresis");
 
 /**
  * POWER_FILTER_SHIFT — Low-pass on the power and current telemetry
- * (regulator_p_in_mw, regulator_p_out_mw, regulator_i_out_filt_ma):
- * filtered += (sample - filtered) >> shift per PID cycle; 5 is 1.6 ms.
- * The currents are one injected conversion per PID cycle (adc_monitor.c),
- * so these are averages over many cycles, not over the switching period.
+ * (regulator_p_in_mw, regulator_p_out_mw, regulator_i_out_filt_ma,
+ * regulator_il_avg_ma): filtered += (sample - filtered) >> shift per PID
+ * cycle; 5 is 1.6 ms.  Each sample is already a mean over the switching
+ * period (adc_monitor.c, since 2026-10-21).
  */
 #define POWER_FILTER_SHIFT 5u
 

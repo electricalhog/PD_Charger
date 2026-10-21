@@ -51,9 +51,10 @@ extern "C" {
  *  above 20 mV past 220 kHz) and that a 1 nF on the divider did not change,
  *  so it enters after the divider; it beat at 40 kHz against the 200 kHz
  *  sampling.
- *  ADC1 injected group: IL_MON, ID_MON, IS_MON, not oversampled, started by
- *  software from the PID ISR (adc_monitor_update), configured in
- *  adc_monitor_init (not in final.ioc).                                  */
+ *  ADC1 injected group: IS_MON, 8x oversampled (25-cycle conversions, the
+ *  sum in JDR1), started by software from the PID ISR (adc_monitor_update).
+ *  ADC2: VS_MON, then IL_MON and ID_MON auto-injected, 16x each; all
+ *  configured in adc_monitor_init (not in final.ioc).                    */
 #define ADC1_SCAN_LENGTH                1u
 #define ADC1_DMA_SCANS                  64u
 #define ADC1_DMA_BUFFER_LENGTH          (ADC1_SCAN_LENGTH * ADC1_DMA_SCANS)
@@ -63,7 +64,7 @@ extern "C" {
 /** DMA ring index of VD_MON within a scan (the only regular channel) */
 #define ADC1_DMA_INDEX_VD_MON           0u  /**< Regular rank 1: V_out */
 
-/** Results (DMA ring, JDR1..3) are the sum of 8 conversions, no shift: with
+/** Results (DMA ring, ADC1 JDR1) are the sum of 8 conversions, no shift: with
  *  oversampling the analog watchdog compares data bits [15:4] (the LL driver
  *  note on LL_ADC_ConfigAnalogWDThresholds), so a 12-bit shifted result made
  *  it see V_out / 16 and it never fired (bench, 2026-09-28).  Unshifted, it
@@ -88,9 +89,9 @@ typedef struct
 {
     uint32_t v_out_mv;       /**< V_out measured via VD_MON divider [mV] */
     uint32_t v_in_mv;        /**< V_in measured via VS_MON divider [mV]  */
-    uint32_t i_inductor_ma;  /**< Inductor peak current via IL_MON [mA]  */
-    uint32_t i_out_ma;       /**< Output current via ID_MON [mA]         */
-    uint32_t i_in_ma;        /**< Input current via IS_MON [mA]          */
+    uint32_t i_inductor_ma;  /**< Inductor current via IL_MON, mean over 9.4 us [mA] */
+    uint32_t i_out_ma;       /**< Output current via ID_MON, mean over 9.4 us [mA]   */
+    uint32_t i_in_ma;        /**< Input current via IS_MON, mean over 4.7 us [mA]    */
 } AdcMeasurements;
 
 /* =========================================================================
@@ -184,9 +185,20 @@ void adc_monitor_start_adc1_dma(void);
  * Non-blocking.  The conversion is 16 samples averaged in hardware, 13.9 us
  * spread over 2.8 switching periods (adc_monitor_init), so the TIM7 PID ISR
  * reads the result the next cycle (adc_monitor_poll_vin_result) and then
- * starts the next one.
+ * starts the next one.  IL_MON and ID_MON follow it (JAUTO, 18.8 us); a
+ * start while they still convert is skipped (ADC2_MAX_WAITS).
  */
 void adc_monitor_trigger_vin(void);
+
+/** PID cycles adc_monitor_trigger_vin waits for ADC2's injected currents
+ *  before it aborts the sequence (adc_monitor_adc2_aborts counts those). */
+#define ADC2_MAX_WAITS 2u
+extern volatile uint32_t adc_monitor_adc2_aborts;
+
+/** Take ADC2's injected IL_MON and ID_MON means into adc_measurements if the
+ *  sequence has finished; true when it had.  adc_monitor_trigger_vin calls
+ *  it before each start. */
+bool adc_monitor_poll_currents(void);
 
 /**
  * adc_monitor_poll_vin_result — Take the ADC2 result if it is ready.

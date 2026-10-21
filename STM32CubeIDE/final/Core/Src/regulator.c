@@ -493,6 +493,17 @@ volatile int32_t  regulator_p_out_mw        = 0;
 volatile int32_t  regulator_il_avg_ma       = 0;
 volatile int16_t  regulator_il_gain_permille = 1000;
 volatile int16_t  regulator_il_offset_ma    = 0;
+volatile int16_t  regulator_id_gain_permille = 1000;
+volatile int16_t  regulator_id_offset_ma    = 0;
+volatile int32_t  regulator_il_ma           = 0;
+volatile uint16_t regulator_ccm_ilim_ma     = CCM_ILIM_MA_DEFAULT;
+volatile float    regulator_ccm_ilim_kl     = CCM_ILIM_KL_DEFAULT;
+volatile uint8_t  regulator_ccm_ilim_src    = 0u;
+volatile uint16_t regulator_ccm_peak_ma     = CCM_PEAK_MA_DEFAULT;
+volatile uint8_t  regulator_ccm_limiting    = 0u;
+volatile float    regulator_ccm_v_lim_mv    = 0.0f;
+volatile int32_t  regulator_ccm_i_lim_meas_ma = 0;
+volatile uint32_t regulator_ccm_limit_entries = 0u;
 static RegulatorCcmExit ccm_exit_request = REGULATOR_CCM_EXIT_NONE;
 volatile uint32_t regulator_ccm_exit_log[8][2];
 volatile uint32_t regulator_ccm_exit_log_index = 0u;
@@ -556,7 +567,8 @@ static void hrtim_set_switching_period(RegulatorMode mode)
     {
         HRTIM1->sTimerxRegs[idx[k]].PERxR = per;
     }
-    /* One IL_MON trigger per PID cycle at this period (ADC trigger 2). */
+    /* ADC trigger 2 once per PID cycle at this period.  Nothing listens
+     * since 2026-10-21 (adc_monitor.c: the currents are period means). */
     HRTIM1->sCommonRegs.ADCPS1 = (HRTIM1->sCommonRegs.ADCPS1 & ~HRTIM_ADCPS1_AD2PSC) |
         (((1000000000u / PID_EXECUTION_RATE_HZ) / sw_period_ns - 1u) << HRTIM_ADCPS1_AD2PSC_Pos);
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP4xR = per / 2u;
@@ -922,6 +934,8 @@ void regulator_start(void)
     ccm_ocp_count = 0u;
     ccm_state.u_v = 0.0f;
     ccm_state.clamp = 0;
+    ccm_state.limiting = 0u;
+    regulator_ccm_limiting = 0u;
     ccm_u_last_valid = false;
     regulator_i_out_filt_ma = 0;
     regulator_i_in_filt_ma  = 0;
@@ -1832,9 +1846,15 @@ void regulator_pid_tim7_isr(void)
     if (i_pk_lim_a > peak_max_a) { i_pk_lim_a = peak_max_a; }
     const float i_max_ma = 1e3f * 0.5f * l_h * i_pk_lim_a * i_pk_lim_a * k_per_v / t_sw_s;
 
-    /* --- 5a. Current and power telemetry (POWER_FILTER_SHIFT): ID_MON, IS_MON
-     * and the products with V_out and V_in, for CCM's exit and OCP and for
-     * the efficiency the bench reads (regulator.h). --- */
+    /* --- 5a. Currents and power (POWER_FILTER_SHIFT): ID_MON, IS_MON and
+     * the products with V_out and V_in for the efficiency the bench reads;
+     * IL_MON per cycle (regulator_il_ma) for CCM's current limit and
+     * filtered (regulator_il_avg_ma) for its exit and SW_OCP.  Each is a
+     * mean over the switching period (adc_monitor.c).  IL_MON's INA281
+     * reads 0 for negative current, so in CCM, where a light load puts the
+     * valley below 0, the mean is corrected for the clipped part of the
+     * triangle (buck_ccm_unclip_a) with the ripple of the last on-time.
+     * In DCM the current never goes negative and the mean is the load. --- */
     {
         const int32_t i_out = (int32_t)adc_measurements.i_out_ma;
         const int32_t i_in  = (int32_t)adc_measurements.i_in_ma;
@@ -1844,8 +1864,15 @@ void regulator_pid_tim7_isr(void)
         regulator_i_in_filt_ma  += (i_in  - regulator_i_in_filt_ma)  / (1 << POWER_FILTER_SHIFT);
         regulator_p_out_mw      += (p_out - regulator_p_out_mw)      / (1 << POWER_FILTER_SHIFT);
         regulator_p_in_mw       += (p_in  - regulator_p_in_mw)       / (1 << POWER_FILTER_SHIFT);
-        const int32_t il = ((int32_t)adc_measurements.i_inductor_ma * regulator_il_gain_permille) / 1000
-                           + regulator_il_offset_ma;
+        int32_t il = ((int32_t)adc_measurements.i_inductor_ma * regulator_il_gain_permille) / 1000
+                     + regulator_il_offset_ma;
+        if (regulator_ccm_active)
+        {
+            const float ripple_a = buck_ccm_ripple_a((float)v_in_mv * 1e-3f, (float)v_out_mv * 1e-3f,
+                                                     regulator_on_time_ns, (float)INDUCTOR_VALUE_NH * 1e-9f);
+            il = (int32_t)(1e3f * buck_ccm_unclip_a((float)il * 1e-3f, ripple_a));
+        }
+        regulator_il_ma          = il;
         regulator_il_avg_ma     += (il    - regulator_il_avg_ma)     / (1 << POWER_FILTER_SHIFT);
     }
 
@@ -1856,7 +1883,7 @@ void regulator_pid_tim7_isr(void)
     /* --- 5b. Buck forced CCM: enter and leave (regulator_config.h section
      * 6b).  Enter when the DCM loop's command reaches CCM_ENTER_PCT of the
      * DCM ceiling with the output connected; leave on light load (filtered
-     * ID_MON), V_out held over CCM_OVER_BAND (DCM then skips), V_in rising
+     * IL_MON), V_out held over CCM_OVER_BAND (DCM then skips), V_in rising
      * (regeneration), or a switch, mode or enable change.  The DCM loop's
      * integrator is held in CCM and preset to the load current on exit. --- */
     BuckCcmTimingCfg ccm_cfg;
@@ -1897,8 +1924,8 @@ void regulator_pid_tim7_isr(void)
             ccm_exit_now = true;
             ccm_exit_request = REGULATOR_CCM_EXIT_NONE;
             ccm_mode_settle  = CCM_MODE_SETTLE;
-            /* The DCM loop restarts at the measured load (mid-interval
-             * IL_MON), at least 30 % of its ceiling: too low sags the
+            /* The DCM loop restarts at the measured load (IL_MON, period
+             * mean), at least 30 % of its ceiling: too low sags the
              * output, too high is clipped by pulse skipping. */
             float i0 = (float)regulator_il_avg_ma;
             if (i0 < 0.3f * i_max_ma) { i0 = 0.3f * i_max_ma; }
@@ -1944,10 +1971,12 @@ void regulator_pid_tim7_isr(void)
             ccm_state.u_v = u_base + ((float)v_out_mv - (float)effective_setpoint_mv) * 1e-3f
                                      * (1.0f - buck_ccm_refresh_share(&ccm_cfg));
             ccm_state.clamp = 0;
+            ccm_state.limiting = 0u;
         }
     }
 
-    /* --- 5c. CCM over-current (SW_OCP) on the mid-interval IL_MON --- */
+    /* --- 5c. CCM over-current (SW_OCP) on the filtered IL_MON: the backstop
+     * behind the current limit (6c), CCM_OCP_MA_DEFAULT --- */
     if (regulator_ccm_active && regulator_il_avg_ma > (int32_t)regulator_ccm_ocp_ma)
     {
         if (++ccm_ocp_count >= CCM_OCP_CYCLES)
@@ -1963,9 +1992,14 @@ void regulator_pid_tim7_isr(void)
     }
 
     float i_cmd_ma;
+    /* The current CCM's limit acts on (CCM_ILIM_MA_DEFAULT). */
+    const int32_t i_lim_meas_ma = (regulator_ccm_ilim_src == 1u)
+        ? ((int32_t)adc_measurements.i_out_ma * regulator_id_gain_permille) / 1000 + regulator_id_offset_ma
+        : regulator_il_ma;
+    regulator_ccm_i_lim_meas_ma = i_lim_meas_ma;
     if (regulator_ccm_active)
     {
-        i_cmd_ma = (float)regulator_il_avg_ma;   /* telemetry: the DCM loop is held */
+        i_cmd_ma = (float)i_lim_meas_ma;   /* telemetry: the DCM loop is held */
     }
     else
     {
@@ -2049,27 +2083,19 @@ void regulator_pid_tim7_isr(void)
             .ki = regulator_ccm_ki, .kp = CCM_KP_DEFAULT,
             .u_min_v = (float)CCM_U_MIN_MV * 1e-3f, .u_max_v = (float)CCM_U_MAX_MV * 1e-3f,
             .dt_s = 1.0f / (float)PID_EXECUTION_RATE_HZ,
+            .ilim_a = (float)regulator_ccm_ilim_ma * 1e-3f, .kl = regulator_ccm_ilim_kl,
         };
-        const uint32_t ton = buck_ccm_update(&ccm_state, &g, &ccm_cfg, (float)effective_setpoint_mv * 1e-3f,
-                                             (float)v_out_mv * 1e-3f, (float)v_in_mv * 1e-3f);
+        const uint8_t was_limiting = ccm_state.limiting;
+        (void)buck_ccm_update(&ccm_state, &g, &ccm_cfg, (float)effective_setpoint_mv * 1e-3f,
+                              (float)v_out_mv * 1e-3f, (float)v_in_mv * 1e-3f, (float)i_lim_meas_ma * 1e-3f);
         BuckCcmTiming t;
-        buck_ccm_timing(&ccm_cfg, ton, &t);
+        buck_ccm_timing_ticks(&ccm_cfg, ccm_state.t_on_ticks, &t);   /* 184 ps steps */
         hrtim_write_ccm_timing(&t);
-        /* IL_MON at the middle of the longer interval (Q1 on, or Q2 on
-         * across the period boundary), CCM_ADC_LEAD_NS early for the
-         * sample window; never within 300 ns of the Q4 refresh. */
-        {
-            const uint32_t T = ccm_cfg.period_ns, ps = ccm_cfg.pulse_start_ns;
-            const uint32_t off = T - t.t_on_ns;
-            uint32_t mid = (t.t_on_ns >= off) ? (ps + t.t_on_ns / 2u) : (ps + t.t_on_ns + off / 2u);
-            mid = (mid > CCM_ADC_LEAD_NS) ? (mid - CCM_ADC_LEAD_NS) : 0u;
-            if (mid >= T) { mid -= T; }
-            if (mid < ccm_cfg.refresh_ns + 300u) { mid = ccm_cfg.refresh_ns + 300u; }
-            if (mid > T - 300u)                  { mid = T - 300u; }
-            HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP4xR = buck_ccm_ticks(mid);
-        }
         regulator_on_time_ns = (uint16_t)t.t_on_ns;
         regulator_ccm_u_mv   = ccm_state.u_v * 1e3f;
+        regulator_ccm_limiting = ccm_state.limiting;
+        regulator_ccm_v_lim_mv = ccm_state.limiting ? ccm_state.v_lim_v * 1e3f : 0.0f;
+        if (ccm_state.limiting && !was_limiting) { regulator_ccm_limit_entries++; }
         if (ccm_dwell >= CCM_ENTRY_GRACE) { ccm_u_last = ccm_state.u_v; ccm_u_last_valid = true; }
         if (ccm_state.clamp > 0) { if (ccm_clamp_cycles < 0xFFFFu) { ccm_clamp_cycles++; } }
         else                     { ccm_clamp_cycles = 0u; }
@@ -2139,9 +2165,16 @@ void regulator_pid_tim7_isr(void)
      * every pulse.  With the threshold at the command (until 2026-10-12)
      * it cut Q1 at the end of its 100 ns blanking while Q4 ran to CMP2, and
      * buck-boost pulses came out at about 100 ns.                         */
-    const uint32_t dac_counts = (regulator_mode == REGULATOR_MODE_BUCK_BOOST) ? PEAK_PROTECT_COUNTS_BB
-                              : (regulator_mode == REGULATOR_MODE_BOOST)      ? PEAK_PROTECT_COUNTS_BOOST
-                                                                              : PEAK_PROTECT_COUNTS;
+    uint32_t dac_counts = (regulator_mode == REGULATOR_MODE_BUCK_BOOST) ? PEAK_PROTECT_COUNTS_BB
+                        : (regulator_mode == REGULATOR_MODE_BOOST)      ? PEAK_PROTECT_COUNTS_BOOST
+                                                                        : PEAK_PROTECT_COUNTS;
+    /* In CCM, regulator_ccm_peak_ma (CCM_PEAK_MA_DEFAULT) may bound L1 per
+     * period, never above the backstop. */
+    if (regulator_ccm_active && regulator_ccm_peak_ma != 0u)
+    {
+        const uint32_t c = ((uint32_t)regulator_ccm_peak_ma * DAC_COUNTS_PER_AMP) / 1000u;
+        if (c < dac_counts) { dac_counts = c; }
+    }
     slope_comp_set_peak(dac_counts);
 #if SLOPE_COMP_ENABLED
     slope_comp_update_step(v_out_mv, v_in_mv, (SlopeCompMode)regulator_mode);
@@ -2257,6 +2290,7 @@ void regulator_pid_tim7_isr(void)
         if (trace_at_limit)              { flags |= REGULATOR_TRACE_FLAG_AT_LIMIT; }
         if (switch_pulse_active)         { flags |= REGULATOR_TRACE_FLAG_PULSE_OPEN; }
         if (regulator_ccm_active)        { flags |= REGULATOR_TRACE_FLAG_CCM; }
+        if (regulator_ccm_active && ccm_state.limiting) { flags |= REGULATOR_TRACE_FLAG_ILIM; }
         if (fire)                        { flags |= REGULATOR_TRACE_FLAG_TRIGGER; }
         const uint32_t w = tc->write_index;
         regulator_trace[w].v_out_mv = (uint16_t)(v_out_mv > 65535u ? 65535u : v_out_mv);
@@ -2600,10 +2634,10 @@ static void hrtim_configure_adc_trigger(void)
                                  (HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].TIMxCR & HRTIM_TIMCR_CK_PSC) |
                                  HRTIM_MCR_CONT;
     HRTIM1->sCommonRegs.ADC1R  = HRTIM_ADC1R_AD1MC1;
-    /* ADC trigger 2 (ADC1 injected: IL_MON, ID_MON, IS_MON) on Timer C
-     * CMP4, which the PID ISR places mid-interval (step 6c/6); the
-     * post-scaler (hrtim_set_switching_period) keeps it to one per PID
-     * cycle.  Timer C's CMP4 starts mid-period. */
+    /* ADC trigger 2 on Timer C CMP4 (mid-period), one per PID cycle
+     * (hrtim_set_switching_period).  Unused since 2026-10-21: the ADC1
+     * injected group it was tried on (JEXTSEL 19) read 0-64 counts in CCM,
+     * and the currents are now software-started period means. */
     HRTIM1->sCommonRegs.ADC2R  = HRTIM_ADC2R_AD2TCC4;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP4xR = HRTIM_PERIOD_COUNTS / 2u;
     HRTIM1->sCommonRegs.ADCPS1 = (HRTIM1->sCommonRegs.ADCPS1 & ~HRTIM_ADCPS1_AD2PSC) |

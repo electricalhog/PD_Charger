@@ -50,7 +50,7 @@ FAULT_BITS = {
     0x08: ("SW_UVP", "software output under-voltage"),
     0x10: ("SW_VIN_RANGE", "V_in out of range for the selected mode"),
     0x20: ("SW_BACKSTOP", "too many consecutive cycle-by-cycle backstop events"),
-    0x40: ("SW_OCP", "buck CCM: filtered ID_MON output current over regulator_ccm_ocp_ma for 1 ms"),
+    0x40: ("SW_OCP", "buck CCM: filtered IL_MON (regulator_il_avg_ma) over regulator_ccm_ocp_ma for 1 ms"),
 }
 CCM_EXITS = {0: "NONE", 1: "DISABLED", 2: "MODE", 3: "SWITCH", 4: "LIGHT_LOAD", 5: "OVER_BAND", 6: "VIN_RISE",
              7: "STOP", 8: "BAD_CONFIG", 9: "DUTY", 10: "RAMP_DOWN"}
@@ -73,7 +73,7 @@ TRACE_SAMPLE = struct.Struct("<5H")      # v_out_mv, i_cmd_ma, i_max_ma, t_on_ns
 TRACE_CTL = struct.Struct("<10I")        # state, trigger, post, threshold_mv, write_index, trigger_index, count,
                                          # remaining, pulse_us, pulse_cycles (the last two since TIM4 timing)
 TRACE_FLAGS = {0x04: "skipping", 0x08: "switch_on", 0x10: "rectifier", 0x20: "at_limit", 0x40: "pulse_open",
-               0x80: "trigger", 0x100: "ccm"}
+               0x80: "trigger", 0x100: "ccm", 0x200: "ilim"}
 PID_HZ = 20000
 CPU_HZ = 170_000_000                     # DWT->CYCCNT, for the measured pulse
 PULSE_MAX_US = 50000
@@ -124,12 +124,13 @@ def trace_read(cfg: dict) -> dict:
     trig_pos = next((k for k, r in enumerate(rows) if r[0] == trig_i and r[5] & 0x80), None)
     path = out_file(cfg, "regulator_trace", "csv")
     with path.open("w") as f:
-        # ccm (2026-10-20): in CCM samples i_cmd_ma holds the filtered ID_MON output current.
+        # ccm (2026-10-20): in CCM samples i_cmd_ma holds the current the CCM limit acts on (since 2026-10-21,
+        # per cycle; IL_MON's period mean by default).  ilim: the limit set the duty.
         f.write("t_ms,v_out_mv,i_cmd_ma,i_max_ma,t_on_ns,mode,skipping,switch_on,rectifier,at_limit,pulse_open,trigger,"
-                "ccm\n")
+                "ccm,ilim\n")
         for k, (_, v, ic, im, ton, fl) in enumerate(rows):
             t_ms = (k - (trig_pos if trig_pos is not None else 0)) * 1000.0 / PID_HZ
-            bits = [int(bool(fl & b)) for b in (0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x100)]
+            bits = [int(bool(fl & b)) for b in (0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x100, 0x200)]
             f.write(f"{t_ms:.2f},{v},{ic},{im},{ton},{MODES.get(fl & 3, fl & 3)}," + ",".join(map(str, bits)) + "\n")
     out = {"ok": True, "state": TRACE_STATES.get(state, state),
            "trigger": next((k for k, v in TRACE_TRIGGERS.items() if v == trigger), trigger),
@@ -145,6 +146,7 @@ def trace_read(cfg: dict) -> dict:
         out["at_limit_samples"] = sum(1 for r in rows if r[5] & 0x20)
         out["skipping_samples"] = sum(1 for r in rows if r[5] & 0x04)
         out["ccm_samples"] = sum(1 for r in rows if r[5] & 0x100)
+        out["ilim_samples"] = sum(1 for r in rows if r[5] & 0x200)
         sw = [bool(r[5] & 0x08) for r in rows]
         out["switch_edges_ms"] = [round((k - (trig_pos or 0)) * 1000.0 / PID_HZ, 2)
                                   for k in range(1, len(sw)) if sw[k] != sw[k - 1]]
@@ -199,15 +201,24 @@ _CONTROL = {"regulator_mode": "mode", "target_voltage_mv": "target_mv", "regulat
             "regulator_ccm_deadtime_ns": "ccm_deadtime_ns", "regulator_ccm_ocp_ma": "ccm_ocp_ma",
             "regulator_ccm_refresh_ns": "ccm_refresh_ns", "regulator_ccm_refresh_interval_ns": "ccm_refresh_interval_ns",
             "regulator_ccm_entries": "ccm_entries", "regulator_ccm_exits": "ccm_exits",
-            "regulator_ccm_exit_reason": "ccm_exit_reason"}
+            "regulator_ccm_exit_reason": "ccm_exit_reason",
+            # Period-mean currents and the CCM current limit (2026-10-21)
+            "regulator_ccm_ilim_ma": "ccm_ilim_ma", "regulator_ccm_ilim_src": "ccm_ilim_src",
+            "regulator_ccm_peak_ma": "ccm_peak_ma", "regulator_ccm_limiting": "ccm_limiting",
+            "regulator_ccm_limit_entries": "ccm_limit_entries", "adc_monitor_adc2_aborts": "adc2_aborts"}
 # Signed 32-bit telemetry: filtered currents and powers (POWER_FILTER_SHIFT).
 _CONTROL_I = {"regulator_i_out_filt_ma": "i_out_filt_ma", "regulator_i_in_filt_ma": "i_in_filt_ma",
-              "regulator_p_in_mw": "p_in_mw", "regulator_p_out_mw": "p_out_mw", "regulator_il_avg_ma": "il_avg_ma"}
+              "regulator_p_in_mw": "p_in_mw", "regulator_p_out_mw": "p_out_mw", "regulator_il_avg_ma": "il_avg_ma",
+              "regulator_il_ma": "il_ma", "regulator_ccm_i_lim_meas_ma": "ccm_i_lim_meas_ma"}
+# Signed 16-bit: the runtime current calibrations.
+_CONTROL_I16 = {"regulator_il_gain_permille": "il_gain_permille", "regulator_il_offset_ma": "il_offset_ma",
+                "regulator_id_gain_permille": "id_gain_permille", "regulator_id_offset_ma": "id_offset_ma"}
 # Float telemetry of the current-command loop (2026-10-12).
 _CONTROL_F = {"regulator_i_cmd_ma": "i_cmd_ma", "regulator_i_pk_ma": "i_pk_ma", "regulator_i_max_ma": "i_max_ma",
               "pid_kp": "kp_ma_per_mv", "pid_ki": "ki_ma_per_mv_s", "regulator_loop_fc_hz": "loop_fc_hz",
               "regulator_c_int_uf": "c_int_uf", "regulator_c_ext_uf": "c_ext_uf",
-              "regulator_ccm_ki": "ccm_ki_per_s", "regulator_ccm_u_mv": "ccm_u_mv"}
+              "regulator_ccm_ki": "ccm_ki_per_s", "regulator_ccm_u_mv": "ccm_u_mv",
+              "regulator_ccm_ilim_kl": "ccm_ilim_kl", "regulator_ccm_v_lim_mv": "ccm_v_lim_mv"}
 
 
 def _u(data: bytes) -> int:
@@ -220,7 +231,8 @@ def read_raw(cfg: dict) -> dict:
     if "regulator_debug" in missing:
         raise ToolError("firmware has no regulator_debug mailbox; flash a build from the agentic-bringup-tools branch",
                         missing=missing)
-    names = [v for v in list(_VARS) + list(_CONTROL) + list(_CONTROL_F) + list(_CONTROL_I) if v in syms]
+    names = [v for v in list(_VARS) + list(_CONTROL) + list(_CONTROL_F) + list(_CONTROL_I) + list(_CONTROL_I16)
+             if v in syms]
     regions = [syms[v] for v in names] + [(GPIOA_IDR, 4), (GPIOC_ODR, 4), (HRTIM_ISR, 16)]
     data = probe.read_regions(cfg, regions)
     raw = dict(zip(names, data[:len(names)]))
@@ -266,6 +278,9 @@ def decode(raw: dict) -> dict:
     for sym, key in _CONTROL_I.items():
         if sym in raw:
             ctl[key] = struct.unpack("<i", raw[sym][:4])[0]
+    for sym, key in _CONTROL_I16.items():
+        if sym in raw:
+            ctl[key] = struct.unpack("<h", raw[sym][:2])[0]
     if ctl.get("p_in_mw", 0) > 0 and "p_out_mw" in ctl:
         ctl["efficiency_board_sensors"] = round(ctl["p_out_mw"] / ctl["p_in_mw"], 4)
     if ctl:

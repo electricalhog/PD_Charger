@@ -86,7 +86,7 @@ typedef enum
     REGULATOR_FAULT_SW_UVP         = 0x08u, /**< Software undervoltage protection */
     REGULATOR_FAULT_SW_VIN_RANGE   = 0x10u, /**< V_in out of range for mode */
     REGULATOR_FAULT_SW_BACKSTOP    = 0x20u, /**< Too many consecutive backstop events */
-    REGULATOR_FAULT_SW_OCP         = 0x40u  /**< Buck CCM: filtered ID_MON over regulator_ccm_ocp_ma */
+    REGULATOR_FAULT_SW_OCP         = 0x40u  /**< Buck CCM: filtered IL_MON over regulator_ccm_ocp_ma */
 } RegulatorFaultSource;
 
 /**
@@ -143,12 +143,22 @@ extern volatile uint16_t regulator_sr_off_ns;
  *    regulator_buck_fsw_khz      200 or 400, taken when buck is entered
  *    regulator_ccm_deadtime_ns   Q1/Q2 and Q3/Q4 dead time, clamped
  *    regulator_ccm_ki            integral gain [1/s]
- *    regulator_ccm_ocp_ma        SW_OCP level on the filtered ID_MON
+ *    regulator_ccm_ocp_ma        SW_OCP level on regulator_il_avg_ma
+ *    regulator_ccm_ilim_ma       current limit in CCM, 0 off (buck_ccm.h)
+ *    regulator_ccm_ilim_kl       its integral gain [V/(A s)]
+ *    regulator_ccm_ilim_src      its current: 0 IL_MON (regulator_il_ma),
+ *                                1 ID_MON (regulator_id_gain/offset applied)
+ *    regulator_ccm_peak_ma       peak comparator threshold in CCM, 0 = the
+ *                                9 A backstop (CCM_PEAK_MA_DEFAULT)
  *  Telemetry:
  *    regulator_fsw_khz           switching frequency in use
  *    regulator_ccm_active        1 while the buck runs forced CCM
  *    regulator_ccm_u_mv          the duty law's integrator [mV]
  *    regulator_ccm_entries / _exits, regulator_ccm_exit_reason (RegulatorCcmExit)
+ *    regulator_ccm_limiting      1 while the current limit sets the duty
+ *    regulator_ccm_v_lim_mv      its voltage reference while it does
+ *    regulator_ccm_i_lim_meas_ma the current it acts on, this cycle
+ *    regulator_ccm_limit_entries times the limit took over
  *    regulator_i_out_filt_ma, regulator_i_in_filt_ma, regulator_p_in_mw,
  *    regulator_p_out_mw          POWER_FILTER_SHIFT low-pass of ID_MON,
  *                                IS_MON, V_in x IS_MON and V_out x ID_MON */
@@ -184,17 +194,29 @@ extern volatile int32_t  regulator_i_out_filt_ma;
 extern volatile int32_t  regulator_i_in_filt_ma;
 extern volatile int32_t  regulator_p_in_mw;
 extern volatile int32_t  regulator_p_out_mw;
-/** IL_MON sampled at the middle of the longer switching interval (HRTIM ADC
- *  trigger 2), so in buck CCM the average inductor current = the output
- *  current in steady state; POWER_FILTER_SHIFT low-pass, after
+/** IL_MON, the mean over the switching period (adc_monitor.c), after
  *  regulator_il_gain_permille and regulator_il_offset_ma (bench
- *  calibration, runtime).  Meaningless in DCM.                           */
+ *  calibration, runtime) and, in CCM, the clipping correction
+ *  (buck_ccm_unclip_a): the average inductor current, which in buck is the
+ *  output current in steady state, in DCM and CCM.  regulator_il_ma per PID
+ *  cycle, regulator_il_avg_ma POWER_FILTER_SHIFT low-pass.               */
+extern volatile int32_t  regulator_il_ma;
 extern volatile int32_t  regulator_il_avg_ma;
 /** Last 8 CCM exits: { uwTick, reason | entries << 8 }, next index.      */
 extern volatile uint32_t regulator_ccm_exit_log[8][2];
 extern volatile uint32_t regulator_ccm_exit_log_index;
 extern volatile int16_t  regulator_il_gain_permille;
 extern volatile int16_t  regulator_il_offset_ma;
+extern volatile int16_t  regulator_id_gain_permille;
+extern volatile int16_t  regulator_id_offset_ma;
+extern volatile uint16_t regulator_ccm_ilim_ma;
+extern volatile float    regulator_ccm_ilim_kl;
+extern volatile uint8_t  regulator_ccm_ilim_src;
+extern volatile uint16_t regulator_ccm_peak_ma;
+extern volatile uint8_t  regulator_ccm_limiting;
+extern volatile float    regulator_ccm_v_lim_mv;
+extern volatile int32_t  regulator_ccm_i_lim_meas_ma;
+extern volatile uint32_t regulator_ccm_limit_entries;
 
 /**
  * max_consecutive_backstops — Consecutive backstop events before fault.
@@ -416,8 +438,10 @@ typedef enum
 #define REGULATOR_TRACE_FLAG_PULSE_OPEN  0x0040u  /**< SWITCH_PULSE holding the switch open  */
 #define REGULATOR_TRACE_FLAG_TRIGGER     0x0080u  /**< the trigger sample                    */
 #define REGULATOR_TRACE_FLAG_CCM         0x0100u  /**< buck forced CCM: i_cmd_ma holds the
-                                                       filtered ID_MON current, t_on_ns Q1's
-                                                       on-time, i_max_ma the DCM ceiling      */
+                                                       current the limit acts on (this
+                                                       cycle's), t_on_ns Q1's on-time,
+                                                       i_max_ma the DCM ceiling               */
+#define REGULATOR_TRACE_FLAG_ILIM        0x0200u  /**< CCM current limit set the duty        */
 
 typedef struct
 {
