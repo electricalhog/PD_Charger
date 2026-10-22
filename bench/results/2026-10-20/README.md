@@ -12,6 +12,16 @@
 | Scope | DS1104Z. CH2 = SW1 (TP3), CH3 = SW2 (TP4), both 10 V/div. CH4 = VBUS at 1 V/div DC, 20 MHz bandwidth limit. 100 µs/div, 1.2 ms records at 4 ns |
 | Status | **Buck CCM is stable in holds and contract transitions at 200 and 400 kHz, 5–20 V.** Large capacitive dumps still overshoot (§4.6). Current sensing is not usable in CCM (§4.5). Not ready for a LiPo on VBUS (§6) |
 
+Scripts (`scripts/`, run from anywhere; each calls `tools/bringup/bu`):
+
+| Script | Use |
+|---|---|
+| `hold.py LABEL [n]` | n status reads plus one 102 ms trace at the present contract |
+| `seq.py mv,mv,... [settle_s]` | contract sequence through the sink; per step state, CCM entries and exits, exit log, trace σ; stops on a fault |
+| `sw2check.py LABEL` | one scope capture (CH2 SW1, CH3 SW2, CH4 VBUS); SW1 frequency and duty, Q3 dropouts (long SW2 lows, body-diode highs), VBUS low-pass σ and its 20 kHz line |
+| `swan.py CSV` | the same analysis offline, plus the refresh dips |
+| `steps.py MS N SETPOINT_MV` | N `switch-pulse` reconnects with the trace on the switch trigger: dip, peak, time outside ±5 % |
+
 ## 1. Builds
 
 All are CMake Debug with `-DPD_VCONN=ON -DPD_BENCH_FORCE_VCONN=ON -DPD_BENCH_15V=ON -DPD_BENCH_20V=ON -DPD_BENCH_24V=ON -DPD_BENCH_EPR_28V=ON`.
