@@ -8,6 +8,9 @@
 | Setup | As 2026-10-20 (`../2026-10-20/README.md`): 25.3 Ω on VBUS, QT Py idle, 24 V in, sink contracts. CH2 SW1, CH3 SW2, CH4 VBUS (DC, 20 MHz limit) |
 | End state | bb06331 image reflashed (`79938803…`), 5 V buck DCM, 200 kHz, CCM off, no fault |
 
+Scripts: `hold.py` and `sw2check.py` from `bench/results/2026-10-20/scripts/` on `claude/ccm-hf-buck-50w`. This
+folder is named `2026-10-21-1mhz` because that branch has its own `2026-10-21` log (the current limit).
+
 ## Method
 
 - **Run settings:**
