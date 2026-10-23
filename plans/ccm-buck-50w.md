@@ -496,3 +496,26 @@ reads so I can get rid of the 1nF caps on both voltage dividers"; 100 kHz is the
   - Load-current feedforward from ID_MON destabilizes: that current rings with the bench-side L–C.
   - The levers are output capacitance with some ESR (the planned electrolytics), or a fast inductor-current signal.
 
+### 9.4 The 100 kHz loop on the sampling as built (2026-10-23)
+
+- **Model rerun** (`tests/buck_ccm`, `-DSIM_FAST -DSIM_DIV=4` or `=1`; output in `bench/results/2026-10-23/data/model_fast_loop_*.txt`):
+  - synchronous samples mid-period through the divider RC (0.8 µs with the refitted ~150 pF);
+  - updates landing at the next period boundary;
+  - VBUS-side C of 8 µF, the 55 µF measured on 2026-10-23, and 300 µF;
+  - 20 V, 0.8 → 2.5 A, then back.
+
+| VBUS-side C | Today's 20 kHz loop (dip / release peak) | Best stable at 100 kHz | Best stable per period (400 kHz) |
+|---|---|---|---|
+| 8 µF | −0.86 / +0.89 V | −0.85 / +0.88 V (ki 3142, kd 1 µs) | −0.80 / +0.83 V (kp 0.2, kd 4 µs) |
+| 55 µF | −0.43 / +0.44 V | −0.42 / +0.42 V | −0.38 / +0.38 V |
+| 300 µF | −0.18 / +0.18 V | −0.17 / +0.17 V | −0.15 / +0.15 V |
+
+- **At 100 kHz** only integral-only gains are stable on all three plants, and they match today's loop. Any kp > 0 rings
+  the L1–C resonance.
+- **Per period**, kp 0.1–0.2 with kd 3–4 µs is stable. It improves the step by about 7–12 %, and the settling from
+  0.3–0.5 ms to 0.1–0.2 ms.
+- **The dip is the plant's.** 0.43 V for 1.7 A at 55 µF is 0.25 Ω, √(4.7 µH / 71 µF) = 0.26 Ω. More capacitance moves
+  it; the loop rate does not.
+- **Recommendation:** no 100 kHz interrupt for step response. Its use would be a lower-delay limit and protection, if
+  needed. A per-period loop buys about 10 % at the cost of an interrupt every 2.5 µs.
+

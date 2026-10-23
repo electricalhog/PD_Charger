@@ -226,6 +226,9 @@ typedef struct
     bool  fast;                                        /* voltage law every 10 us on period-synchronous samples */
     float kp, ki, kd;                                  /* fast-loop gains (ki 0: SIM_GAINS') */
     float kff_l, kff_r;                                /* load-current feedforward (ID_MON, synchronous) */
+    float rc_tau_us;                                   /* divider RC in front of the synchronous sample (0: none) */
+    float sample_frac;                                 /* where in the period the sample is taken (0: 0.5) */
+    float t_load2_s, r_load3;                          /* a second load change (t_load2_s > 0) */
     int   n_avg;                                       /* fast loop: samples averaged (1-4, 0: 4) */
     int   fast_div;                                    /* periods per fast update (1-4, 0: 4 = 100 kHz at 400 kHz) */
 } SimCase;
@@ -239,6 +242,8 @@ typedef struct
     float t_uvp_s, t_ovp_s;   /* first PID sample under 50 % / over 110 % of V_ref (0: none) */
     float vx_close;           /* bench node when the switch closed */
     float vb_after[4];        /* board node 50, 100, 150, 300 us after the switch closed */
+    float w1_min, w1_max, w2_min, w2_max;   /* board node extremes after the 1st / 2nd load change */
+    float w1_settle_s, w2_settle_s;         /* last time |vb - V_ref| > 0.1 V in each window, from its change */
 } SimResult;
 
 static const BuckCcmGains SIM_GAINS = {
@@ -268,6 +273,7 @@ static SimResult sim(const SimCase *k)
     const int n_avg = (k->n_avg > 0) ? k->n_avg : 4;
     float vsync[4] = { 0 };  int vsync_n = 0;
     float isync[4] = { 0 };
+    float vrc = k->v_ref;
     float r_load = k->r_load, v_bat = k->v_bat, r_bat = k->r_bat;
     float v_ref = k->v_ref;
     if (!k->battery_from_start) { r_bat = 0.0f; }
@@ -326,7 +332,8 @@ static SimResult sim(const SimCase *k)
         if (n == apply_at) { d = d_next; }   /* before a new update can move apply_at */
         if (k->fast)
         {
-            if (n % n_per == n_per / 2) { isync[vsync_n & 3] = ix; vsync[vsync_n++ & 3] = vb; }   /* synchronous samples */
+            const int ph_s = (int)(((k->sample_frac > 0.0f) ? k->sample_frac : 0.5f) * (float)n_per);
+            if (n % n_per == ph_s) { isync[vsync_n & 3] = ix; vsync[vsync_n++ & 3] = vrc; }   /* synchronous samples */
             if (n > 0 && n % (((k->fast_div > 0) ? k->fast_div : 4) * n_per) == 0)
             {
                 float v_f = 0.0f;
@@ -338,6 +345,19 @@ static SimResult sim(const SimCase *k)
                 buck_ccm_timing_ticks(&c, s.t_on_ticks, &tt);
                 d_next = (float)(tt.a_cmp2 - tt.a_cmp4) / (float)buck_ccm_ticks(2500u);
                 apply_at = n + n_per;   /* preloaded: the next period boundary */
+            }
+        }
+        if (k->rc_tau_us > 0.0f) { vrc += (vb - vrc) * dt / (k->rc_tau_us * 1e-6f); } else { vrc = vb; }
+        if (k->t_load2_s > 0.0f && n == (int)(k->t_load2_s / dt)) { r_load = k->r_load3; }
+        if (k->t_load_s > 0.0f && t >= k->t_load_s)
+        {
+            const bool w2 = (k->t_load2_s > 0.0f && t >= k->t_load2_s);
+            float *mn = w2 ? &res.w2_min : &res.w1_min, *mx = w2 ? &res.w2_max : &res.w1_max;
+            if (*mn == 0.0f || vb < *mn) { *mn = vb; }
+            if (vb > *mx) { *mx = vb; }
+            if (fabsf(vb - v_ref) > 0.1f)
+            {
+                if (w2) { res.w2_settle_s = t - k->t_load2_s; } else { res.w1_settle_s = t - k->t_load_s; }
             }
         }
         if (k->t_load_s > 0.0f && n == (int)(k->t_load_s / dt))
@@ -576,24 +596,57 @@ static StepMetrics step_case(bool fast, float kp, float ki, float kd, float cx, 
 {
     return step_case_ff(fast, kp, ki, kd, cx, fixed, n_avg, 0.0f, 0.0f);
 }
+#ifndef SIM_DIV
+#define SIM_DIV 4
+#endif
+static const int g_div_sweep = SIM_DIV;   /* periods per fast update: 4 = 100 kHz at 400 kHz */
+typedef struct { float dip, pk_step, pk_rel, dip_rel, st_ms, rt_ms, sd; bool ok; } StepM2;
+static StepM2 step2(bool fast, int div, float kp, float ki, float kd, float cx, bool fixed, int n_avg)
+{
+    g_fast_div = div;
+    SimCase k = { .v_ref = 20.0f, .v_in = 24.0f, .ilim_a = 0.0f, .r_load = 25.3f, .c_x_uf = cx, .c_x_fixed = fixed,
+                  .t_end_s = 30e-3f, .t_load_s = 5e-3f, .r_load2 = 8.0f, .t_load2_s = 17e-3f, .r_load3 = 25.3f,
+                  .t_open_s = 1.0f, .t_close_s = 1.0f, .fast = fast, .kp = kp, .ki = ki, .kd = kd, .n_avg = n_avg,
+                  .fast_div = div, .rc_tau_us = 0.8f, .sample_frac = 0.5f };
+    SimResult r = sim(&k);
+    StepM2 m = { r.w1_min - 20.0f, r.w1_max - 20.0f, r.w2_max - 20.0f, r.w2_min - 20.0f,
+                 1e3f * r.w1_settle_s, 1e3f * r.w2_settle_s, r.i_sd, false };
+    m.ok = (r.t_uvp_s == 0.0f && r.t_ovp_s == 0.0f && fabsf(r.v_end - 20.0f) < 0.1f && r.i_sd < 0.05f
+            && m.st_ms < 11.0f && m.rt_ms < 11.0f);
+    return m;
+}
 static void explore_fast(void)
 {
-    const float cxs[] = { 8.0f, 50.0f, 300.0f };
-    const float kps[] = { 0.0f, 0.1f, 0.2f, 0.4f };
-    const float kds[] = { 0.0f, 1e-6f, 2e-6f, 4e-6f };
-    const float kis[] = { 3142.0f, 12566.0f };
-    const int divs[] = { 1, 4 };
-    for (int q = 0; q < 2; q++) for (int i = 0; i < 2; i++) for (int p = 0; p < 4; p++) for (int d = 0; d < 4; d++)
+    /* bench-side C: board ceramics only (8 uF of QT Py ceramics), the 55 uF
+     * measured 2026-10-23 (fixed), and 300 uF bulk (fixed) */
+    const float cxs[] = { 8.0f, 55.0f, 300.0f };
+    const bool fixed[] = { false, true, true };
+    printf("divider RC 0.8 us, synchronous samples mid-period; step 0.8 -> 2.5 A at 5 ms, back at 17 ms (20 V)\n");
+    printf("  [cx: step dip / overshoot, settle ms | release peak / undershoot, settle ms]\n");
     {
-        g_fast_div = divs[q];
-        bool all = true; char buf[300]; int o = 0;
-        for (int a2 = 0; a2 < 3; a2++)
+        printf("legacy 20 kHz (ki 3142, 45 us mean):");
+        for (int a = 0; a < 3; a++)
         {
-            StepMetrics m = step_case_ff(true, kps[p], kis[i], kds[d], cxs[a2], a2 == 2, 1, 0, 0);
-            all = all && m.ok && m.sd < 0.05f;
-            o += snprintf(buf + o, sizeof buf - o, "  [cx %3.0f %+.2f/%+.2f]", cxs[a2], m.dip, m.peak);
+            StepM2 m = step2(false, 4, 0, 0, 0, cxs[a], fixed[a], 4);
+            printf("  [%3.0f: %+.2f/%+.2f %.1f | %+.2f/%+.2f %.1f%s]", cxs[a], m.dip, m.pk_step, m.st_ms, m.pk_rel, m.dip_rel, m.rt_ms, m.ok ? "" : " X");
         }
-        if (all) { printf("every %d period(s) ki %5.0f kp %.1f kd %.0e:%s\n", divs[q], kis[i], kps[p], kds[d], buf); }
+        printf("\n");
+    }
+    const float kis[] = { 3142.0f, 6283.0f, 12566.0f, 25133.0f };
+    const float kps[] = { 0.0f, 0.05f, 0.1f, 0.2f };
+    const float kds[] = { 0.0f, 1e-6f, 2e-6f, 3e-6f, 4e-6f };
+    const int navs[] = { 1, 4 };
+    for (int q = 0; q < 2; q++) for (int i = 0; i < 4; i++) for (int p = 0; p < 4; p++) for (int d = 0; d < 5; d++)
+    {
+        bool all = true; char buf[400]; int o = 0;
+        for (int a = 0; a < 3; a++)
+        {
+            StepM2 m = step2(true, g_div_sweep, kps[p], kis[i], kds[d], cxs[a], fixed[a], navs[q]);
+            all = all && m.ok;
+            o += snprintf(buf + o, sizeof buf - o, "  [%3.0f: %+.2f/%+.2f %.1f | %+.2f/%+.2f %.1f]", cxs[a], m.dip, m.pk_step, m.st_ms,
+                          m.pk_rel, m.dip_rel, m.rt_ms);
+        }
+        if (all) { printf("div %d n%d ki %5.0f kp %.2f kd %.0e:%s\n", g_div_sweep, navs[q], kis[i], kps[p], kds[d], buf); }
     }
 }
 #endif
