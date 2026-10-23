@@ -129,3 +129,59 @@ Data: `data/caps_on.jsonl`, `data/phase_sweep_caps.jsonl`.
   trace σ 25.5 mV.
 - The scope's CH4 is at 1 V/div; its offset was last set by the sweep.
 
+## 8. Hardware against the model: switch-pulse at 20 V, forced CCM 400 kHz (18:42)
+
+Dan: "Can you check where the hardware compares by testing?"
+- **Setup:** firmware B2 with the caps fitted, 25.3 Ω, limit 3 A on ID_MON.
+- **Pulses:** `switch-pulse` 5, 10 and 20 ms.
+- **Records:** the regulator trace, and a raw scope record (CH1 IL_MON 1×, CH3 SW2, CH4 VBUS) triggered on IL_MON
+  rising.
+- **Scripts:** `scripts/pulses.py` (bench), `scripts/fit_replay.py` and `scripts/plot_hw_vs_model.py`, and the host
+  test's `-DSIM_REPLAY` mode.
+
+| Pulse | VBUS before reconnect | IL_MON peak | Board min (SW2, 2.5 µs median / trace, 50 µs) | Max after | Limit | Fault |
+|---|---|---|---|---|---|---|
+| 5 ms | 19.5 V (the path barely opened: release lag 4.15 ms) | 2.6 A | 18.8 / 19.78 V | 20.14 V | no | none |
+| 10 ms | 3.2 V | 8.2 A | 14.8 / 15.44 V | 20.28 V | yes | none |
+| 20 ms | 3.2 V | 7.8 A | 14.5 / 15.02 V | 20.16 V | yes | none |
+
+- **VBUS floor:** VBUS drains to about 3.2 V, not to 0. Something on VBUS holds it there.
+- **The inductor current is flat-topped:** 8.0–8.2 A from +25 to +75 µs, then about 4.5 A. The likely cause is the
+  COMP1 per-cycle backstop (nominally 9 A) ending Q1's pulses. A bandwidth-limited IL_MON reads somewhat low, which
+  fits a 9 A threshold.
+
+**The 2026-10-22 model did not match this.** With 55 µF and no per-cycle current bound, reaching the bench's 15 V dip
+needed 15–23 A in L1 and overshot to 21–25 V. Three changes make it match:
+1. **L1 capped at 7.5 A average** (the comparator).
+2. **The 20 kHz loop measuring as the firmware now does:** V_out over the last 9 periods, I_out over the last 8, read
+   in the cycle that uses them.
+3. **A fit of VBUS-side capacitance and Q5/Q6 turn-on.** Best fit: 85 µF, 2 Ω decaying with a 70 µs time constant.
+
+| 20 ms record | Bench | Fitted model |
+|---|---|---|
+| VBUS 4 → 14 V | 115 µs | 122 µs |
+| Board node min | 14.8 V | 15.1 V |
+| Max after | 20.16 V | 20.02 V |
+| RMS over 0–300 µs (board / VBUS) | — | 0.41 / 0.34 V |
+| Board V at +1 / +2 / +3 / +4 ms | 16.38 / 17.35 / 18.35 / 19.27 V | 16.39 / 17.29 / 18.18 / 19.05 V |
+| Back above 19.5 V | 4.30 ms | 4.53 ms |
+
+- **The 10 ms record recovers faster:** back above 19.5 V at 2.85 ms, board 17.09 V at +0.15 ms. The fitted model
+  reproduces that when the reconnect lands 30 µs into the 50 µs control cycle: 17.25 V and 3.04 ms. So the spread
+  between records is when the limit's 20 µs current window catches the inrush.
+- **Where they differ:** on the bench the inductor current drops to about 4.5 A at about 55 µs. In the phase-0 model it
+  stays at the cap until about 110 µs: the firmware limit acted one control cycle earlier than the model did.
+- **What this tells us about the hardware:**
+  - The VBUS-side capacitance is about 85 µF at 3–15 V (the 55 µF of 2026-10-23 section 6 left the comparator out).
+  - COMP1 bounds L1 at about 8 A during an inrush. The backstop works, with no fault, which the 2026-09-28 notes had
+    left unverified above about 0.6 A.
+  - The CCM plant and loop behave as modelled once the comparator is in.
+
+Data: `data/hw_vs_model/` (local): bench records `hw_pulse{5,10,20}_*`, model runs `model_fit_*.csv`, figure
+`hw_vs_model.png`.
+
+## 9. End state
+
+- Firmware B2 at boot defaults. RUNNING at 5 V in buck DCM, CCM off, no fault.
+- The scope has CH2 off and CH1/CH3/CH4 at the pulse settings.
+

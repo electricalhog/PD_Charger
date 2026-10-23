@@ -229,6 +229,10 @@ typedef struct
     float rc_tau_us;                                   /* divider RC in front of the synchronous sample (0: none) */
     float sample_frac;                                 /* where in the period the sample is taken (0: 0.5) */
     float t_load2_s, r_load3;                          /* a second load change (t_load2_s > 0) */
+    float vx_floor;                                    /* bench node held at or above this while the switch is open */
+    bool  fw_sync;                                     /* the 20 kHz loop measures as the 2026-10-23 firmware does: V_out
+                                                          over the last 9 periods (22.5 us), I_out over the last 8
+                                                          (20 us), both read at the cycle that uses them */
     int   n_avg;                                       /* fast loop: samples averaged (1-4, 0: 4) */
     int   fast_div;                                    /* periods per fast update (1-4, 0: 4 = 100 kHz at 400 kHz) */
 } SimCase;
@@ -303,8 +307,9 @@ static SimResult sim(const SimCase *k)
     {
         const float t = (float)n * dt;
         const int ph = n % n_isr;
-        if (ph >= n_isr - (int)(45e-6f / dt)) { vsum += vb; vcnt++; }
-        if (ph >= (int)(13.9e-6f / dt) && ph < (int)(23.3e-6f / dt)) { isum += k->meas_ix ? ix : il; icnt++; }
+        if (ph >= n_isr - (int)((k->fw_sync ? 22.5e-6f : 45e-6f) / dt)) { vsum += vb; vcnt++; }
+        if (k->fw_sync ? (ph >= n_isr - (int)(20e-6f / dt))
+                       : (ph >= (int)(13.9e-6f / dt) && ph < (int)(23.3e-6f / dt))) { isum += k->meas_ix ? ix : il; icnt++; }
         if (ph == 0 && n > 0)
         {
             const float v_meas = (float)(vsum / (vcnt ? vcnt : 1));
@@ -314,6 +319,7 @@ static SimResult sim(const SimCase *k)
             }
             if (t > 1e-3f && res.t_uvp_s == 0.0f && v_meas < 0.5f * v_ref) { res.t_uvp_s = t; }
             if (t > 1e-3f && res.t_ovp_s == 0.0f && v_meas > 1.1f * v_ref) { res.t_ovp_s = t; }
+            if (k->fw_sync) { i_meas = (float)(isum / (icnt ? icnt : 1)); }
             buck_ccm_limit(&s, &g, v_ref, v_meas, i_meas);
             uint32_t ton = 0u;
             (void)ton;
@@ -325,7 +331,7 @@ static SimResult sim(const SimCase *k)
                 d_next = (float)(tt.a_cmp2 - tt.a_cmp4) / (float)buck_ccm_ticks(2500u);
                 apply_at = n + n_apply;
             }
-            i_meas = (float)(isum / (icnt ? icnt : 1));   /* read next cycle */
+            if (!k->fw_sync) { i_meas = (float)(isum / (icnt ? icnt : 1)); }   /* read next cycle */
             vsum = isum = 0.0;  vcnt = icnt = 0;
             if (n >= n_end - n_tail) { tail_isr++; if (s.limiting) { tail_lim++; } }
 #ifdef SIM_TRACE
@@ -400,11 +406,12 @@ static SimResult sim(const SimCase *k)
         {
             vx += dt * (ix - i_load) / c_x;
         }
+        if (!sw_on && vx < k->vx_floor) { vx = k->vx_floor; }   /* what held VBUS at 3.2 V on the bench */
         vb += dt * (il - ix) / c_b;
         if (g_dump != NULL && n % 25 == 0 &&
             ((t >= g_dump_t0 && t < g_dump_t1) || (t >= g_dump_t2 && t < g_dump_t3)))
         {
-            fprintf(g_dump, "%.2f,%.5f\n", 1e6f * t, vb);
+            fprintf(g_dump, "%.2f,%.5f,%.5f,%.5f\n", 1e6f * t, vb, vx, il);
         }
         if (il > res.il_max) { res.il_max = il; }
         const float t_ev = (k->t_load_s > 0.0f) ? k->t_load_s : ((k->t_close_s > 0.0f) ? k->t_close_s : 0.0f);
@@ -679,7 +686,7 @@ static void dump_traces(const char *dir)
         snprintf(path, sizeof path, "%s/trace_cx%.0f_%s.csv", dir, cxs[a], loops[l].name);
         g_dump = fopen(path, "w");
         if (g_dump == NULL) { printf("cannot write %s\n", path); return; }
-        fprintf(g_dump, "t_us,vb\n");
+        fprintf(g_dump, "t_us,vb,vx,il\n");
         SimCase k = { .v_ref = 20.0f, .v_in = 24.0f, .r_load = 25.3f, .c_x_uf = cxs[a], .c_x_fixed = fixed[a],
                       .t_end_s = 19e-3f, .t_load_s = 5e-3f, .r_load2 = 8.0f, .t_load2_s = 17e-3f, .r_load3 = 25.3f,
                       .t_open_s = 1.0f, .t_close_s = 1.0f, .fast = loops[l].fast, .fast_div = loops[l].div,
@@ -693,8 +700,36 @@ static void dump_traces(const char *dir)
 }
 #endif
 
-int main(void)
+#ifdef SIM_REPLAY
+/* 2026-10-23 bench replay: switch-pulse at 20 V forced CCM 400 kHz into 25.3 ohm,
+ * 55 uF VBUS side held at >= 3.2 V while open, the 3 A limit on the switch
+ * current, today's 20 kHz loop.  argv: r0 tau_us open_ms vx_floor out.csv */
+static float g_close_shift_us = 0.0f;   /* where in the 50 us PID cycle the switch closes */
+static void replay(float r0, float tau, float open_ms, float floor_v, float il_cap, float cx_uf, const char *out)
 {
+    const float t_close = 30e-3f + g_close_shift_us * 1e-6f;
+    SimCase k = { .v_ref = 20.0f, .v_in = 24.0f, .ilim_a = 3.0f, .r_load = 25.3f, .c_x_uf = cx_uf, .c_x_fixed = true,
+                  .t_end_s = 40e-3f, .t_open_s = t_close - open_ms * 1e-3f, .t_close_s = t_close, .meas_ix = true,
+                  .sw_r0_ohm = r0, .sw_tau_us = tau, .vx_floor = floor_v, .fw_sync = true, .il_cap_a = il_cap };
+    g_dump_t0 = t_close - 200e-6f; g_dump_t1 = t_close + 6e-3f; g_dump_t2 = 1.0f; g_dump_t3 = 1.0f;
+    g_dump = fopen(out, "w");
+    fprintf(g_dump, "t_us,vb,vx,il\n");
+    SimResult r = sim(&k);
+    fclose(g_dump); g_dump = NULL;
+    printf("cap %.1f r0 %.1f tau %.0f: vx0 %.2f  vb 50/100/150/300 us %.2f %.2f %.2f %.2f  vb min %.2f max %.2f  IL max %.2f  uvp %d ovp %d\n",
+           il_cap, r0, tau, r.vx_close, r.vb_after[0], r.vb_after[1], r.vb_after[2], r.vb_after[3], r.vb_min, r.vb_max,
+           r.il_max_after_ev, r.t_uvp_s > 0, r.t_ovp_s > 0);
+}
+#endif
+
+int main(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+#ifdef SIM_REPLAY
+    if (argc == 9) { g_close_shift_us = (float)atof(argv[8]); argc = 8; }
+    if (argc == 8) { replay((float)atof(argv[1]), (float)atof(argv[2]), (float)atof(argv[3]), (float)atof(argv[4]),
+                            (float)atof(argv[5]), (float)atof(argv[6]), argv[7]); return 0; }
+#endif
     test_timing();
     test_law();
 #ifdef SIM_EXPLORE
