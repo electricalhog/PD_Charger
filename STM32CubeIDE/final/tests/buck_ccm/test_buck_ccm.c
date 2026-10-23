@@ -217,6 +217,9 @@ typedef struct
     bool  battery_from_start;                          /* the battery is there at t = 0 */
     float il_cap_a;                                    /* per-period bound on the average L1 current (COMP1), 0: none */
     float v_ref2, t_ref_s;                             /* setpoint change, slewed 4 mV per cycle */
+    bool  meas_ix;                                     /* the limit measures the switch current (ID_MON, R6) */
+    bool  c_x_fixed;                                   /* c_x_uf is not derated with bias (bulk, mixed) */
+    float sw_r0_ohm, sw_tau_us;                        /* Q5/Q6 turn-on: r_sw + r0 exp(-t / tau) after closing */
 } SimCase;
 
 typedef struct
@@ -225,6 +228,9 @@ typedef struct
     float lim_share;     /* share of the last 2 ms spent limiting */
     float t_settle_s;    /* last time |I - I_end| > 5 % of I_end (+50 mA) */
     float u_end;
+    float t_uvp_s, t_ovp_s;   /* first PID sample under 50 % / over 110 % of V_ref (0: none) */
+    float vx_close;           /* bench node when the switch closed */
+    float vb_after[4];        /* board node 50, 100, 150, 300 us after the switch closed */
 } SimResult;
 
 static const BuckCcmGains SIM_GAINS = {
@@ -236,7 +242,7 @@ static SimResult sim(const SimCase *k)
 {
     const float dt = 0.02e-6f, L = 4.7e-6f, r_l = 0.022f, r_sw = 0.035f, l_w = 0.5e-6f;
     const float c_b = 5.0f * c_mlcc(k->v_ref);
-    const float c_x = k->c_x_uf * 1e-6f * (c_mlcc(k->v_ref) / 10e-6f);
+    const float c_x = k->c_x_uf * 1e-6f * (k->c_x_fixed ? 1.0f : (c_mlcc(k->v_ref) / 10e-6f));
     BuckCcmTimingCfg c = {
         .period_ns = 2500u, .pulse_start_ns = 260u, .dt_ns = 20u, .refresh_ns = 200u,
         .refresh_interval_ns = 5000u, .min_on_ns = 100u, .min_q2_end_ns = 60u,
@@ -269,7 +275,7 @@ static SimResult sim(const SimCase *k)
         const float t = (float)n * dt;
         const int ph = n % n_isr;
         if (ph >= n_isr - (int)(45e-6f / dt)) { vsum += vb; vcnt++; }
-        if (ph >= (int)(13.9e-6f / dt) && ph < (int)(23.3e-6f / dt)) { isum += il; icnt++; }
+        if (ph >= (int)(13.9e-6f / dt) && ph < (int)(23.3e-6f / dt)) { isum += k->meas_ix ? ix : il; icnt++; }
         if (ph == 0 && n > 0)
         {
             const float v_meas = (float)(vsum / (vcnt ? vcnt : 1));
@@ -277,6 +283,8 @@ static SimResult sim(const SimCase *k)
             {
                 if (v_ref + 0.004f < k->v_ref2) { v_ref += 0.004f; } else if (v_ref > k->v_ref2 + 0.004f) { v_ref -= 0.004f; } else { v_ref = k->v_ref2; }
             }
+            if (t > 1e-3f && res.t_uvp_s == 0.0f && v_meas < 0.5f * v_ref) { res.t_uvp_s = t; }
+            if (t > 1e-3f && res.t_ovp_s == 0.0f && v_meas > 1.1f * v_ref) { res.t_ovp_s = t; }
             const uint32_t ton = buck_ccm_update(&s, &g, &c, v_ref, v_meas, k->v_in, i_meas);
             i_meas = (float)(isum / (icnt ? icnt : 1));   /* read next cycle */
             vsum = isum = 0.0;  vcnt = icnt = 0;
@@ -302,7 +310,21 @@ static SimResult sim(const SimCase *k)
         const float v_sw = d * k->v_in + r * vb;
         il += dt * (v_sw - vb - il * r_l) / L;
         if (k->il_cap_a > 0.0f && il > k->il_cap_a) { il = k->il_cap_a; }
-        if (sw_on) { ix += dt * (vb - vx - ix * r_sw) / l_w; } else { ix = 0.0f; }
+        float r_sw_t = r_sw;
+        if (k->sw_r0_ohm > 0.0f && t >= k->t_close_s)
+        {
+            r_sw_t += k->sw_r0_ohm * expf(-(t - k->t_close_s) / (k->sw_tau_us * 1e-6f));
+        }
+        if (n == (int)(k->t_close_s / dt)) { res.vx_close = vx; }
+        {
+            static const float after_us[4] = { 50.0f, 100.0f, 150.0f, 300.0f };
+            for (int j = 0; j < 4; j++)
+            {
+                if (n == (int)((k->t_close_s + after_us[j] * 1e-6f) / dt)) { res.vb_after[j] = vb; }
+            }
+        }
+        /* implicit in ix: r_sw_t / l_w is stiff while the switch turns on */
+        if (sw_on) { ix = (ix + dt * (vb - vx) / l_w) / (1.0f + dt * r_sw_t / l_w); } else { ix = 0.0f; }
         float i_load = (r_load > 0.0f) ? vx / r_load : 0.0f;
         if (r_bat > 0.0f)
         {
@@ -467,10 +489,39 @@ static void test_unclip(void)
     CHECK(fabsf(dp - 3.18f) < 0.02f, "ripple %.3f A", dp);
 }
 
+#ifdef SIM_EXPLORE
+/* Calibrate the reconnect: bench-side C and the Q5/Q6 turn-on against
+ * 2026-10-20 (no bound: about -5.2 / +2.9 V) and 2026-10-21 (3.5 A bound:
+ * board 14.68 / 11.18 / 10.02 V at 50 / 100 / 150 us, SW_UVP). */
+static void explore_reconnect(void)
+{
+    /* firmware options on the plausible plant range */
+    const float cxs[] = { 200.0f, 400.0f };
+    const float taus[] = { 60.0f, 100.0f };
+    const float r0s[] = { 2.0f, 5.0f };
+    const float lims[] = { 0.0f, 3.0f, 1.5f };
+    for (int a = 0; a < 2; a++) for (int b = 0; b < 2; b++) for (int c = 0; c < 2; c++) for (int d = 0; d < 3; d++)
+    {
+        SimCase k = { .v_ref = 20.0f, .v_in = 24.0f, .ilim_a = lims[d], .r_load = 25.3f, .c_x_uf = cxs[a], .c_x_fixed = true,
+                      .t_end_s = 40e-3f, .t_open_s = 5e-3f, .t_close_s = 21e-3f, .meas_ix = true,
+                      .sw_r0_ohm = r0s[c], .sw_tau_us = taus[b] };
+        SimResult r = sim(&k);
+        printf("cx %3.0f tau %3.0f r0 %3.1f lim %.1f | vb 50/100/150/300us %5.2f %5.2f %5.2f %5.2f  min %5.2f max %5.2f  uvp %.2f ovp %.2f ms  end I %.2f V %.2f\n",
+               cxs[a], taus[b], r0s[c], lims[d], r.vb_after[0], r.vb_after[1], r.vb_after[2], r.vb_after[3],
+               r.vb_min, r.vb_max, r.t_uvp_s ? 1e3f * (r.t_uvp_s - k.t_close_s) : -1.0f,
+               r.t_ovp_s ? 1e3f * (r.t_ovp_s - k.t_close_s) : -1.0f, r.i_end, r.v_end);
+    }
+}
+#endif
+
 int main(void)
 {
     test_timing();
     test_law();
+#ifdef SIM_EXPLORE
+    explore_reconnect();
+    return 0;
+#endif
     test_unclip();
     test_limit();
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
