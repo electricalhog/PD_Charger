@@ -516,6 +516,10 @@ reads so I can get rid of the 1nF caps on both voltage dividers"; 100 kHz is the
   0.3–0.5 ms to 0.1–0.2 ms.
 - **The dip is the plant's.** 0.43 V for 1.7 A at 55 µF is 0.25 Ω, √(4.7 µH / 71 µF) = 0.26 Ω. More capacitance moves
   it; the loop rate does not.
+- **The traces** (`-DSIM_DUMP`, `bench/results/2026-10-23/scripts/plot_model_traces.py`) show what the extremes do not.
+  The "best stable" gains are less damped than today's loop in places:
+  - at 8 µF the 100 kHz gains ring for about 1.5 ms after a release, where today's loop rings for about 0.8 ms;
+  - at 300 µF the per-period gains ring for over 1.4 ms at about 4 kHz.
 - **Recommendation:** no 100 kHz interrupt for step response. Its use would be a lower-delay limit and protection, if
   needed. A per-period loop buys about 10 % at the cost of an interrupt every 2.5 µs.
 
