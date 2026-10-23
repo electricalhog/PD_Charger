@@ -251,6 +251,10 @@ static const BuckCcmGains SIM_GAINS = {
     .ilim_a = 0.0f, .kl = LIM_KL, .dt_lim_s = 50e-6f,
 };
 
+/** SIM_DUMP: when set, sim() writes "t_us,vb" every 0.5 us inside
+ *  [g_dump_t0, g_dump_t1) and [g_dump_t2, g_dump_t3) (seconds). */
+static FILE *g_dump = NULL;
+static float g_dump_t0, g_dump_t1, g_dump_t2, g_dump_t3;
 static SimResult sim(const SimCase *k)
 {
     const float dt = 0.02e-6f, L = 4.7e-6f, r_l = 0.022f, r_sw = 0.035f, l_w = 0.5e-6f;
@@ -397,6 +401,11 @@ static SimResult sim(const SimCase *k)
             vx += dt * (ix - i_load) / c_x;
         }
         vb += dt * (il - ix) / c_b;
+        if (g_dump != NULL && n % 25 == 0 &&
+            ((t >= g_dump_t0 && t < g_dump_t1) || (t >= g_dump_t2 && t < g_dump_t3)))
+        {
+            fprintf(g_dump, "%.2f,%.5f\n", 1e6f * t, vb);
+        }
         if (il > res.il_max) { res.il_max = il; }
         const float t_ev = (k->t_load_s > 0.0f) ? k->t_load_s : ((k->t_close_s > 0.0f) ? k->t_close_s : 0.0f);
         if (t >= t_ev && il > res.il_max_after_ev) { res.il_max_after_ev = il; }
@@ -651,6 +660,39 @@ static void explore_fast(void)
 }
 #endif
 
+#ifdef SIM_DUMP
+/* Traces behind plan 9.4's table: 9 CSVs (C x loop), V_out at the board
+ * node around the 0.8 -> 2.5 A step (5 ms) and the release (17 ms). */
+static void dump_traces(const char *dir)
+{
+    const float cxs[] = { 8.0f, 55.0f, 300.0f };
+    const bool fixed[] = { false, true, true };
+    struct { const char *name; bool fast; int div; float kp, ki, kd; } loops[3] = {
+        { "20k",  false, 4, 0.0f, 0.0f,     0.0f },
+        { "100k", true,  4, 0.0f, 3142.0f,  1e-6f },
+        { "400k", true,  1, 0.2f, 12566.0f, 4e-6f },
+    };
+    g_dump_t0 = 4.9e-3f; g_dump_t1 = 6.5e-3f; g_dump_t2 = 16.9e-3f; g_dump_t3 = 18.5e-3f;
+    for (int a = 0; a < 3; a++) for (int l = 0; l < 3; l++)
+    {
+        char path[256];
+        snprintf(path, sizeof path, "%s/trace_cx%.0f_%s.csv", dir, cxs[a], loops[l].name);
+        g_dump = fopen(path, "w");
+        if (g_dump == NULL) { printf("cannot write %s\n", path); return; }
+        fprintf(g_dump, "t_us,vb\n");
+        SimCase k = { .v_ref = 20.0f, .v_in = 24.0f, .r_load = 25.3f, .c_x_uf = cxs[a], .c_x_fixed = fixed[a],
+                      .t_end_s = 19e-3f, .t_load_s = 5e-3f, .r_load2 = 8.0f, .t_load2_s = 17e-3f, .r_load3 = 25.3f,
+                      .t_open_s = 1.0f, .t_close_s = 1.0f, .fast = loops[l].fast, .fast_div = loops[l].div,
+                      .n_avg = 1, .kp = loops[l].kp, .ki = loops[l].ki, .kd = loops[l].kd, .rc_tau_us = 0.8f,
+                      .sample_frac = 0.5f };
+        SimResult r = sim(&k);
+        fclose(g_dump);
+        g_dump = NULL;
+        printf("%s: step min %+.2f, release max %+.2f\n", path, r.w1_min - 20.0f, r.w2_max - 20.0f);
+    }
+}
+#endif
+
 int main(void)
 {
     test_timing();
@@ -661,6 +703,10 @@ int main(void)
 #endif
 #ifdef SIM_FAST
     explore_fast();
+    return 0;
+#endif
+#ifdef SIM_DUMP
+    dump_traces(SIM_DUMP);
     return 0;
 #endif
     test_unclip();
