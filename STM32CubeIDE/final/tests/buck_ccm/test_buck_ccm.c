@@ -144,10 +144,12 @@ static void test_timing(void)
 static void test_law(void)
 {
     BuckCcmTimingCfg c = cfg(2500u, 20u);
-    BuckCcmGains g = { .ki = 3142.0f, .kp = 0.0f, .u_min_v = -1.0f, .u_max_v = 2.0f, .dt_s = 50e-6f };
+    BuckCcmGains g = { .ki = 3142.0f, .kp = 0.0f, .u_min_v = -1.0f, .u_max_v = 2.0f, .dt_s = 50e-6f,
+                       .dt_lim_s = 50e-6f };
     BuckCcmState s = { 0 };
+    buck_ccm_reset(&s, 0.0f, 20.0f, 20.0f);
     /* Zero error, zero integrator: pure feedforward, D = V_ref (1 - r) / V_in. */
-    uint32_t ton = buck_ccm_update(&s, &g, &c, 20.0f, 20.0f, 24.0f, 0.0f);
+    uint32_t ton = buck_ccm_update(&s, &g, &c, 20.0f, 24.0f);
     const float want = 2500.0f * 20.0f * (1.0f - 150.0f / 10000.0f) / 24.0f;
     CHECK(fabsf((float)ton - want) <= 1.0f, "feedforward %u ns, want %.0f", ton, want);
 
@@ -157,7 +159,8 @@ static void test_law(void)
     float v_out = 19.5f;
     for (int k = 0; k < 4000; k++)
     {
-        ton = buck_ccm_update(&s, &g, &c, 20.0f, v_out, 24.0f, 0.0f);
+        buck_ccm_limit(&s, &g, 20.0f, v_out, 0.0f);
+        ton = buck_ccm_update(&s, &g, &c, v_out, 24.0f);
         const float d = (float)ton / 2500.0f;
         v_out = d * 24.0f / (1.0f - 150.0f / 10000.0f) - 2.5f * 0.08f;
     }
@@ -167,7 +170,7 @@ static void test_law(void)
     /* Anti-windup: V_in too low for the setpoint pins t_on at the ceiling;
      * the integrator must not keep climbing. */
     s.u_v = 0.0f;
-    for (int k = 0; k < 2000; k++) { (void)buck_ccm_update(&s, &g, &c, 20.0f, 15.0f, 18.0f, 0.0f); }
+    for (int k = 0; k < 2000; k++) { buck_ccm_limit(&s, &g, 20.0f, 15.0f, 0.0f); (void)buck_ccm_update(&s, &g, &c, 15.0f, 18.0f); }
     CHECK(s.clamp == 1, "expected the high clamp");
     CHECK(s.u_v < 1.0f, "integrator wound up to %.2f V at the clamp", s.u_v);
 
@@ -220,6 +223,11 @@ typedef struct
     bool  meas_ix;                                     /* the limit measures the switch current (ID_MON, R6) */
     bool  c_x_fixed;                                   /* c_x_uf is not derated with bias (bulk, mixed) */
     float sw_r0_ohm, sw_tau_us;                        /* Q5/Q6 turn-on: r_sw + r0 exp(-t / tau) after closing */
+    bool  fast;                                        /* voltage law every 10 us on period-synchronous samples */
+    float kp, ki, kd;                                  /* fast-loop gains (ki 0: SIM_GAINS') */
+    float kff_l, kff_r;                                /* load-current feedforward (ID_MON, synchronous) */
+    int   n_avg;                                       /* fast loop: samples averaged (1-4, 0: 4) */
+    int   fast_div;                                    /* periods per fast update (1-4, 0: 4 = 100 kHz at 400 kHz) */
 } SimCase;
 
 typedef struct
@@ -234,8 +242,8 @@ typedef struct
 } SimResult;
 
 static const BuckCcmGains SIM_GAINS = {
-    .ki = 3142.0f, .kp = 0.0f, .u_min_v = -1.0f, .u_max_v = 2.0f, .dt_s = 50e-6f,
-    .ilim_a = 0.0f, .kl = LIM_KL,
+    .ki = 3142.0f, .kp = 0.0f, .kd = 0.0f, .u_min_v = -1.0f, .u_max_v = 2.0f, .dt_s = 50e-6f,
+    .ilim_a = 0.0f, .kl = LIM_KL, .dt_lim_s = 50e-6f,
 };
 
 static SimResult sim(const SimCase *k)
@@ -250,13 +258,24 @@ static SimResult sim(const SimCase *k)
     const float r = buck_ccm_refresh_share(&c);
     BuckCcmGains g = SIM_GAINS;
     g.ilim_a = k->ilim_a;
+    if (k->fast)
+    {
+        g.dt_s = 2.5e-6f * (float)((k->fast_div > 0) ? k->fast_div : 4);
+        g.kp = k->kp;  g.kd = k->kd;  g.kff_l = k->kff_l;  g.kff_r = k->kff_r;
+        if (k->ki > 0.0f) { g.ki = k->ki; }
+    }
+    const int n_per = (int)(2.5e-6f / dt + 0.5f);   /* one switching period */
+    const int n_avg = (k->n_avg > 0) ? k->n_avg : 4;
+    float vsync[4] = { 0 };  int vsync_n = 0;
+    float isync[4] = { 0 };
     float r_load = k->r_load, v_bat = k->v_bat, r_bat = k->r_bat;
     float v_ref = k->v_ref;
     if (!k->battery_from_start) { r_bat = 0.0f; }
     /* start regulated at V_ref with the resistor alone */
     float i0 = (r_load > 0.0f) ? k->v_ref / r_load : 0.0f;
     float il = i0, vb = k->v_ref + i0 * r_sw, ix = i0, vx = k->v_ref;
-    BuckCcmState s = { .u_v = i0 * (r_l + r_sw), .clamp = 0, .limiting = 0u, .v_lim_v = 0.0f };
+    BuckCcmState s = { 0 };
+    buck_ccm_reset(&s, i0 * (r_l + r_sw), k->v_ref, k->v_ref);
     float d = (k->v_ref * (1.0f - r) + s.u_v) / k->v_in, d_next = d;
     const int n_isr = (int)(50e-6f / dt + 0.5f), n_apply = (int)(13e-6f / dt + 0.5f);
     const int n_end = (int)(k->t_end_s / dt);
@@ -285,21 +304,42 @@ static SimResult sim(const SimCase *k)
             }
             if (t > 1e-3f && res.t_uvp_s == 0.0f && v_meas < 0.5f * v_ref) { res.t_uvp_s = t; }
             if (t > 1e-3f && res.t_ovp_s == 0.0f && v_meas > 1.1f * v_ref) { res.t_ovp_s = t; }
-            const uint32_t ton = buck_ccm_update(&s, &g, &c, v_ref, v_meas, k->v_in, i_meas);
+            buck_ccm_limit(&s, &g, v_ref, v_meas, i_meas);
+            uint32_t ton = 0u;
+            (void)ton;
+            if (!k->fast)
+            {
+                ton = buck_ccm_update(&s, &g, &c, v_meas, k->v_in);
+                BuckCcmTiming tt;
+                buck_ccm_timing_ticks(&c, s.t_on_ticks, &tt);
+                d_next = (float)(tt.a_cmp2 - tt.a_cmp4) / (float)buck_ccm_ticks(2500u);
+                apply_at = n + n_apply;
+            }
             i_meas = (float)(isum / (icnt ? icnt : 1));   /* read next cycle */
             vsum = isum = 0.0;  vcnt = icnt = 0;
-            (void)ton;
-            BuckCcmTiming tt;
-            buck_ccm_timing_ticks(&c, s.t_on_ticks, &tt);
-            d_next = (float)(tt.a_cmp2 - tt.a_cmp4) / (float)buck_ccm_ticks(2500u);
-            apply_at = n + n_apply;
             if (n >= n_end - n_tail) { tail_isr++; if (s.limiting) { tail_lim++; } }
 #ifdef SIM_TRACE
             if (n % (n_isr * 10) == 0) { printf("T %.2f ms v %.3f i %.3f lim %d vl %.4f u %.4f ton %u\n", 1e3f * t, v_meas, i_meas, s.limiting, s.v_lim_v, s.u_v, ton); }
 #endif
             if (hist_n < hist_cap) { hist_i[hist_n] = i_meas; hist_t[hist_n] = t; hist_n++; }
         }
-        if (n == apply_at) { d = d_next; }
+        if (n == apply_at) { d = d_next; }   /* before a new update can move apply_at */
+        if (k->fast)
+        {
+            if (n % n_per == n_per / 2) { isync[vsync_n & 3] = ix; vsync[vsync_n++ & 3] = vb; }   /* synchronous samples */
+            if (n > 0 && n % (((k->fast_div > 0) ? k->fast_div : 4) * n_per) == 0)
+            {
+                float v_f = 0.0f;
+                for (int j = 0; j < n_avg; j++) { v_f += vsync[(vsync_n - 1 - j) & 3]; }
+                v_f /= (float)n_avg;
+                s.i_out_a = isync[(vsync_n - 1) & 3];
+                (void)buck_ccm_update(&s, &g, &c, v_f, k->v_in);
+                BuckCcmTiming tt;
+                buck_ccm_timing_ticks(&c, s.t_on_ticks, &tt);
+                d_next = (float)(tt.a_cmp2 - tt.a_cmp4) / (float)buck_ccm_ticks(2500u);
+                apply_at = n + n_per;   /* preloaded: the next period boundary */
+            }
+        }
         if (k->t_load_s > 0.0f && n == (int)(k->t_load_s / dt))
         {
             r_load = k->r_load2; v_bat = k->v_bat2; r_bat = k->r_bat2;
@@ -514,12 +554,60 @@ static void explore_reconnect(void)
 }
 #endif
 
+#ifdef SIM_FAST
+/* Fast-loop gain sweep: 20 V, load step 0.8 -> 2.5 A at 5 ms and back at
+ * 15 ms, across bench-side C; plus the switch-pulse reconnect. */
+typedef struct { float dip, peak, sd, settle_ms; bool ok; } StepMetrics;
+static int g_fast_div = 4;
+static StepMetrics step_case_ff(bool fast, float kp, float ki, float kd, float cx, bool fixed, int n_avg,
+                                float kff_l, float kff_r)
+{
+    StepMetrics m = { 0 };
+    SimCase k = { .v_ref = 20.0f, .v_in = 24.0f, .ilim_a = 0.0f, .r_load = 25.3f, .c_x_uf = cx, .c_x_fixed = fixed,
+                  .t_end_s = 25e-3f, .t_load_s = 5e-3f, .r_load2 = 8.0f, .t_open_s = 1.0f, .t_close_s = 1.0f,
+                  .fast = fast, .kp = kp, .ki = ki, .kd = kd, .n_avg = n_avg, .kff_l = kff_l, .kff_r = kff_r,
+                  .fast_div = g_fast_div };
+    SimResult r = sim(&k);
+    m.dip = r.vb_min - 20.0f;  m.peak = r.vb_max - 20.0f;  m.sd = r.i_sd;
+    m.ok = (r.t_uvp_s == 0.0f && r.t_ovp_s == 0.0f && fabsf(r.v_end - 20.0f) < 0.1f);
+    return m;
+}
+static StepMetrics step_case(bool fast, float kp, float ki, float kd, float cx, bool fixed, int n_avg)
+{
+    return step_case_ff(fast, kp, ki, kd, cx, fixed, n_avg, 0.0f, 0.0f);
+}
+static void explore_fast(void)
+{
+    const float cxs[] = { 8.0f, 50.0f, 300.0f };
+    const float kps[] = { 0.0f, 0.1f, 0.2f, 0.4f };
+    const float kds[] = { 0.0f, 1e-6f, 2e-6f, 4e-6f };
+    const float kis[] = { 3142.0f, 12566.0f };
+    const int divs[] = { 1, 4 };
+    for (int q = 0; q < 2; q++) for (int i = 0; i < 2; i++) for (int p = 0; p < 4; p++) for (int d = 0; d < 4; d++)
+    {
+        g_fast_div = divs[q];
+        bool all = true; char buf[300]; int o = 0;
+        for (int a2 = 0; a2 < 3; a2++)
+        {
+            StepMetrics m = step_case_ff(true, kps[p], kis[i], kds[d], cxs[a2], a2 == 2, 1, 0, 0);
+            all = all && m.ok && m.sd < 0.05f;
+            o += snprintf(buf + o, sizeof buf - o, "  [cx %3.0f %+.2f/%+.2f]", cxs[a2], m.dip, m.peak);
+        }
+        if (all) { printf("every %d period(s) ki %5.0f kp %.1f kd %.0e:%s\n", divs[q], kis[i], kps[p], kds[d], buf); }
+    }
+}
+#endif
+
 int main(void)
 {
     test_timing();
     test_law();
 #ifdef SIM_EXPLORE
     explore_reconnect();
+    return 0;
+#endif
+#ifdef SIM_FAST
+    explore_fast();
     return 0;
 #endif
     test_unclip();

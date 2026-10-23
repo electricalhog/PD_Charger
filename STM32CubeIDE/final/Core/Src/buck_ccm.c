@@ -63,17 +63,20 @@ float buck_ccm_u_initial(const BuckCcmTimingCfg *c, float i_load_a, float r_seri
     return i_load_a * r_series_ohm + 2.0f * vsd_v * (float)c->dt_ns / (float)c->period_ns;
 }
 
-uint32_t buck_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmTimingCfg *c,
-                         float v_ref_v, float v_out_v, float v_in_v, float i_a)
+void buck_ccm_reset(BuckCcmState *s, float u0_v, float v_ref_v, float v_out_v)
 {
-    const float e = v_ref_v - v_out_v;
-    float u = s->u_v + g->ki * e * g->dt_s;
-    if (u > g->u_max_v) { u = g->u_max_v; }
-    if (u < g->u_min_v) { u = g->u_min_v; }
-    if (v_in_v < 1.0f) { v_in_v = 1.0f; }
+    s->u_v        = u0_v;
+    s->clamp      = 0;
+    s->limiting   = 0u;
+    s->v_lim_v    = v_ref_v;
+    s->v_cmd_v    = v_ref_v;
+    s->v_prev_v   = v_out_v;
+    s->i_prev_a   = s->i_out_a;
+}
 
-    /* Current limit (buck_ccm.h): the reference the duty is built on,
-     * v_lim, integrates down while I is over the limit and back up while it
+void buck_ccm_limit(BuckCcmState *s, const BuckCcmGains *g, float v_ref_v, float v_out_v, float i_a)
+{
+    /* v_lim integrates down while I is over the limit and back up while it
      * is under, and hands back to V_ref once it reaches it. */
     float v_cmd = v_ref_v;
     uint8_t lim = 0u;
@@ -86,21 +89,39 @@ uint32_t buck_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmTi
         /* no integration into a duty clamp it is pushing against */
         if (!((s->clamp > 0 && ei > 0.0f) || (s->clamp < 0 && ei < 0.0f)))
         {
-            v_lim += g->kl * ei * g->dt_s;
+            v_lim += g->kl * ei * g->dt_lim_s;
         }
         if (v_lim < 0.0f) { v_lim = 0.0f; }
         if (v_lim < v_ref_v)
         {
             v_cmd = v_lim;
             lim   = 1u;
-            u     = s->u_v;   /* anti-windup: the voltage integrator holds */
         }
         s->v_lim_v = v_lim;
     }
+    s->v_cmd_v  = v_cmd;
+    s->limiting = lim;
+}
 
-    const float r1    = 1.0f - buck_ccm_refresh_share(c);
-    const float v_ff  = v_cmd * r1;
-    const float n     = v_ff + (lim ? 0.0f : g->kp * e) + u;
+uint32_t buck_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmTimingCfg *c,
+                         float v_out_v, float v_in_v)
+{
+    const float v_cmd = s->v_cmd_v;
+    const float e = v_cmd - v_out_v;
+    /* anti-windup: the voltage integrator holds while the limit sets v_cmd
+     * (V_out sits below V_ref by design) */
+    float u = s->limiting ? s->u_v : (s->u_v + g->ki * e * g->dt_s);
+    if (u > g->u_max_v) { u = g->u_max_v; }
+    if (u < g->u_min_v) { u = g->u_min_v; }
+    if (v_in_v < 1.0f) { v_in_v = 1.0f; }
+
+    const float r1   = 1.0f - buck_ccm_refresh_share(c);
+    const float v_ff = v_cmd * r1;
+    const float d_v  = -g->kd * (v_out_v - s->v_prev_v) / g->dt_s;   /* on V_out: no kick from v_cmd */
+    s->v_prev_v = v_out_v;
+    const float ff_i = g->kff_l * (s->i_out_a - s->i_prev_a) / g->dt_s + g->kff_r * s->i_out_a;
+    s->i_prev_a = s->i_out_a;
+    const float n = v_ff + g->kp * e + d_v + ff_i + u;
     float t_on = (float)c->period_ns * n / v_in_v;
     const float max_on = (float)buck_ccm_max_on_ns(c);
     const float min_on = (float)c->min_on_ns;
@@ -113,15 +134,14 @@ uint32_t buck_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmTi
      * turns: holding the old value left it up to the full ki e dt per cycle
      * above, and a 20 V reconnect at 400 kHz (duty ceiling 0.86, need 0.82)
      * overshot 1.7 V on the way back (bench 2026-10-20). */
-    if (!lim && ((clamp > 0 && e > 0.0f) || (clamp < 0 && e < 0.0f)))
+    if (!s->limiting && ((clamp > 0 && e > 0.0f) || (clamp < 0 && e < 0.0f)))
     {
-        const float u_edge = t_on * v_in_v / (float)c->period_ns - v_ff - g->kp * e;   /* lim == 0: v_ff on V_ref */
+        const float u_edge = t_on * v_in_v / (float)c->period_ns - v_ff - g->kp * e - d_v - ff_i;
         u = (u_edge < s->u_v) == (clamp > 0) ? u_edge : s->u_v;
         if (u > g->u_max_v) { u = g->u_max_v; }
         if (u < g->u_min_v) { u = g->u_min_v; }
     }
     s->u_v        = u;
-    s->limiting   = lim;
     s->clamp      = clamp;
     s->t_on_ticks = (uint32_t)(t_on * (float)BUCK_CCM_TICKS_PER_US * 1e-3f + 0.5f);
     return (uint32_t)(t_on + 0.5f);

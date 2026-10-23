@@ -2,11 +2,13 @@
  * @file    adc_monitor.c
  * @brief   ADC measurement subsystem implementation (NLSpec §14).
  *
- * ADC1: VD_MON, 8x oversampled once per switching period into a circular
- *       DMA ring; IS_MON as its injected group, 8x, once per PID cycle.
- * ADC2: one software-triggered sequence per PID cycle: VS_MON (V_in), then
- *       IL_MON and ID_MON auto-injected, each 16x oversampled, read the
- *       next cycle (adc_monitor_init).
+ * Timer-synchronized (2026-10-22, plans/ccm-buck-50w.md section 9): once
+ * per switching period HRTIM ADC trigger 1 (Timer C CMP4, placed by
+ * regulator.c in the quiet part of the period) starts both ADCs together:
+ *   ADC1 regular [VD_MON (V_out), IS_MON (I_in)]
+ *   ADC2 regular [VS_MON (V_in),  ID_MON (I_out)]
+ * one conversion per rank, into circular DMA rings.  Averaging is in
+ * software, over successive periods at the same phase.
  *
  * Scaling formulas (§14.2, Appendix D), voltages with the per-channel
  * bench-calibrated full scales in regulator_config.h:
@@ -16,7 +18,7 @@
  */
 
 #include "adc_monitor.h"
-#include "main.h"           /* hadc1, hadc2, hdma_adc1 handles */
+#include "main.h"           /* hadc1, hadc2, DMA handles */
 #include "stm32g4xx_hal.h"
 
 /* External peripheral handles declared in main.c */
@@ -30,6 +32,7 @@ extern ADC_HandleTypeDef hadc2;
 volatile AdcMeasurements adc_measurements = {0u, 0u, 0u, 0u, 0u};
 
 volatile uint16_t adc1_dma_buffer[ADC1_DMA_BUFFER_LENGTH] = {0u};
+volatile uint16_t adc2_dma_buffer[ADC2_DMA_BUFFER_LENGTH] = {0u};
 
 /* =========================================================================
  * Internal scaling helpers
@@ -91,78 +94,42 @@ void adc_monitor_init(void)
         /* TODO(hardware): decide whether to enter Error_Handler or continue
          * with un-calibrated ADC during bring-up.                           */
     }
-
-    /* Currents, averaged over the switching period (2026-10-21).  Until
-     * then ADC1's injected group converted IL_MON, ID_MON and IS_MON once
-     * per PID cycle at one point of the switching period: in buck CCM
-     * that read ID_MON 31 mA at 0.8 A and IS_MON implied efficiencies of
-     * 1.2 to 5 (bench 2026-10-20 section 4.5).  Each is now a hardware mean
-     * of conversions spaced 25 ADC cycles (0.588 us) apart, which spreads
-     * them over the period: at 400 and 200 kHz the 200/400 kHz fundamental
-     * of a triangle ripple is attenuated to 0.067 (8 samples) or 0.0625 (16)
-     * of its amplitude, the 3rd harmonic further (12.5-cycle samples beat
-     * 6.5 / 24.5 / 47.5 for every ratio that fits; a window that is a whole
-     * number of both periods needs 425 ADC cycles, which no power-of-two
-     * ratio of the available conversion times makes).
-     *
-     * ADC1 injected: IS_MON alone, 8x (the ratio and shift are shared with
-     * the regular VD_MON group: JDR1 is the sum of 8), 4.7 us, started by
-     * software from the PID ISR (adc_monitor_update).  With JOVSE and ROVSE
-     * both set, a VD_MON conversion it interrupts restarts (RM0440 21.4.29):
-     * one VD_MON trigger per PID cycle can be lost (regulator_adc_per_pid).
-     * The HRTIM-triggered start (ADC trigger 2, JEXTSEL 19) of 2026-10-20
-     * is gone: every channel read 0-64 counts in CCM, cause never found.
-     *
-     * The HAL sets the channel's sampling time but writes JSQR for rank 1
-     * only while ScanConvMode is ADC_SCAN_DISABLE (stm32g4xx_hal_adc_ex.c),
-     * and clears JOVSE with oversampling off, so both are written after it,
-     * with JADSTART = 0. */
-    {
-        ADC_InjectionConfTypeDef j = {0};
-        j.InjectedChannel               = ADC_CHANNEL_15;
-        j.InjectedRank                  = ADC_INJECTED_RANK_1;
-        j.InjectedSamplingTime          = ADC_SAMPLETIME_12CYCLES_5;
-        j.InjectedSingleDiff            = ADC_SINGLE_ENDED;
-        j.InjectedOffsetNumber          = ADC_OFFSET_NONE;
-        j.InjectedNbrOfConversion       = 1u;
-        j.InjectedDiscontinuousConvMode = DISABLE;
-        j.AutoInjectedConv              = DISABLE;
-        j.QueueInjectedContext          = DISABLE;
-        j.ExternalTrigInjecConv         = ADC_INJECTED_SOFTWARE_START;
-        j.ExternalTrigInjecConvEdge     = ADC_EXTERNALTRIGINJECCONV_EDGE_NONE;
-        j.InjecOversamplingMode         = DISABLE;
-        (void)HAL_ADCEx_InjectedConfigChannel(&hadc1, &j);
-        ADC1->JSQR  = (0u << ADC_JSQR_JL_Pos) | (15u << ADC_JSQR_JSQ1_Pos);
-        ADC1->CFGR2 |= ADC_CFGR2_JOVSE;
-    }
-
-    /* ADC2 (VS_MON, V_in): 16 conversions of 24.5 + 12.5 ADC cycles
-     * (0.87 us each at 42.5 MHz) averaged in hardware per trigger, 13.9 us.
-     * 0.87 us is 0.174 of the 5 us switching period, so the 16 samples fall
-     * at 16 different points of it over 2.8 periods.  Until 2026-10-12 V_in
-     * was one 2.5-cycle (59 ns) sample (MX_ADC2_Init) wherever in the period
-     * the PID ISR started: VS_MON is a 100k/5.82k divider with no capacitor,
-     * wired beside PHASE_2_P/N to the MCU, and at 28 V boost with 3 W 0.2 %
-     * of cycles read 1 to 5 V off (19.1 to 27.6 V around 24.4 V).
-     * Then, auto-injected (JAUTO) after it on the same start: IL_MON (PA1,
-     * ADC12_IN2) and ID_MON (PC1, ADC12_IN7), 16 x 25 cycles each (9.4 us,
-     * 12-bit means in JDR1 and JDR2), done 32.8 us after the start, read by
-     * the next PID cycle.  Oversampled auto-injected sequences need ROVSE
-     * and JOVSE together (RM0440 21.4.29).  Written here, with ADC2 not yet
-     * enabled.                                                             */
-    LL_ADC_SetChannelSamplingTime(ADC2, LL_ADC_CHANNEL_17, LL_ADC_SAMPLINGTIME_24CYCLES_5);
-    LL_ADC_SetChannelSamplingTime(ADC2, LL_ADC_CHANNEL_2,  LL_ADC_SAMPLINGTIME_12CYCLES_5);
-    LL_ADC_SetChannelSamplingTime(ADC2, LL_ADC_CHANNEL_7,  LL_ADC_SAMPLINGTIME_12CYCLES_5);
-    LL_ADC_ConfigOverSamplingRatioShift(ADC2, LL_ADC_OVS_RATIO_16, LL_ADC_OVS_SHIFT_RIGHT_4);
-    LL_ADC_SetOverSamplingDiscont(ADC2, LL_ADC_OVS_REG_CONT);
-    LL_ADC_SetOverSamplingScope(ADC2, LL_ADC_OVS_GRP_INJ_REG_RESUMED);
-    ADC2->JSQR = (1u << ADC_JSQR_JL_Pos) | (2u << ADC_JSQR_JSQ1_Pos) | (7u << ADC_JSQR_JSQ2_Pos);
-    ADC2->CFGR |= ADC_CFGR_JAUTO;
-
-    /* Run factory offset calibration on ADC2 */
     if (HAL_ADCEx_Calibration_Start(&hadc2, ADC_SINGLE_ENDED) != HAL_OK)
     {
         /* TODO(hardware): same as above */
+    }
+
+    /* Both ADCs, one scan per HRTIM ADC trigger 1 (adc_monitor.h).  Written
+     * here with ADSTART = 0 and the ADCs disabled (final.ioc has ADC1 as one
+     * 8x-oversampled VD_MON conversion and ADC2 as one software-started
+     * VS_MON conversion).
+     * History: until 2026-10-22 VD_MON was 8 conversions of 6.5 cycles over
+     * 3.58 us from master compare 1 (a 200 kHz phase, so at 400 kHz the
+     * window crossed edges); VS_MON 16 x 0.87 us from a software start
+     * (spread over 2.8 periods, edges included); the currents injected
+     * groups, which delay any regular trigger arriving during them
+     * (RM0440 21.4.10) and so would move a timed voltage sample.  IL_MON is
+     * no longer converted (its amplifier is bandwidth-limited, Dan
+     * 2026-10-22).  The 1 nF caps on the dividers are to come off: 24.5
+     * cycles (576 ns) settle the 100k/5.82k (5.5 kohm) source. */
+    ADC_TypeDef *const adcs[2] = { ADC1, ADC2 };
+    const uint32_t v_ch[2] = { LL_ADC_CHANNEL_1, LL_ADC_CHANNEL_17 };
+    const uint32_t i_ch[2] = { LL_ADC_CHANNEL_15, LL_ADC_CHANNEL_7 };
+    for (uint32_t k = 0u; k < 2u; k++)
+    {
+        ADC_TypeDef *a = adcs[k];
+        LL_ADC_SetOverSamplingScope(a, LL_ADC_OVS_DISABLE);
+        a->CFGR &= ~(ADC_CFGR_JAUTO | ADC_CFGR_CONT | ADC_CFGR_DISCEN);
+        LL_ADC_REG_SetTriggerSource(a, LL_ADC_REG_TRIG_EXT_HRTIM_TRG1);
+        LL_ADC_REG_SetTriggerEdge(a, LL_ADC_REG_TRIG_EXT_RISING);
+        LL_ADC_REG_SetDMATransfer(a, LL_ADC_REG_DMA_TRANSFER_UNLIMITED);
+        LL_ADC_REG_SetOverrun(a, LL_ADC_REG_OVR_DATA_OVERWRITTEN);
+        LL_ADC_REG_SetSequencerLength(a, LL_ADC_REG_SEQ_SCAN_ENABLE_2RANKS);
+        LL_ADC_REG_SetSequencerRanks(a, LL_ADC_REG_RANK_1, v_ch[k]);
+        LL_ADC_REG_SetSequencerRanks(a, LL_ADC_REG_RANK_2, i_ch[k]);
+        LL_ADC_SetChannelSamplingTime(a, v_ch[k], ADC_SYNC_V_SAMPLING);
+        LL_ADC_SetChannelSamplingTime(a, i_ch[k], ADC_SYNC_I_SAMPLING);
+        a->JSQR = 0u;
     }
 }
 
@@ -174,6 +141,55 @@ uint32_t adc_monitor_latest_scan(void)
     uint32_t next = ADC1_DMA_BUFFER_LENGTH - hadc1.DMA_Handle->Instance->CNDTR;
     if (next >= ADC1_DMA_BUFFER_LENGTH) { next = 0u; }
     return (next / ADC1_SCAN_LENGTH + ADC1_DMA_SCANS - 1u) % ADC1_DMA_SCANS;
+}
+
+uint32_t adc_monitor_latest_scan2(void)
+{
+    uint32_t next = ADC2_DMA_BUFFER_LENGTH - hadc2.DMA_Handle->Instance->CNDTR;
+    if (next >= ADC2_DMA_BUFFER_LENGTH) { next = 0u; }
+    return (next / ADC_SYNC_SCAN_LENGTH + ADC2_DMA_SCANS - 1u) % ADC2_DMA_SCANS;
+}
+
+/** Mean of the last n entries of one rank of a ring, from scan `scan` back. */
+static uint32_t ring_mean(const volatile uint16_t *ring, uint32_t scans, uint32_t scan, uint32_t rank, uint32_t n)
+{
+    uint32_t sum = 0u;
+    for (uint32_t k = 0u; k < n; k++)
+    {
+        sum += ring[scan * ADC_SYNC_SCAN_LENGTH + rank];
+        scan = (scan + scans - 1u) % scans;
+    }
+    return sum / n;
+}
+
+/** Mean of the last n (>= 3) entries less the highest and lowest. */
+static uint32_t ring_trimmed_mean(const volatile uint16_t *ring, uint32_t scans, uint32_t scan, uint32_t rank,
+                                  uint32_t n)
+{
+    uint32_t sum = 0u, lo = 0xFFFFu, hi = 0u;
+    for (uint32_t k = 0u; k < n; k++)
+    {
+        const uint32_t x = ring[scan * ADC_SYNC_SCAN_LENGTH + rank];
+        sum += x;
+        if (x < lo) { lo = x; }
+        if (x > hi) { hi = x; }
+        scan = (scan + scans - 1u) % scans;
+    }
+    return (sum - lo - hi) / (n - 2u);
+}
+
+void adc_monitor_update_slow(void)
+{
+    /* V_in (trimmed), I_out and I_in from the last ADC_SYNC_AVG_SCANS scans. */
+    const uint32_t s1 = adc_monitor_latest_scan();
+    const uint32_t s2 = adc_monitor_latest_scan2();
+    adc_measurements.v_in_mv = scale_voltage_mv((uint16_t)ring_trimmed_mean(adc2_dma_buffer, ADC2_DMA_SCANS, s2, 0u,
+                                                                            ADC_SYNC_AVG_SCANS), VS_MON_FULL_SCALE_MV);
+    adc_measurements.i_out_ma = scale_current_id_ma((uint16_t)ring_mean(adc2_dma_buffer, ADC2_DMA_SCANS, s2, 1u,
+                                                                        ADC_SYNC_AVG_SCANS));
+    adc_measurements.i_in_ma  = scale_current_il_ma((uint16_t)ring_mean(adc1_dma_buffer, ADC1_DMA_SCANS, s1, 1u,
+                                                                        ADC_SYNC_AVG_SCANS));
+    adc_measurements.i_inductor_ma = 0u;   /* IL_MON is not converted (adc_monitor_init) */
 }
 
 uint16_t adc_monitor_vd_median_raw(uint32_t n)
@@ -204,30 +220,10 @@ uint16_t adc_monitor_update(uint32_t n)
     if (n < 3u) { n = 3u; }
     uint32_t scan = adc_monitor_latest_scan();
     const uint16_t newest = adc_monitor_vd_at(scan);
-    uint32_t vsum = 0u, vmin = 0xFFFFu, vmax = 0u;
-    for (uint32_t k = 0u; k < n; k++)
-    {
-        uint32_t x = adc1_dma_buffer[scan * ADC1_SCAN_LENGTH + ADC1_DMA_INDEX_VD_MON];   /* sum of 8 */
-        vsum += x;
-        if (x < vmin) { vmin = x; }
-        if (x > vmax) { vmax = x; }
-        scan = (scan - 1u) & (ADC1_DMA_SCANS - 1u);
-    }
+    const uint32_t mean = ring_trimmed_mean(adc1_dma_buffer, ADC1_DMA_SCANS, scan, ADC1_DMA_INDEX_VD_MON, n);
     adc_measurements.v_out_mv = scale_voltage_mv(newest, VD_MON_FULL_SCALE_MV);
-
-    /* IS_MON: the injected sequence started one PID period ago (8 x 25
-     * cycles, 4.7 us; JDR1 is the sum), then start the next.  IL_MON and
-     * ID_MON come from ADC2 (adc_monitor_trigger_vin).                    */
-    if (ADC1->ISR & ADC_ISR_JEOS)
-    {
-        adc_measurements.i_in_ma = scale_current_il_ma((uint16_t)(ADC1->JDR1 >> ADC1_OVS_SUM_SHIFT));
-        ADC1->ISR = ADC_ISR_JEOS | ADC_ISR_JEOC;
-    }
-    if ((ADC1->CR & ADC_CR_JADSTART) == 0u)
-    {
-        ADC1->CR |= ADC_CR_JADSTART;
-    }
-    return (uint16_t)((vsum - vmin - vmax) / ((n - 2u) << ADC1_OVS_SUM_SHIFT));
+    adc_monitor_update_slow();
+    return (uint16_t)mean;
 }
 
 void adc_monitor_awd_init(void)
@@ -255,6 +251,16 @@ void adc_monitor_vd_recent(uint16_t *out, uint32_t n)
 
 void adc_monitor_start_adc1_dma(void)
 {
+    /* ADC2's ring first (ADC2_DMA_BUFFER_LENGTH): circular, no interrupts.
+     * final.ioc sets its DMA to normal mode. */
+    {
+        extern DMA_HandleTypeDef hdma_adc2;
+        hdma_adc2.Init.Mode = DMA_CIRCULAR;
+        (void)HAL_DMA_Init(&hdma_adc2);
+        HAL_ADC_Start_DMA(&hadc2, (uint32_t *)(void *)adc2_dma_buffer, ADC2_DMA_BUFFER_LENGTH);
+        __HAL_DMA_DISABLE_IT(hadc2.DMA_Handle, DMA_IT_TC | DMA_IT_HT);
+        __HAL_ADC_DISABLE_IT(&hadc2, ADC_IT_OVR);
+    }
     /* Start ADC1 once: each HRTIM ADC trigger 1 (once per switching period,
      * set up in regulator.c) converts one scan, and DMAContinuousRequests +
      * circular DMA (set in the IOC) fill the adc1_dma_buffer ring with no
@@ -271,97 +277,14 @@ void adc_monitor_start_adc1_dma(void)
     __HAL_ADC_DISABLE_IT(&hadc1, ADC_IT_OVR);
 }
 
-/** ADC2 started and its injected currents not yet read; start attempts
- *  skipped while it was (adc_monitor_trigger_vin). */
-static bool    adc2_busy  = false;
-static uint8_t adc2_waits = 0u;
-volatile uint32_t adc_monitor_adc2_aborts = 0u;
-
-bool adc_monitor_poll_currents(void)
-{
-    if ((ADC2->ISR & ADC_ISR_JEOS) == 0u)
-    {
-        return false;
-    }
-    const uint16_t il = (uint16_t)ADC2->JDR1;   /* 12-bit means (shift 4) */
-    const uint16_t id = (uint16_t)ADC2->JDR2;
-    ADC2->ISR = ADC_ISR_JEOS | ADC_ISR_JEOC;
-    adc_measurements.i_inductor_ma = scale_current_il_ma(il);
-    adc_measurements.i_out_ma      = scale_current_id_ma(id);
-    adc2_busy = false;
-    return true;
-}
-
-void adc_monitor_trigger_vin(void)
-{
-    /* Start one software-triggered ADC2 sequence: VS_MON (16 oversampled,
-     * 13.9 us), then IL_MON and ID_MON auto-injected (2 x 9.4 us), see
-     * adc_monitor_init.  Non-blocking: read V_in with
-     * adc_monitor_poll_vin_result() or adc_monitor_read_vin_result(); the
-     * currents are taken here, before the next start.
-     * Register-level once ADC2 is enabled: HAL_ADC_Start at -O0 cost
-     * several microseconds of the PID ISR (2026-09-28 evening).           */
-    if ((ADC2->CR & ADC_CR_ADEN) == 0u)
-    {
-        HAL_ADC_Start(&hadc2);   /* first call enables the ADC */
-        adc2_busy = true;
-        return;
-    }
-    (void)adc_monitor_poll_currents();
-    if (adc2_busy)
-    {
-        /* The injected part is still converting (ADSTART clears at the end
-         * of the regular part): setting ADSTART now is not defined for
-         * JAUTO.  Skip; after ADC2_MAX_WAITS skips abort it (ADSTP stops
-         * both groups in JAUTO) and start over. */
-        if (adc2_waits < ADC2_MAX_WAITS) { adc2_waits++; return; }
-        ADC2->CR |= ADC_CR_ADSTP;
-        for (uint32_t spin = 0u; spin < 2000u && (ADC2->CR & ADC_CR_ADSTP) != 0u; spin++) { }
-        adc_monitor_adc2_aborts++;
-    }
-    adc2_waits = 0u;
-    ADC2->ISR = ADC_ISR_EOC | ADC_ISR_EOS | ADC_ISR_OVR | ADC_ISR_JEOC | ADC_ISR_JEOS;   /* write-1-to-clear */
-    ADC2->CR |= ADC_CR_ADSTART;
-    adc2_busy = true;
-}
-
-bool adc_monitor_poll_vin_result(void)
-{
-    if ((ADC2->ISR & ADC_ISR_EOC) == 0u)
-    {
-        return false;
-    }
-    uint16_t raw = (uint16_t)ADC2->DR;   /* clears EOC */
-    adc_measurements.v_in_mv = scale_voltage_mv(raw, VS_MON_FULL_SCALE_MV);
-    return true;
-}
-
-void adc_monitor_read_vin_result(void)
-{
-    /* A bounded spin (the conversion takes 13.9 us), not
-     * HAL_ADC_PollForConversion: its 1 ms timeout reads HAL_GetTick(), which
-     * cannot advance with interrupts masked.  A missed conversion keeps the
-     * last V_in.                                                          */
-    for (uint32_t spin = 0u; spin < 20000u; spin++)
-    {
-        if (adc_monitor_poll_vin_result())
-        {
-            break;
-        }
-    }
-}
-
 void adc_monitor_scale_adc1_buffer(void)
 {
     /* V_out: the newest regular result (telemetry; the regulator uses the
-     * trimmed mean from adc_monitor_update).  Currents: the last injected
-     * results, which the PID ISR refreshes (adc_monitor_update, ADC1
-     * IS_MON; adc_monitor_trigger_vin, ADC2 IL_MON and ID_MON).          */
+     * trimmed mean from adc_monitor_update).  V_in and the currents: the
+     * synchronized rings (adc_monitor_update_slow).                      */
     uint32_t scan = adc_monitor_latest_scan();
     adc_measurements.v_out_mv = scale_voltage_mv(adc_monitor_vd_at(scan), VD_MON_FULL_SCALE_MV);
-    adc_measurements.i_inductor_ma = scale_current_il_ma((uint16_t)ADC2->JDR1);
-    adc_measurements.i_out_ma      = scale_current_id_ma((uint16_t)ADC2->JDR2);
-    adc_measurements.i_in_ma       = scale_current_il_ma((uint16_t)(ADC1->JDR1 >> ADC1_OVS_SUM_SHIFT));
+    adc_monitor_update_slow();
 }
 
 /* =========================================================================

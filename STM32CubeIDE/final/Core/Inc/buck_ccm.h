@@ -79,13 +79,17 @@ typedef struct
 
 typedef struct
 {
-    float ki;        /**< integral gain [1/s]            */
-    float kp;        /**< proportional gain [V/V]        */
-    float u_min_v;   /**< integrator floor [V]           */
-    float u_max_v;   /**< integrator ceiling [V]         */
-    float dt_s;      /**< PID period [s]                 */
-    float ilim_a;    /**< current limit [A]; <= 0: off   */
-    float kl;        /**< limit integral gain [V/(A s)]  */
+    float ki;        /**< integral gain [1/s]                         */
+    float kp;        /**< proportional gain [V/V]                     */
+    float kd;        /**< derivative gain on V_out [s] (damping)      */
+    float u_min_v;   /**< integrator floor [V]                        */
+    float u_max_v;   /**< integrator ceiling [V]                      */
+    float dt_s;      /**< buck_ccm_update period [s]                  */
+    float ilim_a;    /**< current limit [A]; <= 0: off                */
+    float kl;        /**< limit integral gain [V/(A s)]               */
+    float dt_lim_s;  /**< buck_ccm_limit period [s]                   */
+    float kff_l;     /**< load-current feedforward: kff_l dI_out/dt [H] (L1: 4.7e-6) */
+    float kff_r;     /**< and kff_r I_out [ohm] (the series drop)     */
 } BuckCcmGains;
 
 typedef struct
@@ -94,6 +98,10 @@ typedef struct
     int8_t clamp;    /**< last update: +1 at the longest pulse, -1 at the shortest */
     uint8_t limiting;/**< last update: the current limit set the duty           */
     float v_lim_v;   /**< the limit's voltage reference [V] (valid while limiting) */
+    float v_cmd_v;   /**< reference the duty is built on: min(V_ref, v_lim) [V]    */
+    float v_prev_v;  /**< last V_out buck_ccm_update saw (derivative) [V]          */
+    float i_out_a;   /**< output current for the feedforward, set by the caller [A] */
+    float i_prev_a;  /**< its value at the last update [A]                          */
     uint32_t t_on_ticks; /**< last update's on-time in HRTIM ticks (184 ps): 1 ns
                               of duty is 9.6 mV at 24 V, 0.2 A into a battery */
 } BuckCcmState;
@@ -123,11 +131,23 @@ float buck_ccm_refresh_share(const BuckCcmTimingCfg *c);
  *  the series-resistance drop plus the dead-time drop (body diodes at vsd_v). */
 float buck_ccm_u_initial(const BuckCcmTimingCfg *c, float i_load_a, float r_series_ohm, float vsd_v);
 
-/** One PID cycle of the duty law; returns the Q1 on-time [ns], clamped,
- *  at a clamp the integrator tracks the value that reaches it (no wind-up).
- *  i_a is the measured inductor (or output) current for the limit. */
+/** The current limit (buck_ccm.h top), once per dt_lim_s: sets s->v_cmd_v
+ *  to min(V_ref, v_lim) and s->limiting.  With ilim_a <= 0, v_cmd = V_ref. */
+void buck_ccm_limit(BuckCcmState *s, const BuckCcmGains *g, float v_ref_v, float v_out_v, float i_a);
+
+/** One update of the voltage law, every dt_s, on s->v_cmd_v: returns the Q1
+ *  on-time [ns] and sets s->t_on_ticks, clamped; at a clamp the integrator
+ *  tracks the value that reaches it (no wind-up), and it holds while the
+ *  limit is active. */
 uint32_t buck_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmTimingCfg *c,
-                         float v_ref_v, float v_out_v, float v_in_v, float i_a);
+                         float v_out_v, float v_in_v);
+/* With kff_l or kff_r set, the caller puts the output current in s->i_out_a
+ * before each update: the duty adds kff_l dI_out/dt + kff_r I_out, so the
+ * inductor is driven toward a load step as the step is measured, before
+ * V_out has moved (feedforward: it does not enter the loop gain). */
+
+/** Reset the law's state for an entry: integrator u0, no limit, v_cmd = V_ref. */
+void buck_ccm_reset(BuckCcmState *s, float u0_v, float v_ref_v, float v_out_v);
 
 /** Inductor ripple p-p [A] for a Q1 on-time: (V_in - V_out) t_on / L. */
 float buck_ccm_ripple_a(float v_in_v, float v_out_v, uint32_t t_on_ns, float l_h);

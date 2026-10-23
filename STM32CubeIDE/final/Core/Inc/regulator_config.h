@@ -632,9 +632,23 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
  *          result is the mean over 1.27 to 4.85 us of the period.
  * Units  : ns
  */
-#define ADC_VD_SAMPLE_END_NS 4850u
+#define ADC_VD_SAMPLE_END_NS 4850u   /* master compare 1; not the ADC trigger since 2026-10-22 */
 #define ADC_VD_SAMPLING_NS   3576u
 #define ADC_TRIGGER_TICKS    HRTIM_NS_TO_TICKS(ADC_VD_SAMPLE_END_NS - ADC_VD_SAMPLING_NS)
+
+/**
+ * Timer-synchronized ADC scans (2026-10-22, adc_monitor.h): HRTIM ADC
+ * trigger 1 on Timer C CMP4, once per switching period.
+ * ADC_SYNC_DCM_END_NS     outside CCM the scan ends this long before the
+ *                         period (at 200 kHz the trigger is at 3.6 us, the
+ *                         V sample about 4.2 us: after the pulse and the
+ *                         discharge, as ADC_VD_SAMPLE_END_NS was chosen)
+ * ADC_SYNC_EDGE_GUARD_NS  in CCM the scan sits centered in the longer of
+ *                         Q1's and Q2's intervals, at least this far from
+ *                         their edges when it fits
+ */
+#define ADC_SYNC_DCM_END_NS     50u
+#define ADC_SYNC_EDGE_GUARD_NS  100u
 
 /**
  * AWD_FILTER_SAMPLES — Consecutive VD_MON samples (one per period) outside

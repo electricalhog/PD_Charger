@@ -9,9 +9,9 @@
  *   - IS_MON (PB0 / ADC1_IN15) — I_in [mA]
  *   - VS_MON (PA4 / ADC2_IN17) — V_in [mV]
  *
- * ADC1 channels are read via DMA into a 4-element circular buffer.
- * ADC2 (VS_MON) is triggered by the PID ISR as one software-triggered,
- * 16x oversampled conversion (adc_monitor_init), read the next PID cycle.
+ * Both ADCs scan once per switching period on HRTIM ADC trigger 1 into
+ * circular DMA rings (see "Timer-synchronized scans" below).  IL_MON is
+ * not converted.
  *
  * All scaling constants are derived from the hardware parameters in
  * regulator_config.h (§3.3, §3.4, §14.2).
@@ -41,36 +41,45 @@ extern "C" {
  *   Rank 4: ADC1_IN15 (PB0, IS_MON)
  * =========================================================================*/
 
-/** ADC1 regular group: VD_MON alone, 8x hardware oversampled (6.5-cycle
- *  samples, 3.6 us of the period averaged per result), once per switching
- *  period on HRTIM ADC trigger 1 (master compare 1, see regulator.c), into
- *  a circular DMA ring of ADC1_DMA_SCANS results: 64 periods, 320 us, which
- *  doubles as a per-period trace (bu mem read adc1_dma_buffer).
- *  Why oversampling (2026-09-28 evening): single VD_MON samples read about
- *  1.6 V (sd) of noise that the scope does not see on V_out (TP2 has nothing
- *  above 20 mV past 220 kHz) and that a 1 nF on the divider did not change,
- *  so it enters after the divider; it beat at 40 kHz against the 200 kHz
- *  sampling.
- *  ADC1 injected group: IS_MON, 8x oversampled (25-cycle conversions, the
- *  sum in JDR1), started by software from the PID ISR (adc_monitor_update).
- *  ADC2: VS_MON, then IL_MON and ID_MON auto-injected, 16x each; all
- *  configured in adc_monitor_init (not in final.ioc).                    */
-#define ADC1_SCAN_LENGTH                1u
+/** Timer-synchronized scans (2026-10-22, plans/ccm-buck-50w.md section 9).
+ *  HRTIM ADC trigger 1 (Timer C CMP4, once per switching period, placed by
+ *  regulator.c in the quiet part of the period) starts both ADCs together:
+ *    ADC1 regular [VD_MON (V_out), IS_MON (I_in)]
+ *    ADC2 regular [VS_MON (V_in),  ID_MON (I_out)]
+ *  one conversion per rank (no hardware oversampling), each scan into a
+ *  circular DMA ring.  The ADC1 ring (64 periods) doubles as a per-period
+ *  V_out trace (bu mem read adc1_dma_buffer).
+ *  Why VD_MON was oversampled until now (2026-09-28): single samples read
+ *  about 1.6 V sd that the scope did not see.  Those were 2.5-cycle samples
+ *  from the 5.5 kohm divider at a random phase, right after other channels
+ *  in a 4-channel scan: unsettled charge, not divider noise.  24.5 cycles
+ *  at a fixed quiet phase is the test of that. */
+#define ADC_SYNC_SCAN_LENGTH            2u
+#define ADC_SYNC_V_SAMPLING             LL_ADC_SAMPLINGTIME_24CYCLES_5   /**< VD_MON, VS_MON: 576 ns */
+#define ADC_SYNC_I_SAMPLING             LL_ADC_SAMPLINGTIME_6CYCLES_5    /**< IS_MON, ID_MON (amplifier outputs) */
+/** Scan timing at 42.5 MHz (PCLK/4): trigger to the start of rank 1's
+ *  sampling, rank 1's sampling window, and the whole scan (37 + 19 cycles). */
+#define ADC_SYNC_LATENCY_NS             50u
+#define ADC_SYNC_V_SAMPLE_NS            576u
+#define ADC_SYNC_SCAN_NS                1318u
+/** Scans averaged for V_in, I_out and I_in (adc_monitor_update_slow). */
+#define ADC_SYNC_AVG_SCANS              8u
+
+#define ADC1_SCAN_LENGTH                ADC_SYNC_SCAN_LENGTH
 #define ADC1_DMA_SCANS                  64u
 #define ADC1_DMA_BUFFER_LENGTH          (ADC1_SCAN_LENGTH * ADC1_DMA_SCANS)
-/** VD_MON samples the trimmed mean may use (one PID period at 20 kHz). */
-#define ADC1_AVG_SCANS                  10u
+#define ADC2_DMA_SCANS                  32u
+#define ADC2_DMA_BUFFER_LENGTH          (ADC_SYNC_SCAN_LENGTH * ADC2_DMA_SCANS)
+/** VD_MON samples the trimmed mean may use. */
+#define ADC1_AVG_SCANS                  20u
 
-/** DMA ring index of VD_MON within a scan (the only regular channel) */
+/** DMA ring index of VD_MON within a scan */
 #define ADC1_DMA_INDEX_VD_MON           0u  /**< Regular rank 1: V_out */
 
-/** Results (DMA ring, ADC1 JDR1) are the sum of 8 conversions, no shift: with
- *  oversampling the analog watchdog compares data bits [15:4] (the LL driver
- *  note on LL_ADC_ConfigAnalogWDThresholds), so a 12-bit shifted result made
- *  it see V_out / 16 and it never fired (bench, 2026-09-28).  Unshifted, it
- *  sees the 12-bit value / 2: a 2-count (38 mV) threshold step.           */
-#define ADC1_OVS_SUM_SHIFT              3u  /**< sum -> 12-bit value */
-#define ADC1_AWD_THRESHOLD_SHIFT        1u  /**< 12-bit value -> TR1 field */
+/** The analog watchdog compares the 12-bit result directly (no
+ *  oversampling).  With 8x oversampling until 2026-10-22 it saw data bits
+ *  [15:4] of the unshifted sum (LL_ADC_ConfigAnalogWDThresholds note). */
+#define ADC1_AWD_THRESHOLD_SHIFT        0u  /**< 12-bit value -> TR1 field */
 
 /* =========================================================================
  * Measurement result structure
@@ -79,8 +88,8 @@ extern "C" {
 /**
  * AdcMeasurements — latest scaled measurements from all five channels.
  *
- * Updated atomically from the DMA complete callback (ADC1) and from
- * adc_monitor_poll_vin_result() / adc_monitor_read_vin_result() (ADC2).
+ * Updated by adc_monitor_update / adc_monitor_update_slow from the
+ * synchronized DMA rings (the PID ISR, and regulator_start).
  *
  * All values are in millivolts or milliamps (as labelled).  A value of 0
  * indicates the channel has not yet been sampled (e.g., at startup).
@@ -89,9 +98,9 @@ typedef struct
 {
     uint32_t v_out_mv;       /**< V_out measured via VD_MON divider [mV] */
     uint32_t v_in_mv;        /**< V_in measured via VS_MON divider [mV]  */
-    uint32_t i_inductor_ma;  /**< Inductor current via IL_MON, mean over 9.4 us [mA] */
-    uint32_t i_out_ma;       /**< Output current via ID_MON, mean over 9.4 us [mA]   */
-    uint32_t i_in_ma;        /**< Input current via IS_MON, mean over 4.7 us [mA]    */
+    uint32_t i_inductor_ma;  /**< 0: IL_MON is not converted since 2026-10-22 [mA]   */
+    uint32_t i_out_ma;       /**< ID_MON, mean of ADC_SYNC_AVG_SCANS synchronized [mA] */
+    uint32_t i_in_ma;        /**< IS_MON, the same [mA]                               */
 } AdcMeasurements;
 
 /* =========================================================================
@@ -110,7 +119,14 @@ typedef struct
  */
 extern volatile AdcMeasurements adc_measurements;
 
-/** Raw ADC1 DMA ring (12-bit counts, ADC1_SCAN_LENGTH per scan). */
+/** Raw DMA rings (12-bit counts, ADC_SYNC_SCAN_LENGTH per scan). */
+extern volatile uint16_t adc2_dma_buffer[ADC2_DMA_BUFFER_LENGTH];
+/** Index of the newest complete scan in adc2_dma_buffer. */
+uint32_t adc_monitor_latest_scan2(void);
+/** V_in (trimmed mean), I_out and I_in from the last ADC_SYNC_AVG_SCANS
+ *  synchronized scans into adc_measurements (adc_monitor_update calls it). */
+void adc_monitor_update_slow(void);
+/** ADC1's ring. */
 extern volatile uint16_t adc1_dma_buffer[ADC1_DMA_BUFFER_LENGTH];
 
 /** Index of the newest complete scan in adc1_dma_buffer (from the DMA's
@@ -151,7 +167,7 @@ static inline void adc_monitor_awd_window(uint32_t lt, uint32_t ht)
 /** 12-bit VD_MON value of ring slot `scan`. */
 static inline uint16_t adc_monitor_vd_at(uint32_t scan)
 {
-    return (uint16_t)(adc1_dma_buffer[scan * ADC1_SCAN_LENGTH + ADC1_DMA_INDEX_VD_MON] >> ADC1_OVS_SUM_SHIFT);
+    return adc1_dma_buffer[scan * ADC1_SCAN_LENGTH + ADC1_DMA_INDEX_VD_MON];
 }
 
 /* =========================================================================
@@ -179,44 +195,7 @@ void adc_monitor_init(void);
  */
 void adc_monitor_start_adc1_dma(void);
 
-/**
- * adc_monitor_trigger_vin — Start one ADC2 conversion for V_in.
- *
- * Non-blocking.  The conversion is 16 samples averaged in hardware, 13.9 us
- * spread over 2.8 switching periods (adc_monitor_init), so the TIM7 PID ISR
- * reads the result the next cycle (adc_monitor_poll_vin_result) and then
- * starts the next one.  IL_MON and ID_MON follow it (JAUTO, 18.8 us); a
- * start while they still convert is skipped (ADC2_MAX_WAITS).
- */
-void adc_monitor_trigger_vin(void);
 
-/** PID cycles adc_monitor_trigger_vin waits for ADC2's injected currents
- *  before it aborts the sequence (adc_monitor_adc2_aborts counts those). */
-#define ADC2_MAX_WAITS 2u
-extern volatile uint32_t adc_monitor_adc2_aborts;
-
-/** Take ADC2's injected IL_MON and ID_MON means into adc_measurements if the
- *  sequence has finished; true when it had.  adc_monitor_trigger_vin calls
- *  it before each start. */
-bool adc_monitor_poll_currents(void);
-
-/**
- * adc_monitor_poll_vin_result — Take the ADC2 result if it is ready.
- *
- * Non-blocking.  When ADC2's end of conversion is set, scales the result
- * into adc_measurements.v_in_mv and returns true; otherwise leaves it
- * unchanged and returns false.
- */
-bool adc_monitor_poll_vin_result(void);
-
-/**
- * adc_monitor_read_vin_result — Wait for the ADC2 result and update v_in_mv.
- *
- * Blocking (a bounded spin, the conversion takes 13.9 us), for task context:
- * regulator_start() after adc_monitor_trigger_vin().  On a timeout v_in_mv
- * keeps its last value.
- */
-void adc_monitor_read_vin_result(void);
 
 /**
  * adc_monitor_scale_adc1_buffer — Scale the raw DMA buffer to physical units.

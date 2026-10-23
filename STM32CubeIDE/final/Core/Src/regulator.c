@@ -381,19 +381,6 @@ volatile uint32_t regulator_ovp_ref_mv = 0u;
 /** V_in low-passed for mode selection (VIN_FILTER_SHIFT).                */
 volatile uint32_t regulator_vin_filt_mv = 0u;
 
-/** The last three ADC2 V_in results (PID ISR step 1): the modulator, the
- *  checks and the filter above use their median, so one bad conversion
- *  cannot set a PID cycle's on-time.                                       */
-static uint32_t vin_hist_mv[3];
-static uint8_t  vin_hist_next = 0u;
-
-static inline uint32_t median3(uint32_t a, uint32_t b, uint32_t c)
-{
-    if (a > b) { const uint32_t t = a; a = b; b = t; }
-    if (b > c) { b = c; }
-    return (a > b) ? a : b;
-}
-
 /** Peak-current comparator thresholds, DAC counts: protection only
  *  (PEAK_PROTECT_PCT above the mode's commanded peak limit; step 6).       */
 #define PEAK_PROTECT_MA(peak_ma) (((peak_ma) * PEAK_PROTECT_PCT / 100u) < PEAK_PROTECT_MAX_MA \
@@ -463,7 +450,8 @@ static void hrtim_park_sr(void)
  * with the outputs off and resets every counter together.
  *
  * In CCM the PID ISR stops the DCM modulator and pulse skipping, holds the
- * DCM loop's integrator, and computes Q1's on-time from buck_ccm_update();
+ * DCM loop's integrator, and computes Q1's on-time from buck_ccm_limit()
+ * and buck_ccm_update();
  * the timing comes from buck_ccm_timing().  Timer B's period becomes
  * CCM_REFRESH_INTERVAL_NS so Q4 refreshes Q3's bootstrap once per interval
  * (buck_ccm.h).  Entering and leaving only rewrites preloaded registers:
@@ -541,6 +529,34 @@ static void ccm_timing_cfg(BuckCcmTimingCfg *c)
     c->min_q2_end_ns       = CCM_MIN_Q2_END_NS;
 }
 
+/** Synchronized ADC trigger (adc_monitor.h), DCM and any mode outside CCM:
+ *  the scan ends ADC_SYNC_DCM_END_NS before the period does, after the
+ *  pulse and the discharge (as ADC_VD_SAMPLE_END_NS placed VD_MON's window
+ *  before), and clear of the next period's refresh. */
+static uint32_t adc_sync_dcm_trigger_ticks(uint32_t per_ticks)
+{
+    const uint32_t lead = HRTIM_NS_TO_TICKS_RT(ADC_SYNC_LATENCY_NS + ADC_SYNC_SCAN_NS + ADC_SYNC_DCM_END_NS);
+    return (per_ticks > lead + BUCK_CCM_MIN_COMPARE) ? (per_ticks - lead) : BUCK_CCM_MIN_COMPARE;
+}
+
+/** Synchronized ADC trigger in CCM: the scan centered in the longer of Q1's
+ *  on-interval and Q2's (before the period boundary, so clear of the Q4
+ *  refresh at its start), at least ADC_SYNC_EDGE_GUARD_NS from an edge. */
+static uint32_t adc_sync_ccm_trigger_ticks(const BuckCcmTiming *t, uint32_t per_ticks)
+{
+    const uint32_t q1s = t->a_cmp4, q1e = t->a_cmp2;
+    const uint32_t q2s = t->c_cmp2, q2e = per_ticks;
+    const bool use_q1 = (q1e - q1s) >= ((q2e > q2s) ? (q2e - q2s) : 0u);
+    const uint32_t s = use_q1 ? q1s : q2s;
+    const uint32_t len = use_q1 ? (q1e - q1s) : ((q2e > q2s) ? (q2e - q2s) : 0u);
+    const uint32_t scan = HRTIM_NS_TO_TICKS_RT(ADC_SYNC_LATENCY_NS + ADC_SYNC_SCAN_NS);
+    const uint32_t guard = HRTIM_NS_TO_TICKS_RT(ADC_SYNC_EDGE_GUARD_NS);
+    uint32_t trig = (len >= scan + 2u * guard) ? (s + (len - scan) / 2u) : (s + guard);
+    if (trig < BUCK_CCM_MIN_COMPARE)             { trig = BUCK_CCM_MIN_COMPARE; }
+    if (trig > per_ticks - BUCK_CCM_MIN_COMPARE) { trig = per_ticks - BUCK_CCM_MIN_COMPARE; }
+    return trig;
+}
+
 /** Period for a mode (see above). */
 static uint32_t mode_period_ticks(RegulatorMode mode)
 {
@@ -568,11 +584,7 @@ static void hrtim_set_switching_period(RegulatorMode mode)
     {
         HRTIM1->sTimerxRegs[idx[k]].PERxR = per;
     }
-    /* ADC trigger 2 once per PID cycle at this period.  Nothing listens
-     * since 2026-10-21 (adc_monitor.c: the currents are period means). */
-    HRTIM1->sCommonRegs.ADCPS1 = (HRTIM1->sCommonRegs.ADCPS1 & ~HRTIM_ADCPS1_AD2PSC) |
-        (((1000000000u / PID_EXECUTION_RATE_HZ) / sw_period_ns - 1u) << HRTIM_ADCPS1_AD2PSC_Pos);
-    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP4xR = per / 2u;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP4xR = adc_sync_dcm_trigger_ticks(per);
 }
 
 /** Reset the master and Timers A-D together (outputs off): Timer A's period
@@ -604,6 +616,8 @@ static void hrtim_write_ccm_timing(const BuckCcmTiming *t)
     tb->RSTx2R = HRTIM_RST2R_CMP3;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_D].CMP3xR = HRTIM_CMP_PARKED;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_D].CMP4xR = HRTIM_CMP_PARKED;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP4xR =
+        adc_sync_ccm_trigger_ticks(t, ta->PERxR);   /* the synchronized ADC scan */
 }
 
 /** Bench CCM PWM is running (regulator_bench_ccm_pwm); restored differently. */
@@ -870,9 +884,8 @@ void regulator_start(void)
     /* Re-sample V_in with INPUT_EN now asserted. */
     /* --- Take a fresh V_in reading before mode selection (§5.1) ---
      *
-     * adc_measurements.v_in_mv is only updated by adc_monitor_read_vin_result()
-     * inside the TIM7 PID ISR.  On first entry to regulator_start() the TIM7
-     * has not yet run, so the field holds its power-on value of 0.
+     * adc_measurements.v_in_mv is only updated by adc_monitor_update(), in
+     * the TIM7 PID ISR, which does not run while IDLE.
      *
      * With v_in_mv = 0 the mode selector would always choose BOOST (because
      * target_voltage_mv > 0 + MODE_HYSTERESIS_MV), then the first TIM7
@@ -882,17 +895,14 @@ void regulator_start(void)
      * single useful PID cycle completes — killing the outputs and leaving the
      * debug buffer nearly empty.
      *
-     * Taking a synchronous ADC2 sample here (≤ 1 ms blocking) gives mode
-     * selection a valid V_in reading.  The poll timeout is safe from the task
-     * context in which regulator_start() is called.                          */
-    adc_monitor_trigger_vin();
-    adc_monitor_read_vin_result();
+     * The synchronized ADC2 ring runs from init (the HRTIM counters run
+     * while IDLE), so the last scans, taken in the 2 ms above, give mode
+     * selection a valid V_in reading.                                     */
+    (void)adc_monitor_update(VOUT_MEDIAN_SAMPLES);
 
     /* --- Determine operating mode based on V_in vs setpoint (§5.1) --- */
     uint32_t v_in_mv = (uint32_t)adc_measurements.v_in_mv;
     regulator_vin_filt_mv  = v_in_mv;
-    vin_hist_mv[0] = vin_hist_mv[1] = vin_hist_mv[2] = v_in_mv;
-    adc_monitor_trigger_vin();   /* the first PID cycle reads this one */
     regulator_commanded_mv = voltage_mv;
     regulator_ovp_ref_mv   = voltage_mv;
     /* Start in buck below the buck-boost band, otherwise in buck-boost, and
@@ -933,9 +943,7 @@ void regulator_start(void)
     ccm_hold = 0u;
     ccm_dwell = 0u;
     ccm_ocp_count = 0u;
-    ccm_state.u_v = 0.0f;
-    ccm_state.clamp = 0;
-    ccm_state.limiting = 0u;
+    buck_ccm_reset(&ccm_state, 0.0f, (float)voltage_mv * 1e-3f, 0.0f);
     regulator_ccm_limiting = 0u;
     ccm_u_last_valid = false;
     regulator_i_out_filt_ma = 0;
@@ -1662,25 +1670,17 @@ void regulator_pid_tim7_isr(void)
         ADC1->IER |= ADC_IER_AWD1IE;   /* see regulator_start */
     }
 
-    /* --- 1. ADC conversions ---
-     * V_in: the result of the conversion the previous cycle started (16
-     * oversampled, 13.9 us, adc_monitor_init), then the next one.  The
-     * cycle uses the median of the last three results.                     */
+    /* --- 1. ADC conversions (adc_monitor.h, timer-synchronized scans) ---
+     * V_out as the trimmed mean of the last VOUT_MEDIAN_SAMPLES VD_MON
+     * samples, one per switching period (see "V_out sensing and pulse
+     * skipping"): the PID, soft-start, OVP/UVP and the debug log all see it.
+     * The newest raw sample is in adc_measurements.v_out_mv.  V_in is the
+     * trimmed mean of the last ADC_SYNC_AVG_SCANS VS_MON samples, taken at
+     * the same instants.                                                  */
     const uint32_t cyc_poll = DWT->CYCCNT;
-    if (adc_monitor_poll_vin_result())
-    {
-        vin_hist_mv[vin_hist_next] = adc_measurements.v_in_mv;
-        vin_hist_next = (uint8_t)((vin_hist_next + 1u) % 3u);
-    }
-    adc_monitor_trigger_vin();
+    regulator_vout_est_raw = adc_monitor_update(VOUT_MEDIAN_SAMPLES);   /* also V_in and the currents */
     cyc_record(regulator_cyc_vin_poll, DWT->CYCCNT - cyc_poll);
-    uint32_t v_in_mv = median3(vin_hist_mv[0], vin_hist_mv[1], vin_hist_mv[2]);
-
-    /* V_out as the trimmed mean of the last VOUT_MEDIAN_SAMPLES VD_MON
-     * samples (see "V_out sensing and pulse skipping"): the PID, soft-start,
-     * OVP/UVP and the debug log all see it.  The newest raw sample is in
-     * adc_measurements.v_out_mv.                                          */
-    regulator_vout_est_raw = adc_monitor_update(VOUT_MEDIAN_SAMPLES);   /* also the currents */
+    uint32_t v_in_mv = adc_measurements.v_in_mv;
     uint32_t v_out_mv  = ((uint32_t)regulator_vout_est_raw
                           * VD_MON_FULL_SCALE_MV) / ADC_FULL_SCALE_COUNTS;
     uint32_t i_l_ma    = adc_measurements.i_inductor_ma;
@@ -1976,10 +1976,10 @@ void regulator_pid_tim7_isr(void)
             const float u_base = ccm_u_last_valid ? ccm_u_last
                                : buck_ccm_u_initial(&ccm_cfg, regulator_i_cmd_ma * 1e-3f,
                                                     (float)CCM_R_EST_MOHM * 1e-3f, (float)CCM_VSD_MV * 1e-3f);
-            ccm_state.u_v = u_base + ((float)v_out_mv - (float)effective_setpoint_mv) * 1e-3f
-                                     * (1.0f - buck_ccm_refresh_share(&ccm_cfg));
-            ccm_state.clamp = 0;
-            ccm_state.limiting = 0u;
+            buck_ccm_reset(&ccm_state,
+                           u_base + ((float)v_out_mv - (float)effective_setpoint_mv) * 1e-3f
+                                    * (1.0f - buck_ccm_refresh_share(&ccm_cfg)),
+                           (float)effective_setpoint_mv * 1e-3f, (float)v_out_mv * 1e-3f);
         }
     }
 
@@ -2087,10 +2087,12 @@ void regulator_pid_tim7_isr(void)
             .u_min_v = (float)CCM_U_MIN_MV * 1e-3f, .u_max_v = (float)CCM_U_MAX_MV * 1e-3f,
             .dt_s = 1.0f / (float)PID_EXECUTION_RATE_HZ,
             .ilim_a = (float)regulator_ccm_ilim_ma * 1e-3f, .kl = regulator_ccm_ilim_kl,
+            .dt_lim_s = 1.0f / (float)PID_EXECUTION_RATE_HZ,
         };
         const uint8_t was_limiting = ccm_state.limiting;
-        (void)buck_ccm_update(&ccm_state, &g, &ccm_cfg, (float)effective_setpoint_mv * 1e-3f,
-                              (float)v_out_mv * 1e-3f, (float)v_in_mv * 1e-3f, (float)i_lim_meas_ma * 1e-3f);
+        buck_ccm_limit(&ccm_state, &g, (float)effective_setpoint_mv * 1e-3f, (float)v_out_mv * 1e-3f,
+                       (float)i_lim_meas_ma * 1e-3f);
+        (void)buck_ccm_update(&ccm_state, &g, &ccm_cfg, (float)v_out_mv * 1e-3f, (float)v_in_mv * 1e-3f);
         BuckCcmTiming t;
         buck_ccm_timing_ticks(&ccm_cfg, ccm_state.t_on_ticks, &t);   /* 184 ps steps */
         hrtim_write_ccm_timing(&t);
@@ -2113,6 +2115,7 @@ void regulator_pid_tim7_isr(void)
         /* Back to the buck DCM legs (Timer A CMP3, Timer B period and
          * sources); the writes below then set this cycle's DCM edges. */
         hrtim_apply_buck_mode_static_leg();
+        HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP4xR = adc_sync_dcm_trigger_ticks(sw_period_ticks);
     }
     if (regulator_mode != REGULATOR_MODE_BOOST)
     {
@@ -2636,13 +2639,13 @@ static void hrtim_configure_adc_trigger(void)
     HRTIM1->sMasterRegs.MCR    = (HRTIM1->sMasterRegs.MCR & ~HRTIM_MCR_CK_PSC) |
                                  (HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].TIMxCR & HRTIM_TIMCR_CK_PSC) |
                                  HRTIM_MCR_CONT;
-    HRTIM1->sCommonRegs.ADC1R  = HRTIM_ADC1R_AD1MC1;
-    /* ADC trigger 2 on Timer C CMP4 (mid-period), one per PID cycle
-     * (hrtim_set_switching_period).  Unused since 2026-10-21: the ADC1
-     * injected group it was tried on (JEXTSEL 19) read 0-64 counts in CCM,
-     * and the currents are now software-started period means. */
-    HRTIM1->sCommonRegs.ADC2R  = HRTIM_ADC2R_AD2TCC4;
-    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP4xR = HRTIM_PERIOD_COUNTS / 2u;
+    /* ADC trigger 1: Timer C CMP4, once per switching period (adc_monitor.h,
+     * placed by adc_sync_set_trigger).  Master compare 1 until 2026-10-22. */
+    HRTIM1->sCommonRegs.ADC1R  = HRTIM_ADC1R_AD1TCC4;
+    /* ADC trigger 2 is unused (2026-10-20: the ADC1 injected group tried on
+     * it, JEXTSEL 19, read 0-64 counts in CCM; cause never found). */
+    HRTIM1->sCommonRegs.ADC2R  = 0u;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP4xR = adc_sync_dcm_trigger_ticks(HRTIM_PERIOD_COUNTS);
     HRTIM1->sCommonRegs.ADCPS1 = (HRTIM1->sCommonRegs.ADCPS1 & ~HRTIM_ADCPS1_AD2PSC) |
         (((1000000000u / PID_EXECUTION_RATE_HZ) / (uint32_t)(1000000000ull / HRTIM_SWITCHING_FREQ_HZ) - 1u)
          << HRTIM_ADCPS1_AD2PSC_Pos);

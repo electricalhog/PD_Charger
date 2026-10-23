@@ -446,3 +446,35 @@ A faster current-sense amplifier would be a hardware change. The capture itself 
    untested.
 4. **ID_MON range:** 5.5 A full scale.
 
+
+## 9. Timer-synchronized voltage sampling and a 100 kHz CCM voltage loop (2026-10-22, in progress)
+
+Dan, 2026-10-22: "really pay attention to making a fast voltage control loop and prioritize timer synchronized adc
+reads so I can get rid of the 1nF caps on both voltage dividers"; 100 kHz is the loop rate; IL_MON is not relied on.
+
+### 9.1 Sampling
+
+- **One trigger per switching period**, HRTIM ADC trigger 1 on Timer C CMP4. Timer C runs at the switching period in
+  every mode, and CMP4 is free in CCM and DCM.
+- **The firmware places the trigger** so the sampling window sits in the quiet part of the period:
+  - CCM: inside the longer of Q1's and Q2's intervals, clear of the edges and the Q4 refresh;
+  - DCM: late in the period, after the discharge, as ADC_VD_SAMPLE_END_NS did.
+- **Two scans on the same trigger, simultaneous:**
+  - ADC1 regular [VD_MON, IS_MON];
+  - ADC2 regular [VS_MON, ID_MON].
+  V_out and V_in come from the same instant. The currents follow about 0.9 µs later in the same quiet interval.
+- **No injected conversions.** RM0440 21.4.10: a regular trigger arriving during an injected conversion runs only after
+  it, which would move a voltage sample onto an edge. IL_MON is no longer converted.
+- **Sampling time:** 24.5 ADC cycles (576 ns) for the dividers. This settles a 5.5 kΩ source without the 1 nF caps. The
+  current amplifiers get 6.5 cycles.
+- **No hardware oversampling:** one conversion per trigger, DMA rings on both ADCs. The averaging is in software, over
+  whole periods at the same phase.
+
+### 9.2 Loop split
+
+- **100 kHz, the Timer A repetition interrupt** (every 4th period at 400 kHz, every 2nd at 200 kHz). It runs only the
+  CCM voltage law, on the mean of the synchronized V_out samples since the last update and the matching V_in. The
+  result goes into the next period's preloaded compares, so the delay from sample to duty is about one switching
+  period plus the averaging (against about 60 µs before).
+- **20 kHz, the PID ISR**, keeps everything else: CCM entry and exit, the current limit (which publishes v_cmd and the
+  integrator hold), SW_OCP, protection, PD and telemetry. DCM is unchanged apart from the sampling.
