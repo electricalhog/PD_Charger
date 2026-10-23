@@ -92,15 +92,51 @@ median build replaced it at 21:49.
 
 Data: `data/trace_sync_dcm_5v.csv`, `data/trace_sync_ccm400_{5,9,20}v.csv`.
 
-## 6. End state
+## 6. `switch-pulse 20` at 20 V / 400 kHz with synchronized scans and the 3 A ID_MON limit (2026-10-23 13:40)
+
+Dan: "Ok to try 20v".
+- **Setup:** forced CCM at 400 kHz, the 20 V contract, the 25.3 Ω, the median build, defaults: limit 3 A on ID_MON
+  (gain 952 ‰), `regulator_ccm_peak_ma` 0.
+- **Scope:** CH1 IL_MON (1× coax), CH3 SW2, CH4 VBUS; triggered on IL_MON rising through 0.8 V (about 3.2 A).
+
+**No fault.** The regulator stayed RUNNING in CCM (one OVER_BAND handback and re-entry, one limit entry). On
+2026-10-20 the same pulse, without the limit, dipped −5.2 V, rang to +2.9 V and latched SW_OVP.
+
+| From the reconnect | Board V_out (trace, 50 µs) | ID_MON | Limit |
+|---|---|---|---|
+| −0.05 ms (switch open) | 20.01 V | 7 mA | — |
+| +0.05 ms | 19.82 V | 0.94 A | — |
+| +0.10 ms | 16.11 V | 5.23 A | engaged, v_lim from the measured V_out |
+| +0.15 ms | 15.44 V (minimum) | 5.19 A | |
+| +0.25 ms | 15.70 V | 0.30 A | |
+| +1.0 / +2.0 / +3.0 ms | 16.57 / 17.52 / 18.45 V | 0.6 A | v_lim rising about 1 V/ms (kl × (3 A − 0.6 A)) |
+| +4.35 ms | about 19.5 V | | hands back |
+
+- **Overall:** maximum after the reconnect 20.16 V, no overshoot. Below 19 V (vSrcNew) for about 3.5 ms, inside PD's
+  5 ms.
+- **Host model** (2026-10-22 explore run): dip to 15.2–18 V, peak 20.4–20.8 V.
+- **Scope (5 µs means), the reconnect:**
+  - VBUS on the bench side had drained to 3.2 V during the open.
+  - L1 carried about 6.5 A (IL_MON, bandwidth-limited) for about 75 µs.
+  - VBUS recharged from 3.2 to 15.4 V in about 125 µs.
+- **VBUS-side capacitance:** the charge balance (L1 about 600 µC plus the board ceramics about 75 µC, over 12.2 V) gives
+  about 55 µF effective at 3–15 V. Dan estimated more than 200 µF at 0 V; ceramic capacitance falls with bias, so the
+  two agree.
+- **The cost is the slow recovery.** Once the inrush is over, the limit's v_lim climbs at kl × (I_lim − I). That is
+  kept low for battery stability, so it takes 4 ms to get back to 20 V with only 0.6 A flowing.
+
+Data: `data/trace_switch_pulse20_ilim3a_sync.csv`, `data/scope_switch_pulse20_ilmon_sw2_vbus_5us.csv`.
+
+## 7. End state
 
 The board runs the median build (737665e plus the median) at boot defaults, CCM off: 5 V contract, buck DCM 200 kHz,
-no fault.
+no fault. The scope is back to CH1 IL_MON, CH2 SW1, CH3 SW2, CH4 VBUS, 2 µs/div, CH2 trigger.
 
-## 7. Next
+## 8. Next
 
 1. **The 1 nF caps:** with the scans synchronized and 24.5-cycle samples, the firmware no longer needs them. Remove one
    divider's cap, then repeat the table above.
 2. **The 100 kHz voltage loop:** the host model says a faster loop on V_out alone does not change the load step on
    this hardware (plan section 9). The fast interrupt is not built yet; Dan's decision.
-3. **`switch-pulse 20`** at 20 V / 400 kHz with the 3 A ID_MON limit (model: peak 20.4–20.8 V, against 22.3 V).
+3. **The limit's recovery after an inrush** (section 6): a faster climb of v_lim while I is far under the limit,
+   checked against the battery cases in the host test.
