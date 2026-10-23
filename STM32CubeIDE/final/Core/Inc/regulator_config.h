@@ -643,12 +643,10 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
  *                         period (at 200 kHz the trigger is at 3.6 us, the
  *                         V sample about 4.2 us: after the pulse and the
  *                         discharge, as ADC_VD_SAMPLE_END_NS was chosen)
- * ADC_SYNC_EDGE_GUARD_NS  in CCM the scan sits centered in the longer of
- *                         Q1's and Q2's intervals, at least this far from
- *                         their edges when it fits
+ * In CCM the kept V sample is centered in the longer of Q1's and Q2's
+ * intervals (regulator_adc_phase_sel / _permille move it, regulator.c).
  */
 #define ADC_SYNC_DCM_END_NS     50u
-#define ADC_SYNC_EDGE_GUARD_NS  100u
 
 /**
  * AWD_FILTER_SAMPLES — Consecutive VD_MON samples (one per period) outside

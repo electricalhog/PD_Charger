@@ -539,19 +539,32 @@ static uint32_t adc_sync_dcm_trigger_ticks(uint32_t per_ticks)
     return (per_ticks > lead + BUCK_CCM_MIN_COMPARE) ? (per_ticks - lead) : BUCK_CCM_MIN_COMPARE;
 }
 
-/** Synchronized ADC trigger in CCM: the scan centered in the longer of Q1's
+/** Synchronized ADC trigger in CCM: the kept V sample's window centered at
+ *  regulator_adc_phase_permille of an interval, the longer of Q1's
  *  on-interval and Q2's (before the period boundary, so clear of the Q4
- *  refresh at its start), at least ADC_SYNC_EDGE_GUARD_NS from an edge. */
+ *  refresh at its start) by default, or the one regulator_adc_phase_sel
+ *  names (1 Q1, 2 Q2; a bench knob, 2026-10-23). */
+volatile uint8_t  regulator_adc_phase_sel      = 0u;
+volatile uint16_t regulator_adc_phase_permille = 500u;
 static uint32_t adc_sync_ccm_trigger_ticks(const BuckCcmTiming *t, uint32_t per_ticks)
 {
     const uint32_t q1s = t->a_cmp4, q1e = t->a_cmp2;
     const uint32_t q2s = t->c_cmp2, q2e = per_ticks;
-    const bool use_q1 = (q1e - q1s) >= ((q2e > q2s) ? (q2e - q2s) : 0u);
+    const uint32_t len1 = q1e - q1s;
+    const uint32_t len2 = (q2e > q2s) ? (q2e - q2s) : 0u;
+    const uint8_t sel = regulator_adc_phase_sel;
+    const bool use_q1 = (sel == 1u) || (sel == 0u && len1 >= len2);
     const uint32_t s = use_q1 ? q1s : q2s;
-    const uint32_t len = use_q1 ? (q1e - q1s) : ((q2e > q2s) ? (q2e - q2s) : 0u);
-    const uint32_t scan = HRTIM_NS_TO_TICKS_RT(ADC_SYNC_LATENCY_NS + ADC_SYNC_SCAN_NS);
-    const uint32_t guard = HRTIM_NS_TO_TICKS_RT(ADC_SYNC_EDGE_GUARD_NS);
-    uint32_t trig = (len >= scan + 2u * guard) ? (s + (len - scan) / 2u) : (s + guard);
+    const uint32_t len = use_q1 ? len1 : len2;
+    uint32_t pm = regulator_adc_phase_permille;
+    if (pm > 1000u) { pm = 1000u; }
+    const uint32_t center = s + (len * pm) / 1000u;
+    const uint32_t lead = HRTIM_NS_TO_TICKS_RT(ADC_SYNC_LATENCY_NS + ADC_SYNC_V_START_NS + ADC_SYNC_V_SAMPLE_NS / 2u);
+    /* A target early in the period triggers in the previous one (the scan
+     * is periodic).  Clamping it to the period start instead put the kept
+     * sample across Q1's turn-off at duty 0.5: the reading stepped +1.7 V
+     * and latched SW_OVP on a 9 -> 20 V ramp (2026-10-23, double scans). */
+    uint32_t trig = (center >= lead) ? (center - lead) : (center + per_ticks - lead);
     if (trig < BUCK_CCM_MIN_COMPARE)             { trig = BUCK_CCM_MIN_COMPARE; }
     if (trig > per_ticks - BUCK_CCM_MIN_COMPARE) { trig = per_ticks - BUCK_CCM_MIN_COMPARE; }
     return trig;

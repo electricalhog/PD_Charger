@@ -124,9 +124,16 @@ void adc_monitor_init(void)
         LL_ADC_REG_SetTriggerEdge(a, LL_ADC_REG_TRIG_EXT_RISING);
         LL_ADC_REG_SetDMATransfer(a, LL_ADC_REG_DMA_TRANSFER_UNLIMITED);
         LL_ADC_REG_SetOverrun(a, LL_ADC_REG_OVR_DATA_OVERWRITTEN);
+#if ADC_SYNC_DOUBLE_V
+        LL_ADC_REG_SetSequencerLength(a, LL_ADC_REG_SEQ_SCAN_ENABLE_3RANKS);
+        LL_ADC_REG_SetSequencerRanks(a, LL_ADC_REG_RANK_1, v_ch[k]);   /* discarded */
+        LL_ADC_REG_SetSequencerRanks(a, LL_ADC_REG_RANK_2, v_ch[k]);
+        LL_ADC_REG_SetSequencerRanks(a, LL_ADC_REG_RANK_3, i_ch[k]);
+#else
         LL_ADC_REG_SetSequencerLength(a, LL_ADC_REG_SEQ_SCAN_ENABLE_2RANKS);
         LL_ADC_REG_SetSequencerRanks(a, LL_ADC_REG_RANK_1, v_ch[k]);
         LL_ADC_REG_SetSequencerRanks(a, LL_ADC_REG_RANK_2, i_ch[k]);
+#endif
         LL_ADC_SetChannelSamplingTime(a, v_ch[k], ADC_SYNC_V_SAMPLING);
         LL_ADC_SetChannelSamplingTime(a, i_ch[k], ADC_SYNC_I_SAMPLING);
         a->JSQR = 0u;
@@ -183,11 +190,11 @@ void adc_monitor_update_slow(void)
     /* V_in (trimmed), I_out and I_in from the last ADC_SYNC_AVG_SCANS scans. */
     const uint32_t s1 = adc_monitor_latest_scan();
     const uint32_t s2 = adc_monitor_latest_scan2();
-    adc_measurements.v_in_mv = scale_voltage_mv((uint16_t)ring_trimmed_mean(adc2_dma_buffer, ADC2_DMA_SCANS, s2, 0u,
+    adc_measurements.v_in_mv = scale_voltage_mv((uint16_t)ring_trimmed_mean(adc2_dma_buffer, ADC2_DMA_SCANS, s2, ADC_SYNC_RANK_V,
                                                                             ADC_SYNC_AVG_SCANS), VS_MON_FULL_SCALE_MV);
-    adc_measurements.i_out_ma = scale_current_id_ma((uint16_t)ring_mean(adc2_dma_buffer, ADC2_DMA_SCANS, s2, 1u,
+    adc_measurements.i_out_ma = scale_current_id_ma((uint16_t)ring_mean(adc2_dma_buffer, ADC2_DMA_SCANS, s2, ADC_SYNC_RANK_I,
                                                                         ADC_SYNC_AVG_SCANS));
-    adc_measurements.i_in_ma  = scale_current_il_ma((uint16_t)ring_mean(adc1_dma_buffer, ADC1_DMA_SCANS, s1, 1u,
+    adc_measurements.i_in_ma  = scale_current_il_ma((uint16_t)ring_mean(adc1_dma_buffer, ADC1_DMA_SCANS, s1, ADC_SYNC_RANK_I,
                                                                         ADC_SYNC_AVG_SCANS));
     adc_measurements.i_inductor_ma = 0u;   /* IL_MON is not converted (adc_monitor_init) */
 }
@@ -239,8 +246,10 @@ void adc_monitor_vd_recent(uint16_t *out, uint32_t n)
 {
     uint32_t next = ADC1_DMA_BUFFER_LENGTH - hadc1.DMA_Handle->Instance->CNDTR;
     if (next >= ADC1_DMA_BUFFER_LENGTH) { next = 0u; }
-    /* the scan holding the element before `next` has its VD_MON written */
-    uint32_t scan = ((next + ADC1_DMA_BUFFER_LENGTH - 1u) % ADC1_DMA_BUFFER_LENGTH) / ADC1_SCAN_LENGTH;
+    /* the newest scan whose kept VD_MON sample is written: its element is
+     * before `next` */
+    uint32_t scan = ((next + ADC1_DMA_BUFFER_LENGTH - 1u - ADC1_DMA_INDEX_VD_MON) % ADC1_DMA_BUFFER_LENGTH)
+                    / ADC1_SCAN_LENGTH;
     for (uint32_t k = 0u; k < n && k < 8u; k++)
     {
         out[k] = adc_monitor_vd_at(scan);

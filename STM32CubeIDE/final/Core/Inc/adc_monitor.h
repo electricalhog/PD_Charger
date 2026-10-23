@@ -54,14 +54,26 @@ extern "C" {
  *  from the 5.5 kohm divider at a random phase, right after other channels
  *  in a 4-channel scan: unsettled charge, not divider noise.  24.5 cycles
  *  at a fixed quiet phase is the test of that. */
-#define ADC_SYNC_SCAN_LENGTH            2u
+/** ADC_SYNC_DOUBLE_V 1: each divider is converted twice back to back and
+ *  the first result is discarded, so the ADC's sample capacitor starts the
+ *  kept sample at the divider's own voltage instead of the current
+ *  channel's (the scans are [V, V, I]).  0: [V, I].  2026-10-23, with the
+ *  dividers' 1 nF caps removed (Dan). */
+#ifndef ADC_SYNC_DOUBLE_V
+#define ADC_SYNC_DOUBLE_V               1u
+#endif
+#define ADC_SYNC_SCAN_LENGTH            (2u + ADC_SYNC_DOUBLE_V)
+#define ADC_SYNC_RANK_V                 (ADC_SYNC_DOUBLE_V)        /**< ring index of the kept V sample */
+#define ADC_SYNC_RANK_I                 (1u + ADC_SYNC_DOUBLE_V)   /**< ring index of the current      */
 #define ADC_SYNC_V_SAMPLING             LL_ADC_SAMPLINGTIME_24CYCLES_5   /**< VD_MON, VS_MON: 576 ns */
 #define ADC_SYNC_I_SAMPLING             LL_ADC_SAMPLINGTIME_6CYCLES_5    /**< IS_MON, ID_MON (amplifier outputs) */
 /** Scan timing at 42.5 MHz (PCLK/4): trigger to the start of rank 1's
- *  sampling, rank 1's sampling window, and the whole scan (37 + 19 cycles). */
+ *  sampling; the kept V sample's window and its start after that; and the
+ *  whole scan (37 cycles per V conversion, 19 for the current). */
 #define ADC_SYNC_LATENCY_NS             50u
 #define ADC_SYNC_V_SAMPLE_NS            576u
-#define ADC_SYNC_SCAN_NS                1318u
+#define ADC_SYNC_V_START_NS             (ADC_SYNC_DOUBLE_V * 871u)
+#define ADC_SYNC_SCAN_NS                (871u * (1u + ADC_SYNC_DOUBLE_V) + 447u)
 /** Scans averaged for V_in, I_out and I_in (adc_monitor_update_slow). */
 #define ADC_SYNC_AVG_SCANS              8u
 
@@ -74,7 +86,7 @@ extern "C" {
 #define ADC1_AVG_SCANS                  20u
 
 /** DMA ring index of VD_MON within a scan */
-#define ADC1_DMA_INDEX_VD_MON           0u  /**< Regular rank 1: V_out */
+#define ADC1_DMA_INDEX_VD_MON           ADC_SYNC_RANK_V  /**< the kept V_out sample */
 
 /** The analog watchdog compares the 12-bit result directly (no
  *  oversampling).  With 8x oversampling until 2026-10-22 it saw data bits
