@@ -133,14 +133,14 @@ extern volatile uint16_t adc1_dma_buffer[ADC1_DMA_BUFFER_LENGTH];
  *  remaining count). */
 uint32_t adc_monitor_latest_scan(void);
 
-/** Median of the last n (<= 15) VD_MON samples, raw counts.  One sample per
+/** Median of the last n (<= 15) VD_MON samples, raw counts (the V_out
+ *  estimate since 2026-10-22, adc_monitor_update).  One sample per
  *  switching period, so a single bad sample never reaches the result.    */
 uint16_t adc_monitor_vd_median_raw(uint32_t n);
 
-/** One pass over the ring for the PID ISR: updates adc_measurements' ADC1
- *  fields (as adc_monitor_scale_adc1_buffer) and returns the mean of the
- *  last n (3 to ADC1_AVG_SCANS) VD_MON samples less the highest and lowest,
- *  in raw counts.                                                         */
+/** For the PID ISR: updates adc_measurements (V_out newest sample, V_in and
+ *  the currents from the rings) and returns the median of the last n (<= 15)
+ *  VD_MON samples, in raw counts.                                         */
 uint16_t adc_monitor_update(uint32_t n);
 
 /** ADC1 analog watchdog 1 on VD_MON (single channel), unfiltered.  The

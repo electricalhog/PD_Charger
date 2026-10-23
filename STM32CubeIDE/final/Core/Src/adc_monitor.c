@@ -213,17 +213,16 @@ _Static_assert((ADC1_DMA_SCANS & (ADC1_DMA_SCANS - 1u)) == 0u, "ADC1_DMA_SCANS m
 
 uint16_t adc_monitor_update(uint32_t n)
 {
-    /* Trimmed mean of the last n VD_MON samples: sum less the highest and
-     * lowest.  One pass; a sorted median cost 3.6 % of the CPU here
-     * (bu profile, 2026-09-28).                                            */
-    if (n > ADC1_AVG_SCANS) { n = ADC1_AVG_SCANS; }
-    if (n < 3u) { n = 3u; }
+    /* Median since the synchronized scans (2026-10-22): single VD_MON
+     * samples carry outliers of up to +-4.8 V, about one in three at 5 V
+     * DCM, with the divider's 1 nF still fitted (so not divider noise) and
+     * VS_MON on ADC2 clean at the same instants.  A trimmed mean of 9
+     * dropped one of each and read 5.59 V: SW_OVP at the first start. */
     uint32_t scan = adc_monitor_latest_scan();
     const uint16_t newest = adc_monitor_vd_at(scan);
-    const uint32_t mean = ring_trimmed_mean(adc1_dma_buffer, ADC1_DMA_SCANS, scan, ADC1_DMA_INDEX_VD_MON, n);
     adc_measurements.v_out_mv = scale_voltage_mv(newest, VD_MON_FULL_SCALE_MV);
     adc_monitor_update_slow();
-    return (uint16_t)mean;
+    return adc_monitor_vd_median_raw(n);
 }
 
 void adc_monitor_awd_init(void)

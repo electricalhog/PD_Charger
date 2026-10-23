@@ -1869,7 +1869,9 @@ void regulator_pid_tim7_isr(void)
         regulator_p_in_mw       += (p_in  - regulator_p_in_mw)       / (1 << POWER_FILTER_SHIFT);
         int32_t il = ((int32_t)adc_measurements.i_inductor_ma * regulator_il_gain_permille) / 1000
                      + regulator_il_offset_ma;
-        if (regulator_ccm_active)
+        /* IL_MON is not converted since 2026-10-22 (adc_monitor.c): it
+         * reads 0, and the clipping correction is only for a real reading. */
+        if (regulator_ccm_active && adc_measurements.i_inductor_ma != 0u)
         {
             const float ripple_a = buck_ccm_ripple_a((float)v_in_mv * 1e-3f, (float)v_out_mv * 1e-3f,
                                                      regulator_on_time_ns, (float)INDUCTOR_VALUE_NH * 1e-9f);

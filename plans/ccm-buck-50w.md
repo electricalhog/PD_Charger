@@ -447,7 +447,7 @@ A faster current-sense amplifier would be a hardware change. The capture itself 
 4. **ID_MON range:** 5.5 A full scale.
 
 
-## 9. Timer-synchronized voltage sampling and a 100 kHz CCM voltage loop (2026-10-22, in progress)
+## 9. Timer-synchronized voltage sampling and a 100 kHz CCM voltage loop (2026-10-22)
 
 Dan, 2026-10-22: "really pay attention to making a fast voltage control loop and prioritize timer synchronized adc
 reads so I can get rid of the 1nF caps on both voltage dividers"; 100 kHz is the loop rate; IL_MON is not relied on.
@@ -478,3 +478,21 @@ reads so I can get rid of the 1nF caps on both voltage dividers"; 100 kHz is the
   period plus the averaging (against about 60 µs before).
 - **20 kHz, the PID ISR**, keeps everything else: CCM entry and exit, the current limit (which publishes v_cmd and the
   integrator hold), SW_OCP, protection, PD and telemetry. DCM is unchanged apart from the sampling.
+
+### 9.3 Status (2026-10-22 late, `bench/results/2026-10-22/README.md` section 5)
+
+- **Synchronized scans run on the hardware.** Forced CCM at 400 kHz through 5 → 9 → 20 V with no CCM exit. 9 V trace σ
+  is 25.7 mV, against 94.7 mV earlier the same night on the old 3.6 µs window that crossed the 400 kHz edges.
+- **The V_out estimate is the median of 9 synchronized samples.** The trimmed mean let start-up transients through
+  (SW_OVP at the first start).
+- **The 1 nF caps** are no longer needed by the firmware; removing one and repeating the table is the next hardware
+  step.
+- **The 100 kHz voltage loop is not built.** The host model (sweep in `tests/buck_ccm`, `-DSIM_FAST`):
+  - With V_out alone, kp > 0 at 100 kHz is unstable unless there is bulk capacitance on VBUS. The L1–board-ceramic
+    resonance (about 18 kHz, Q about 15) and about 9 µs of delay leave no phase.
+  - The 0.8 → 2.5 A step at 20 V moves from −0.86 / +0.72 V (today's 20 kHz loop) only to −0.75 / +0.63 V at the
+    best stable 100 kHz gains. With per-period updates it is −0.79 / +0.33 V. Open loop it is −0.83 / +0.66 V.
+  - The dip is set by Z0 = √(L/C) ≈ 0.54 Ω before any feedback acts.
+  - Load-current feedforward from ID_MON destabilizes: that current rings with the bench-side L–C.
+  - The levers are output capacitance with some ESR (the planned electrolytics), or a fast inductor-current signal.
+

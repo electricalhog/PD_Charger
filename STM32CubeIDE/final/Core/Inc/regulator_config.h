@@ -659,7 +659,7 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
  * VOUT_MEDIAN_SAMPLES — Samples in the trimmed mean V_out the PID uses
  *          (highest and lowest dropped).
  */
-#define AWD_FILTER_SAMPLES  2u
+#define AWD_FILTER_SAMPLES  3u   /* 2 until 2026-10-22: single synchronized samples have outliers */
 #define VOUT_MEDIAN_SAMPLES 9u
 
 /**
@@ -921,7 +921,8 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
  *                        limit, SW_OCP and the light-load exit: 1 ID_MON
  *                        (output shunt R6, after regulator_id_gain_permille
  *                        and _offset_ma), 0 IL_MON (after the IL gain,
- *                        offset and clipping correction).  Bench 2026-10-21,
+ *                        offset and clipping correction; IL_MON is not
+ *                        converted since 2026-10-22, so 0 reads 0 A).  Bench 2026-10-21,
  *                        forced CCM at 400 kHz into 25.3 ohm, 5-20 V: ID_MON
  *                        read 1.050 x V/R + 24 mA (the QT Py's idle draw is
  *                        in the offset), IL_MON 0.35-0.84 x and nonlinear
