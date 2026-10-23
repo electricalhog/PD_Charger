@@ -6,7 +6,7 @@
 | Operator | Claude Code, remotely through `bu`. Dan: "I dropped off both divider caps … Experiment with double samples too" |
 | Hardware | The 1 nF caps on both dividers (VD_MON, VS_MON) removed. IL_MON coax on CH1. 25.3 Ω on VBUS, QT Py idle |
 | Firmware | A: synchronized single-V scans with the V_out median (as 2026-10-22 section 5). B: the scans [V, V, I], first V discarded (`ADC_SYNC_DOUBLE_V`), plus runtime sample placement (`regulator_adc_phase_sel`, `_permille`); B2 is B with the trigger wrapped into the previous period instead of clamped |
-| Status | **No noise penalty from removing the caps; double samples a little cleaner. But in CCM the reading depends on where in the period it is taken (about 3 % at 9 V), and a sample at a switching edge reads volts off: two SW_OVP trips. Not ready to run CCM unattended on point samples** |
+| Status | **Bare dividers: no noise penalty, but in CCM the reading moved about 3 % with the sample position, and a sample on a switching edge read volts off (two SW_OVP trips). With smaller caps refitted (section 6, value assumed ~150 pF as suggested) and double samples, the spread away from edges is about 0.2 % (20 mV at 9 V, 40 mV at 20 V), and forced CCM 5 / 9 / 20 V runs with no exits** |
 
 ## 1. Caps off, single-V scans (firmware A)
 
@@ -70,12 +70,11 @@ runs from 1130 ns to the 2.5 µs period end. Abort guard: VBUS outside 7.7–10.
 - **Placement at 20 V:** Q2's interval is about 0.4 µs, too short for the sample, so it has to sit in Q1's interval,
   where the error is larger.
 
-## 4. End state
+## 4. State at 17:40
 
 - Firmware B2, boot defaults (double scans, automatic placement), RUNNING at 5 V in buck DCM, CCM off, no fault.
-- The scope's CH4 is at 1 V/div with offset −9 V.
 
-## 5. What it means for the filter question
+## 5. What the bare-divider runs meant for the filter question
 
 - **Timer triggering does remove the noise.** It fixed the CCM handbacks, and taking the caps off cost nothing in
   noise.
@@ -89,3 +88,44 @@ runs from 1130 ns to the 2.5 µs period end. Abort guard: VBUS outside 7.7–10.
      operating point. That is fragile.
   3. **Spread the sample phase over several periods** (equivalent-time sampling): this needs a per-period interrupt,
      or more HRTIM compares in the trigger.
+
+## 6. Caps refitted (17:50 – 17:54), firmware B2
+
+Dan: "Caps fitted". The value was not stated; this log assumes the ~150 pF suggested (time constant about 0.8 µs with
+the 5.5 kΩ divider). Scripts: `scripts/pass.py`, `scripts/phase.py`, `scripts/snap.py`.
+
+| Point | VD outliers / σ | VS outliers | Trace σ | CCM exits | VBUS (scope) | Bare, double (section 2) | Bare, single (section 1) |
+|---|---|---|---|---|---|---|---|
+| 5 V DCM | 3 / 3.8 | 6 | 22.3 mV | — | 4.985 V | 4.997 V | 4.998 V |
+| 5 V CCM 400 kHz | 14 / 4.5 | 3 | 24.5 mV | 0 | 4.926 V | 4.886 V | 4.826 V |
+| 9 V CCM | 9 / 4.2 | 7 | 27.9 mV | 0 | 8.923 V | 8.844 V | 8.746 V |
+| 20 V CCM | 26 / 5.6 | 11 | 40.8 mV | 0 | 19.735 V | — | 19.400 V |
+
+**The sample-phase sweep.** VBUS while the firmware held its reading at the setpoint:
+
+| Kept sample at | 9 V, bare | 9 V, caps | 20 V, caps |
+|---|---|---|---|
+| auto (50 % of the longer interval) | 8.852 | 8.929 | 19.716 |
+| Q2 10 / 30 % | 8.623 / 8.719 | 8.816 / 8.837 | — |
+| Q2 50 / 70 / 90 % | 8.849 / 8.857 / 8.898 | 8.926 / 8.914 / 8.906 | — |
+| Q1 10 / 30 / 50 % | 8.678 / 8.731 / 8.753 | 8.740 / 8.733 / 8.882 | — / 19.730 / 19.709 |
+| Q1 70 % | SW_OVP (window across Q1's turn-off) | — | 19.750 |
+
+- **Away from the first ~30 % of an interval** the reading moves 20 mV at 9 V and 40 mV at 20 V, about 0.2 %. On the
+  bare dividers it moved about 3 %.
+- **Within 0.3–0.6 µs after an edge** it still reads 0.1–0.2 V high: the cap spreads the edge's transient over its
+  ~0.8 µs time constant.
+- **Automatic placement:** the center of the longer interval is in the good zone at every point here, so it stays the
+  default.
+- **Absolute level:** the remaining 0.08 V (9 V) and 0.27 V (20 V) between the setpoint and the scope's VBUS is within
+  the DS1104Z's DC accuracy (a few percent of 8 divisions) plus the drop through R6 and Q5/Q6 (about 40 mV at 0.8 A).
+  A DMM at TP2 is needed to calibrate it.
+
+Data: `data/caps_on.jsonl`, `data/phase_sweep_caps.jsonl`.
+
+## 7. End state
+
+- Firmware B2 (double scans, automatic placement) at boot defaults. RUNNING at 5 V in buck DCM, CCM off, no fault,
+  trace σ 25.5 mV.
+- The scope's CH4 is at 1 V/div; its offset was last set by the sweep.
+
