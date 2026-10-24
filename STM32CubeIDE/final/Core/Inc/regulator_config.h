@@ -643,10 +643,23 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
  *                         period (at 200 kHz the trigger is at 3.6 us, the
  *                         V sample about 4.2 us: after the pulse and the
  *                         discharge, as ADC_VD_SAMPLE_END_NS was chosen)
- * In CCM the kept V sample is centered in the longer of Q1's and Q2's
- * intervals (regulator_adc_phase_sel / _permille move it, regulator.c).
+ * ADC_SYNC_EDGE_GUARD_NS  the kept V sample starts, and the current sample
+ *                         ends, at least this far from an interval's edges
+ * ADC_SYNC_RING_NS        DCM: the ring after the discharge (2.4 MHz, node
+ *                         capacitance with L1) is treated as lasting this
+ *                         long; the gate capture of 2026-10-23 (20 V, 200 kHz)
+ *                         shows it decaying over 1-1.5 us
+ * Placement (regulator.c adc_sync_place): every PID cycle, the kept V sample
+ * centered in the roomier of two quiet intervals, the current sample inside
+ * it too.  CCM: Q1's and Q2's intervals.  DCM: the pulse after blanking,
+ * and the discharge's end + ADC_SYNC_RING_NS to the period's end.
+ * ADC_SYNC_DCM_END_NS     placement before the first PID cycle and at a
+ *                         period change: the scan ends this long before the
+ *                         period does
  */
 #define ADC_SYNC_DCM_END_NS     50u
+#define ADC_SYNC_EDGE_GUARD_NS  100u
+#define ADC_SYNC_RING_NS        1200u
 
 /**
  * AWD_FILTER_SAMPLES — Consecutive VD_MON samples (one per period) outside

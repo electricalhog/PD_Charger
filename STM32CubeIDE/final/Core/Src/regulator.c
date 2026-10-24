@@ -539,21 +539,67 @@ static uint32_t adc_sync_dcm_trigger_ticks(uint32_t per_ticks)
     return (per_ticks > lead + BUCK_CCM_MIN_COMPARE) ? (per_ticks - lead) : BUCK_CCM_MIN_COMPARE;
 }
 
-/** Synchronized ADC trigger in CCM: the kept V sample's window centered at
- *  regulator_adc_phase_permille of an interval, the longer of Q1's
- *  on-interval and Q2's (before the period boundary, so clear of the Q4
- *  refresh at its start) by default, or the one regulator_adc_phase_sel
- *  names (1 Q1, 2 Q2; a bench knob, 2026-10-23). */
+/** Synchronized ADC trigger in two candidate quiet intervals [as, ae) and
+ *  [bs, be) of the period (ticks; an empty interval has e <= s): the kept
+ *  V sample's window is centered in the one with more room, then moved so
+ *  the current sample (the scan's last) also ends ADC_SYNC_EDGE_GUARD_NS
+ *  before the interval does and the V window starts that long after it.
+ *  A trigger before the period start wraps into the previous period (the
+ *  scan is periodic; the discarded first V sample may sit in noise). */
+static uint32_t adc_sync_place(uint32_t per, uint32_t as, uint32_t ae, uint32_t bs, uint32_t be)
+{
+    const uint32_t off_v = HRTIM_NS_TO_TICKS_RT(ADC_SYNC_LATENCY_NS + ADC_SYNC_V_START_NS);
+    const uint32_t off_e = HRTIM_NS_TO_TICKS_RT(ADC_SYNC_LATENCY_NS + ADC_SYNC_SCAN_NS);
+    const uint32_t vwin  = HRTIM_NS_TO_TICKS_RT(ADC_SYNC_V_SAMPLE_NS);
+    const uint32_t span  = off_e - off_v;          /* kept V start to the current sample's end */
+    const uint32_t guard = HRTIM_NS_TO_TICKS_RT(ADC_SYNC_EDGE_GUARD_NS);
+    const uint32_t la = (ae > as) ? (ae - as) : 0u, lb = (be > bs) ? (be - bs) : 0u;
+    const bool use_a = la >= lb;
+    const uint32_t s = use_a ? as : bs, len = use_a ? la : lb;
+    uint32_t v0;                                   /* kept V window start */
+    if (len >= span + 2u * guard)
+    {
+        v0 = s + len / 2u - vwin / 2u;             /* V centered ...                       */
+        if (v0 < s + guard) { v0 = s + guard; }
+        if (v0 + span > s + len - guard) { v0 = s + len - guard - span; }   /* ... unless I would cross the edge */
+    }
+    else if (len >= vwin + 2u * guard)
+    {
+        v0 = s + (len - vwin) / 2u;                /* V fits, the current sample may not: V first */
+    }
+    else
+    {
+        /* Not even the V window fits (DCM at 400 kHz, at the 5 V start):
+         * the latest V window that ends inside the interval, as far from
+         * the edge before it as the interval allows. */
+        v0 = (s + len > guard + vwin) ? (s + len - guard - vwin) : s;
+    }
+    uint32_t trig = (v0 >= off_v) ? (v0 - off_v) : (v0 + per - off_v);
+    if (trig >= per) { trig -= per; }
+    if (trig < BUCK_CCM_MIN_COMPARE)       { trig = BUCK_CCM_MIN_COMPARE; }
+    if (trig > per - BUCK_CCM_MIN_COMPARE) { trig = per - BUCK_CCM_MIN_COMPARE; }
+    return trig;
+}
+
+/** Synchronized ADC trigger in CCM: adc_sync_place over Q1's on-interval
+ *  and Q2's (up to the period boundary, so clear of the Q4 refresh at its
+ *  start).  Bench knob (2026-10-23): regulator_adc_phase_sel 1 or 2 forces
+ *  Q1's or Q2's interval with the kept V window centered at
+ *  regulator_adc_phase_permille of it. */
 volatile uint8_t  regulator_adc_phase_sel      = 0u;
 volatile uint16_t regulator_adc_phase_permille = 500u;
 static uint32_t adc_sync_ccm_trigger_ticks(const BuckCcmTiming *t, uint32_t per_ticks)
 {
     const uint32_t q1s = t->a_cmp4, q1e = t->a_cmp2;
     const uint32_t q2s = t->c_cmp2, q2e = per_ticks;
+    if (regulator_adc_phase_sel == 0u)
+    {
+        return adc_sync_place(per_ticks, q1s, q1e, q2s, q2e);
+    }
     const uint32_t len1 = q1e - q1s;
     const uint32_t len2 = (q2e > q2s) ? (q2e - q2s) : 0u;
     const uint8_t sel = regulator_adc_phase_sel;
-    const bool use_q1 = (sel == 1u) || (sel == 0u && len1 >= len2);
+    const bool use_q1 = (sel == 1u);
     const uint32_t s = use_q1 ? q1s : q2s;
     const uint32_t len = use_q1 ? len1 : len2;
     uint32_t pm = regulator_adc_phase_permille;
@@ -2130,7 +2176,20 @@ void regulator_pid_tim7_isr(void)
         /* Back to the buck DCM legs (Timer A CMP3, Timer B period and
          * sources); the writes below then set this cycle's DCM edges. */
         hrtim_apply_buck_mode_static_leg();
-        HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP4xR = adc_sync_dcm_trigger_ticks(sw_period_ticks);
+    }
+    /* The synchronized ADC scan, clear of the pulse's edges and of the ring
+     * after the discharge (2026-10-23: at the period's end it caught the
+     * discharge and the ring at 20 V / 200 kHz, the currents read 2.5x, and
+     * at 400 kHz the 5 V start latched SW_OVP).  Quiet intervals: the pulse
+     * after its blanking, and from the predicted end of the discharge
+     * (t_on x charge / discharge voltage, the DCM model's) plus
+     * ADC_SYNC_RING_NS to the period's end. */
+    {
+        const uint32_t ps   = DCM_PULSE_START_TICKS + HRTIM_BLANKING_TICKS_BUCK;
+        const uint32_t tdis = (uint32_t)((float)t_on_ns * chg_v / dis_v);
+        const uint32_t zq   = cmp2 + HRTIM_NS_TO_TICKS_RT(tdis + ADC_SYNC_RING_NS);
+        HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP4xR =
+            adc_sync_place(sw_period_ticks, ps, cmp2, zq, sw_period_ticks);
     }
     if (regulator_mode != REGULATOR_MODE_BOOST)
     {

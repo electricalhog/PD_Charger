@@ -185,3 +185,42 @@ Data: `data/hw_vs_model/` (local): bench records `hw_pulse{5,10,20}_*`, model ru
 - Firmware B2 at boot defaults. RUNNING at 5 V in buck DCM, CCM off, no fault.
 - The scope has CH2 off and CH1/CH3/CH4 at the pulse settings.
 
+## 10. Late session (23:2x – 23:5x): Q1 gate, current readings, ADC trigger placement
+
+**Q1's gate in DCM** (20 V, 200 kHz; CH2 on the gate, ground-referenced):
+- Q1's on-time measured 2916 ns, against 2935 ns programmed.
+- The gate plateau is about 28.0 V while Q1 conducts (switch node 24.4 V plus the gate drive). Vgs is therefore about
+  3.6 V, ±1 V at 5 V/div, so a differential probe is needed to confirm the drive level.
+- Off, the gate follows the switch node: about −0.3 V, ringing to −7 V after the DCM discharge.
+
+**Current readings after the probing.** At 20 V DCM the board read IS_MON 1.1–1.2 A and ID_MON about 2.0 A. The bench
+supply read 0.74 A in and Dan's meter 0.8 A out, so the hardware is fine and the readings were wrong.
+- At zero current the raw readings are 8–18 mA, so there is no offset.
+- **Cause:** the DCM sample placement. The scan sat at the end of the period, which at 20 V / 200 kHz is the end of the
+  discharge and the ring after it.
+
+**Trigger placement fix** (this commit, flashed). Each PID cycle the scan goes in the roomier of two quiet intervals:
+- in DCM, the pulse after its blanking, or the discharge's end plus 1.2 µs to the period's end;
+- in CCM, Q1's or Q2's interval.
+
+The kept V sample is centered and the current sample kept inside the interval. When nothing fits, the V sample has
+priority.
+
+**Results with the fix:**
+- At 20 V DCM the samples now fall in Q1's pulse. Voltages are fine (V_out 19.9–20.1 V). The currents read low instead:
+  ID_MON 0 mA and IS_MON 0.38 A, against 0.8 / 0.74 A real.
+  - In DCM at high duty no single phase gives the average currents: they read low during the pulse and high in the ring.
+  - The DCM currents are telemetry only. The CCM limit's ID_MON read correctly at 400 kHz (sections 6 and 8).
+  - **Open.**
+- **The 5 V forced-CCM start at 400 kHz still latched SW_OVP**, three times tonight, before and after the fix.
+  - The fault trace shows a real, smooth rise: 5.05 → 5.74 V over about 160 µs after CCM entered, then over-band,
+    then SW_OVP.
+  - Likely cause: the entry integrator. After a start it is the formula value (about +0.04 V); the loop needs about
+    −0.18 V at 5 V / 400 kHz / 0.2 A, and the integrator corrects at only about 1.6 V/s. It passed several times
+    earlier in the day: a marginal case.
+  - **Open:** a better starting value (for example the measured −2 % of V_ref at light load).
+- **A 24 V request** (the buck-boost route into CCM) timed out and Hard Reset. Not investigated.
+- **CCM gate check: not done** tonight.
+
+**End state:** this firmware (placement fix), RUNNING at 5 V in buck DCM at 200 kHz, CCM off, no fault.
+
