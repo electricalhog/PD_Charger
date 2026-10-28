@@ -130,6 +130,23 @@ read 3.69 V and 3.59 V. In the high parts of each period after −62.5 µs, CH2 
   steady state.
 - **Not explained:** why Q3 does not come back once SW2 is at −2 V every period.
 
+## 5. Refresh 400 ns every 7.5 µs (19:40)
+
+Dan: "twice as long every 3 cycles instead of every 2".
+
+- **Settings:** `regulator_ccm_refresh_ns` 400, `regulator_ccm_refresh_interval_ns` 7500, checked with the host build
+  first: valid, longest pulse 1960 ns, refresh share 5.3 %.
+- **Scope:** single on CH2 (Q3 gate) rising through 8.5 V, DC.
+  - The first DCM check triggered (19:38), while Dan was adjusting CH3. Not used.
+  - The second check stayed untriggered for 5 s of DCM.
+- **The CCM start, from DCM 400 kHz:**
+  - CCM entered at an on-time of 464 ns; V_out went 4984 → 5294 mV in 4 samples, then SW_OVP.
+  - The same as the three 200 ns / 5 µs starts.
+- **The scope did not trigger.** There is no capture of this entry.
+- **After:** the refresh is back to 200 ns / 5 µs, `regulator_ccm_enable` 0.
+
+Data: `data/trace_ccm400_5v_entry_rf400_7500_ovp.csv`.
+
 Files:
 - screenshot `scope_ccm_entry_1923.png`;
 - `data/scope_ccm_entry_1923_ch1234_4ns.csv`;
