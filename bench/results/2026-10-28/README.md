@@ -186,6 +186,22 @@ Dan: "go for a really strong refresh".
 Data: `data/scope_ccm_entry_rf600_2500_1942_ch1234_4ns.csv`, `data/trace_ccm400_5v_entry_rf600_2500_ovp.csv`,
 screenshot `scope_ccm_entry_rf600_1942.png`.
 
+## 7. CH2 on PA10 (TB1, Q3's driver input), 19:47
+
+Dan: "ch2 on PA10, go".
+- **Settings:** default refresh (200 ns / 5 µs). CH2 at 1 V/div, offset −1.5 V, 10× probe setting. Same VBUS trigger as
+  sections 4 and 6; it did not trigger in 5 s of DCM.
+- **Trace:** CCM entered at an on-time of 471 ns; V_out went 5001 → 5467 mV in 5 samples; then SW_OVP (last exit
+  OVER_BAND).
+- **Scope:**
+  - **CH2 read 0.00 V for the whole 600 µs window, with no edges.** That includes −100 to −65 µs, when SW2 (CH3) sat at
+    4.6–5.9 V without switching, as in section 4 while Q3 was conducting.
+  - The DCM check before the entry read CH2 −0.04 to +0.04 V.
+- **Not known:** whether CH2 saw PA10. A 0.00 V flat line through an interval when Q3 was evidently on is not a valid
+  TB1 measurement.
+
+Data: `data/scope_ccm_entry_pa10_1947_ch1234_4ns.csv`, `data/trace_ccm400_5v_entry_1947_ovp.csv`.
+
 Files:
 - screenshot `scope_ccm_entry_1923.png`;
 - `data/scope_ccm_entry_1923_ch1234_4ns.csv`;
