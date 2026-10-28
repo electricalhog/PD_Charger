@@ -505,9 +505,23 @@ static uint16_t ccm_ocp_count = 0u;
 static uint16_t ccm_over_count = 0u;
 static uint16_t ccm_switch_cycles = 0u;   /* PID cycles with the output switch closed */
 static uint16_t ccm_clamp_cycles  = 0u;   /* PID cycles in a row at the longest pulse */
-static float    ccm_u_last        = 0.0f; /* integrator when CCM last ran [V] */
-static bool     ccm_u_last_valid  = false;
+/* The integrator CCM last ran with, per setpoint band (CCM_U0_BAND_MV),
+ * kept across starts: at light load it carries the dead-time and refresh
+ * offsets the feedforward misses (bench 2026-10-21/23: -0.18 V at 5 V to
+ * -0.42 V at 20 V, 400 kHz, 25.3 ohm). */
+typedef struct { float u_v, v_ref_v; uint32_t period_ns; } CcmULearned;
+static CcmULearned ccm_u_learned[4];
+_Static_assert(sizeof ccm_u_learned / sizeof ccm_u_learned[0] == CCM_U0_BANDS, "one entry per band");
 static uint32_t ccm_vin0_mv   = 0u;   /* V_in at entry (CCM_VIN_RISE_MV)       */
+
+/** CCM_U0_BAND_MV band of a setpoint. */
+static uint32_t ccm_u_band(uint32_t setpoint_mv)
+{
+    static const uint16_t edges_mv[CCM_U0_BANDS - 1u] = CCM_U0_BAND_MV;
+    uint32_t b = 0u;
+    while (b < CCM_U0_BANDS - 1u && setpoint_mv >= edges_mv[b]) { b++; }
+    return b;
+}
 
 static void ccm_timing_cfg(BuckCcmTimingCfg *c)
 {
@@ -1004,7 +1018,6 @@ void regulator_start(void)
     ccm_ocp_count = 0u;
     buck_ccm_reset(&ccm_state, 0.0f, (float)voltage_mv * 1e-3f, 0.0f);
     regulator_ccm_limiting = 0u;
-    ccm_u_last_valid = false;
     regulator_i_out_filt_ma = 0;
     regulator_i_in_filt_ma  = 0;
     regulator_ccm_i_avg_ma  = 0;
@@ -2033,10 +2046,13 @@ void regulator_pid_tim7_isr(void)
             ccm_clamp_cycles = 0u;
             ccm_vin0_mv   = v_in_mv;
             /* Bumpless: the first duty reproduces the measured V_out
-             * (the feedforward is built on V_ref), plus the loss estimate. */
-            const float u_base = ccm_u_last_valid ? ccm_u_last
-                               : buck_ccm_u_initial(&ccm_cfg, regulator_i_cmd_ma * 1e-3f,
-                                                    (float)CCM_R_EST_MOHM * 1e-3f, (float)CCM_VSD_MV * 1e-3f);
+             * (the feedforward is built on V_ref), plus the integrator this
+             * band last ran with, scaled to V_ref (CCM_U0_*). */
+            const float v_ref_v = (float)effective_setpoint_mv * 1e-3f;
+            const CcmULearned *ul = &ccm_u_learned[ccm_u_band(effective_setpoint_mv)];
+            const float u_base = (ul->period_ns == ccm_cfg.period_ns && ul->v_ref_v > 0.0f)
+                               ? ul->u_v * v_ref_v / ul->v_ref_v
+                               : -((float)CCM_U0_PERMILLE * 1e-3f * v_ref_v + (float)CCM_U0_MV * 1e-3f);
             buck_ccm_reset(&ccm_state,
                            u_base + ((float)v_out_mv - (float)effective_setpoint_mv) * 1e-3f
                                     * (1.0f - buck_ccm_refresh_share(&ccm_cfg)),
@@ -2162,7 +2178,15 @@ void regulator_pid_tim7_isr(void)
         regulator_ccm_limiting = ccm_state.limiting;
         regulator_ccm_v_lim_mv = ccm_state.limiting ? ccm_state.v_lim_v * 1e3f : 0.0f;
         if (ccm_state.limiting && !was_limiting) { regulator_ccm_limit_entries++; }
-        if (ccm_dwell >= CCM_ENTRY_GRACE) { ccm_u_last = ccm_state.u_v; ccm_u_last_valid = true; }
+        /* Learned once settled at a fixed setpoint, not limiting. */
+        if (ccm_dwell >= CCM_ENTRY_GRACE && !ccm_state.limiting && ccm_state.clamp == 0 &&
+            effective_setpoint_mv == target_voltage_mv)
+        {
+            CcmULearned *ul = &ccm_u_learned[ccm_u_band(effective_setpoint_mv)];
+            ul->u_v       = ccm_state.u_v;
+            ul->v_ref_v   = (float)effective_setpoint_mv * 1e-3f;
+            ul->period_ns = ccm_cfg.period_ns;
+        }
         if (ccm_state.clamp > 0) { if (ccm_clamp_cycles < 0xFFFFu) { ccm_clamp_cycles++; } }
         else                     { ccm_clamp_cycles = 0u; }
         regulator_sr_on_ns   = 0u;

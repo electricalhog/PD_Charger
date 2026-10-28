@@ -235,6 +235,12 @@ typedef struct
                                                           (20 us), both read at the cycle that uses them */
     int   n_avg;                                       /* fast loop: samples averaged (1-4, 0: 4) */
     int   fast_div;                                    /* periods per fast update (1-4, 0: 4 = 100 kHz at 400 kHz) */
+    bool  entry;                                       /* CCM enters at t = 0: the integrator starts at u0_v and L1
+                                                          at its average plus il0_off_a (the first period starts from
+                                                          DCM's zero current, not from the CCM ripple's value) */
+    float u0_v, il0_off_a;
+    float v_plant_off;                                 /* extra average switch-node volts (dead-time conduction at light
+                                                          load): the integrator settles at I R - v_plant_off */
 } SimCase;
 
 typedef struct
@@ -248,6 +254,7 @@ typedef struct
     float vb_after[4];        /* board node 50, 100, 150, 300 us after the switch closed */
     float w1_min, w1_max, w2_min, w2_max;   /* board node extremes after the 1st / 2nd load change */
     float w1_settle_s, w2_settle_s;         /* last time |vb - V_ref| > 0.1 V in each window, from its change */
+    float e_max, e_min;                     /* board node extremes in the first 2 ms (entry cases) */
 } SimResult;
 
 static const BuckCcmGains SIM_GAINS = {
@@ -289,7 +296,8 @@ static SimResult sim(const SimCase *k)
     float i0 = (r_load > 0.0f) ? k->v_ref / r_load : 0.0f;
     float il = i0, vb = k->v_ref + i0 * r_sw, ix = i0, vx = k->v_ref;
     BuckCcmState s = { 0 };
-    buck_ccm_reset(&s, i0 * (r_l + r_sw), k->v_ref, k->v_ref);
+    buck_ccm_reset(&s, k->entry ? k->u0_v : i0 * (r_l + r_sw) - k->v_plant_off, k->v_ref, k->v_ref);
+    if (k->entry) { il += k->il0_off_a; }
     float d = (k->v_ref * (1.0f - r) + s.u_v) / k->v_in, d_next = d;
     const int n_isr = (int)(50e-6f / dt + 0.5f), n_apply = (int)(13e-6f / dt + 0.5f);
     const int n_end = (int)(k->t_end_s / dt);
@@ -298,6 +306,7 @@ static SimResult sim(const SimCase *k)
     int apply_at = -1;
     SimResult res = { 0 };
     res.vb_min = 1e9f;
+    res.e_min  = 1e9f;
     const int n_tail = (int)(2e-3f / dt);
     double tail_i = 0.0, tail_i2 = 0.0;  int tail_n = 0, tail_lim = 0, tail_isr = 0;
     const int hist_cap = n_end / n_isr + 2;
@@ -377,7 +386,7 @@ static SimResult sim(const SimCase *k)
         if (k->t_ilim_s > 0.0f && n == (int)(k->t_ilim_s / dt)) { g.ilim_a = k->ilim2_a; }
         const bool sw_on = !(t >= k->t_open_s && t < k->t_close_s);
         /* explicit update, small step */
-        const float v_sw = d * k->v_in + r * vb;
+        const float v_sw = d * k->v_in + r * vb + k->v_plant_off;
         il += dt * (v_sw - vb - il * r_l) / L;
         if (k->il_cap_a > 0.0f && il > k->il_cap_a) { il = k->il_cap_a; }
         float r_sw_t = r_sw;
@@ -414,6 +423,7 @@ static SimResult sim(const SimCase *k)
             fprintf(g_dump, "%.2f,%.5f,%.5f,%.5f\n", 1e6f * t, vb, vx, il);
         }
         if (il > res.il_max) { res.il_max = il; }
+        if (t < 2e-3f) { if (vb > res.e_max) { res.e_max = vb; } if (vb < res.e_min) { res.e_min = vb; } }
         const float t_ev = (k->t_load_s > 0.0f) ? k->t_load_s : ((k->t_close_s > 0.0f) ? k->t_close_s : 0.0f);
         if (t >= t_ev && il > res.il_max_after_ev) { res.il_max_after_ev = il; }
         if (t >= t_ev && t > 1e-3f) { if (vb > res.vb_max) { res.vb_max = vb; } if (vb < res.vb_min) { res.vb_min = vb; } }
@@ -667,6 +677,46 @@ static void explore_fast(void)
 }
 #endif
 
+/** L1's offset when CCM enters from DCM: the first period starts at zero
+ *  current, where CCM's ripple would have it at valley + V t_start / L. */
+static float entry_il_off(float v, float v_in, float i_load)
+{
+    const float L = 4.7e-6f, T = 2.5e-6f, t_start = 0.26e-6f;
+    const float ripple = (v_in - v) * (v / v_in) * T / L;
+    return ripple / 2.0f - i_load - v * t_start / L;
+}
+
+/* Forced CCM entry at light load, 25.3 ohm, the fitted 55 uF VBUS side, a
+ * plant offset that makes the integrator measured at 400 kHz (2026-10-21/23)
+ * and L1's entry offset.  The first entry in a band starts from the fit
+ * (regulator_config.h CCM_U0_*); the old formula start (I R + 2 V_sd dt / T)
+ * latched SW_OVP at 5 V on the bench (5.05 -> 5.74 V). */
+static void test_entry(void)
+{
+    printf("entry (25.3 ohm, 55 uF):\n");
+    const float vs[] = { 5.0f, 9.0f, 15.0f, 20.0f }, um[] = { -0.18f, -0.23f, -0.33f, -0.42f };
+    for (int j = 0; j < 4; j++)
+    {
+        const float i = vs[j] / 25.3f;
+        const float u_fit = -(0.016f * vs[j] + 0.100f), u_formula = 0.04f * i + 2.0f * 2.0f * 20.0f / 2500.0f;
+        const float u0s[2] = { u_fit, u_formula };
+        float hi[2], lo[2];
+        for (int a = 0; a < 2; a++)
+        {
+            SimCase k = { .v_ref = vs[j], .v_in = 24.0f, .r_load = 25.3f, .c_x_uf = 55.0f, .c_x_fixed = true,
+                          .t_end_s = 10e-3f, .t_open_s = 1.0f, .t_close_s = 1.0f, .fw_sync = true,
+                          .entry = true, .u0_v = u0s[a], .il0_off_a = entry_il_off(vs[j], 24.0f, i),
+                          .v_plant_off = i * (0.022f + 0.035f) - um[j] };
+            const SimResult r = sim(&k);
+            hi[a] = r.e_max - vs[j];  lo[a] = r.e_min - vs[j];
+        }
+        printf("  %4.1f V (L1 %+.2f A): fit u0 %+.3f V -> %+.3f / %+.3f V, formula u0 %+.3f V -> %+.3f / %+.3f V\n",
+               vs[j], entry_il_off(vs[j], 24.0f, i), u_fit, hi[0], lo[0], u_formula, hi[1], lo[1]);
+        /* inside the doubled skip band (2 x 200 mV, 2 x 1.5 %) and PD's 5 % */
+        CHECK(hi[0] < 0.25f && lo[0] > -0.05f * vs[j], "entry %.0f V: %+.3f / %+.3f V", vs[j], hi[0], lo[0]);
+    }
+}
+
 #ifdef SIM_DUMP
 /* Traces behind plan 9.4's table: 9 CSVs (C x loop), V_out at the board
  * node around the 0.8 -> 2.5 A step (5 ms) and the release (17 ms). */
@@ -746,6 +796,7 @@ int main(int argc, char **argv)
 #endif
     test_unclip();
     test_limit();
+    test_entry();
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("buck_ccm: all checks passed\n");
     return 0;

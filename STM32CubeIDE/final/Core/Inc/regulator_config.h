@@ -903,10 +903,21 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
  *                        the 20 -> 15 and 15 -> 9 V ramps a formula start
  *                        missed the light-load offset (-0.3 to -0.46 V),
  *                        each entry overshot the band, ~7700 handovers
+ * CCM_U0_*               that value is kept per setpoint band across
+ *                        starts (scaled by V_ref within a band) and tagged
+ *                        with the period it ran at.  The first entry in a
+ *                        band starts from -(CCM_U0_PERMILLE V_ref +
+ *                        CCM_U0_MV), the fit to the integrator measured at
+ *                        400 kHz into 25.3 ohm (2026-10-21/23: -0.18 /
+ *                        -0.23 / -0.33 / -0.42 V at 5 / 9 / 15 / 20 V).
+ *                        The formula start (I R + 2 V_sd dt / T, about
+ *                        +0.04 V) latched SW_OVP at the first 5 V entry
+ *                        after a start, 5.05 -> 5.74 V in 160 us (bench
+ *                        2026-10-23; host model: +0.42 V, +0.01 V with
+ *                        the fit).  At heavy load the fit is low: the
+ *                        entry undershoots, the safe side
  * CCM_VIN_RISE_MV        leave if V_in rises this far over its value at
  *                        entry: the bench supply cannot sink current
- * CCM_R_EST_MOHM         series resistance for the integrator's starting
- *                        value (L1, R5, Q3, the active FET; bumpless entry)
  * CCM_OCP_MA_DEFAULT     regulator_ccm_ocp_ma: regulator_ccm_i_avg_ma above it
  *                        for CCM_OCP_CYCLES latches SW_OCP.  The backstop
  *                        behind the current limit, so above it by the
@@ -1004,8 +1015,10 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
 #define CCM_SWITCH_SETTLE        400u    /* PID cycles (20 ms) after the output switch closes */
 #define CCM_ENTRY_GRACE          100u    /* PID cycles (5 ms) with twice the over-band margin */
 #define CCM_VIN_RISE_MV          2000u
-#define CCM_R_EST_MOHM           40u
-#define CCM_VSD_MV               2000u
+#define CCM_U0_PERMILLE          16u     /* first entry in a band: u0 = -(16 per mille V_ref + 100 mV) */
+#define CCM_U0_MV                100u
+#define CCM_U0_BANDS             4u
+#define CCM_U0_BAND_MV           { 7000u, 12000u, 17500u }   /* 5 / 9 / 15 / 20 V and the PPS between */
 #define CCM_OCP_MA_DEFAULT       5000u   /* on regulator_il_avg_ma (IL_MON, period mean) */
 #define CCM_ILIM_MA_DEFAULT      3000u   /* the PDO current; 0 = off */
 #define CCM_ILIM_KL_DEFAULT      400.0f  /* [V/(A s)] */
