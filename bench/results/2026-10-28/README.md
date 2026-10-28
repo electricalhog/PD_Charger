@@ -147,6 +147,45 @@ Dan: "twice as long every 3 cycles instead of every 2".
 
 Data: `data/trace_ccm400_5v_entry_rf400_7500_ovp.csv`.
 
+## 6. Refresh 600 ns every period, 2.5 µs (19:42)
+
+Dan: "go for a really strong refresh".
+- **Settings:** 600 ns is the firmware's upper limit. Host check: valid, longest pulse 1760 ns, refresh share 24 % (4 %
+  at the default). The integrator fit was made at 4 %.
+- **Scope:** CH4 rising through 5.3 V with HF reject, 450 µs before and 150 µs after. It did not trigger in 5 s of DCM.
+  CH3 is now 5 V/div (Dan).
+- **Trace:**
+  - CCM entered at an on-time of 369 ns.
+  - V_out went 4984 → 5415 mV over 0.65 ms while the on-time fell to 312 ns; the integrator read −0.87 V at the fault.
+  - Then SW_OVP.
+
+**Scope, measured** (2.5 µs windows every 10 µs; V_gs = CH2 − CH3):
+
+| t from the trigger | Q3 V_gs mean | CH4 VBUS mean |
+|---|---|---|
+| −450 to −230 µs (DCM) | −0.14 to −0.16 V | 4.96 V |
+| −220 µs | +0.45 V (entry inside the window) | 4.98 V |
+| −210 µs | +2.58 V | 5.01 V |
+| −200 µs | +2.05 V | 5.05 V |
+| −190 µs | +0.94 V | 5.08 V |
+| −180 µs to the end | about 0 V (−0.13 to +0.07 V); single windows at +20 µs (+1.82 V) and +140 µs (+1.04 V) | 5.09 → 5.44 V |
+
+**What this shows:**
+- **Q3 still drops out,** 30–40 µs after the entry, against about 42 µs with 200 ns / 5 µs (section 4). A refresh 12× the
+  default did not keep it on.
+- **VBUS rose at about 1.3 V/ms,** against about 3 V/ms in section 4.
+
+**Inference:**
+- The drop-out does not depend on the refresh, so a bootstrap that runs out of charge is unlikely to be the cause.
+- It falls within one PID cycle (50 µs) of the entry. A firmware write in the next cycle is a candidate, as is the
+  driver itself (uP1966E).
+- **Next:** CH2 on TB1 (PA10, the driver's Q3 input). That shows whether the MCU keeps commanding Q3 on.
+
+**After:** the refresh is back to 200 ns / 5 µs, `regulator_ccm_enable` 0, the board in FAULT.
+
+Data: `data/scope_ccm_entry_rf600_2500_1942_ch1234_4ns.csv`, `data/trace_ccm400_5v_entry_rf600_2500_ovp.csv`,
+screenshot `scope_ccm_entry_rf600_1942.png`.
+
 Files:
 - screenshot `scope_ccm_entry_1923.png`;
 - `data/scope_ccm_entry_1923_ch1234_4ns.csv`;
