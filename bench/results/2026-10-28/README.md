@@ -45,8 +45,8 @@ needs −0.18 V at 5 V and −0.42 V at 20 V (400 kHz, 25.3 Ω).
 | 25.85 | 5381 | 515 | 456 | then SW_OVP (5.5 V) |
 
 **What the trace shows:**
-- **The on-time was right.** It started at 467 ns. The 2026-10-22 steady state at 5 V was 476 ns (integrator −0.21 V),
-  so the duty started at or under the steady-state value. The integrator read −0.42 V at the fault.
+- **The on-time started at 467 ns.** Logged 5 V forced-CCM steady states: 476 ns, integrator −0.21 V (2026-10-21), and
+  505 ns, +0.10 V (2026-10-22, section 2). So the duty started under both. The integrator read −0.42 V at the fault.
 - **The current and V_out rose together.** The trace's current column read 0.51–0.56 A in CCM; V/R is 0.2 A. V_out
   rose about 0.45 V in 150 µs.
 - **Inference, not measured:** at about 110 µF that is about 0.3 A more than the load, held for 200 µs. The host model's
