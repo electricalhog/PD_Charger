@@ -210,6 +210,16 @@ Data: `data/scope_ccm_entry_pa10_1947_ch1234_4ns.csv`, `data/trace_ccm400_5v_ent
 
 Data: `data/scope_ccm_entry_pa10_1948_ch1234_4ns.csv`, `data/trace_ccm400_5v_entry_1948_ovp.csv`.
 
+**Probe check with the bench gate test (19:50).**
+- **Setup:** IDLE, input and output paths off. `bench-ccm-pwm --t-on-ns 470 --fsw 400`; the firmware reported TA1, TA2,
+  TB1 and TB2 enabled.
+- **CH2 (PA10) read −0.04 to 0.00 V,** with no trigger at 1.65 V in NORM.
+- **CH3 (SW2) read −2.6 to 5.2 V** with edges.
+- Gate test off afterwards.
+- **So CH2 is not seeing a switching TB1.** The probe contact or the point it is on needs checking.
+
+Files: `scope_bench_ccm_pwm_pa10_1950.png`, `data/scope_bench_ccm_pwm_pa10_1950.csv`.
+
 Files:
 - screenshot `scope_ccm_entry_1923.png`;
 - `data/scope_ccm_entry_1923_ch1234_4ns.csv`;
