@@ -73,6 +73,48 @@ needs −0.18 V at 5 V and −0.42 V at 20 V (400 kHz, 25.3 Ω).
 - **The scope did not trigger.** Dan: nothing on the screen.
 - What Q3's gate did is not known: the missing trigger does not show its level.
 
+## 4. The entry on the scope (19:23)
+
+Dan: "ok to trip, just make sure the scope captures".
+
+**Setup:**
+- Start with `regulator_ccm_enable` 1 (by load): the board ran 5 V buck DCM at 400 kHz, CCM not active.
+- Scope:
+  - CH1 IL_MON (1×, 0.5 V/div);
+  - CH2 Q3 gate (Dan; 10×, 5 V/div);
+  - CH3 (10×, 2 V/div; what it probes is not recorded);
+  - CH4 VBUS (10×, 0.5 V/div).
+- **Trigger:** CH4 rising through 5.3 V with HF-reject coupling. CH4's spikes reach 5.56 V in steady DCM; with HF
+  reject the scope did not trigger in 4 s of DCM. Single shot, 450 µs before and 150 µs after, 4 ns per point.
+- Then `regulator_ccm_enable` 2. The scope triggered, and SW_OVP latched.
+
+**Firmware trace:**
+- 5 CCM samples, on-time 472 → 458 ns, V_out 5001 → 5467 mV, then SW_OVP.
+- The current column read 486–557 mA.
+
+**Scope, measured** (times from the trigger):
+
+| Interval | CH2 (Q3 gate) | CH3 | CH4 VBUS mean | CH1 mean |
+|---|---|---|---|---|
+| DCM, before −106 µs | switching, −0.3 to 7.1 V; within about 0.3–0.7 V of CH3 throughout | switching, −0.7 to 7.6 V | 4.97 V | 0.04 V |
+| −106 to −65 µs | held high, 9.2 V falling to 7.4 V; dips to about −2 V every 5 µs | held at 5.1–5.5 V; dips to about −2 V every 5 µs | 5.01 → 5.08 V | 0.05–0.12 V |
+| −64 µs to the end | switching every 2.5 µs, −2 to 7.4 V; again within about 0.3–0.7 V of CH3 | about 7.7 V for about 1.6 µs, then about −2 V for about 0.6 µs, each period | 5.10 → 5.70 V (about 3 V/ms) | 0.10–0.12 V |
+
+**Inference, to be confirmed** (CH3 is assumed to be Q3's source, SW2):
+- Q3 turned on at the entry. Its gate-source voltage fell from about 3.8 V to about 2 V over the 40 µs hold, and the
+  5 µs refreshes did not restore it.
+- From −64 µs CH2 tracks CH3, so Q3's gate-source voltage is about zero: Q3 is off.
+  - SW2 then sits about 2.5 V above V_out while L1's current is positive (Q3's reverse conduction).
+  - It sits about 2 V below ground while the current is negative (Q4's reverse conduction).
+  - With SW2 at −2 V instead of V_out, L1's current is pushed up each period, which would drive the rise. VBUS starts
+    rising at the same moment.
+- So the first suspect is Q3's bootstrap supply in CCM.
+
+Files:
+- screenshot `scope_ccm_entry_1923.png`;
+- `data/scope_ccm_entry_1923_ch1234_4ns.csv`;
+- `data/trace_ccm400_5v_entry_1923_ovp.csv`.
+
 **End state:** FAULT (SW_OVP), outputs off, `regulator_ccm_enable` 2, `regulator_buck_fsw_khz` 400, sink target 5 V.
 Not cleared.
 
