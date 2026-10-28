@@ -202,6 +202,14 @@ Dan: "ch2 on PA10, go".
 
 Data: `data/scope_ccm_entry_pa10_1947_ch1234_4ns.csv`, `data/trace_ccm400_5v_entry_1947_ovp.csv`.
 
+**Retry at 19:48** (Dan: "oh it fell off, try again"):
+- Same setup.
+- **Trace:** CCM entry, then SW_OVP after 4 CCM samples.
+- **CH2 read −0.05 to 0.00 V for the whole window, again with no edges.** Still not a valid TB1 measurement.
+- **SW2 this time:** −2.5 to +9.5 V from −105 to −65 µs, so it was not held at V_out as in sections 4 and 7.
+
+Data: `data/scope_ccm_entry_pa10_1948_ch1234_4ns.csv`, `data/trace_ccm400_5v_entry_1948_ovp.csv`.
+
 Files:
 - screenshot `scope_ccm_entry_1923.png`;
 - `data/scope_ccm_entry_1923_ch1234_4ns.csv`;
