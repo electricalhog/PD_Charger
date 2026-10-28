@@ -47,21 +47,33 @@ needs −0.18 V at 5 V and −0.42 V at 20 V (400 kHz, 25.3 Ω).
 **What the trace shows:**
 - **The on-time was right.** It started at 467 ns. The 2026-10-22 steady state at 5 V was 476 ns (integrator −0.21 V),
   so the duty started at or under the steady-state value. The integrator read −0.42 V at the fault.
-- **The current and V_out rose together and did not ring back.** CCM's current stayed at 0.52–0.56 A against 0.2 A
-  into the load. V_out rose at about 3 V/ms, which is 0.33 A into about 110 µF, for 200 µs. An LC ring from L1's entry
-  offset would turn round within about 40 µs.
-- **The same start passed on 2026-10-22 with the +0.04 V formula start** (section 5: synchronized scans, 1 nF caps).
-  The failures began on 2026-10-23, after the small divider caps and the double samples. So a wrong starting value is
-  not what overshoots here.
+- **The current and V_out rose together.** The trace's current column read 0.51–0.56 A in CCM; V/R is 0.2 A. V_out
+  rose about 0.45 V in 150 µs.
+- **Inference, not measured:** at about 110 µF that is about 0.3 A more than the load, held for 200 µs. The host model's
+  LC ring from L1's entry offset turns round within about 40 µs. So the starting value does not seem to be the cause.
+- **Unchecked:** whether the 5 V entry on 2026-10-22 (section 5) came straight after a start, before any learned value.
 
-**Not yet known:** what holds the extra 0.3 A for 200 µs. Candidates:
-- the real gate timing in the first CCM periods: Timer B's sources switch at the roll-over, and Q3's bootstrap was
-  idle in DCM;
-- the V_out reading in CCM with the small caps;
-- a slower node than the 55 µF fit.
+**Not known:** what drives the rise.
 
-The scope (CH1 IL_MON, CH2 Q1 gate, CH4 VBUS) on one more triggered start would separate them.
+## 3. Two more trips (19:18, 19:20)
 
-**End state:** FAULT (SW_OVP), outputs off, `regulator_ccm_enable` set back to 0. Not cleared.
+**19:18, my sequencing error.**
+- After `clear-fault` the board restarted from the PD stack before the scope and the trace were armed. The sink still
+  targeted 9 V from the earlier request.
+- I then wrote `regulator_ccm_enable` 2.
+- **Fault snapshot:** commanded 9000 mV, V_out 10434 mV (SW_OVP), the CCM entry counter up by one, last exit
+  OVER_BAND. `fsw_khz` read 200.
+- No scope or trace record. The snapshot's currents are marked stale by the tool and are not used here.
 
-Data: `data/trace_ccm400_5v_entry_u0fit_ovp.csv`.
+**19:20, the planned start.**
+- **Setup:** sink target 5 V, forced CCM, 400 kHz. The trace was armed, and the scope set to single on CH2 (Q3 gate,
+  per Dan) rising through 9 V; then one `clear-fault`.
+- **The trace repeats 19:12:** CCM entry at 25.65 ms, on-time 465 ns, V_out 4898 → 5398 mV in 200 µs, current column
+  490–534 mA, then SW_OVP.
+- **The scope did not trigger.** Dan: nothing on the screen.
+- What Q3's gate did is not known: the missing trigger does not show its level.
+
+**End state:** FAULT (SW_OVP), outputs off, `regulator_ccm_enable` 2, `regulator_buck_fsw_khz` 400, sink target 5 V.
+Not cleared.
+
+Data: `data/trace_ccm400_5v_entry_u0fit_ovp.csv` (19:12), `data/trace_ccm400_5v_entry_1920_ovp.csv` (19:20).
