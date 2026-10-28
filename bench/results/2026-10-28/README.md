@@ -82,7 +82,7 @@ Dan: "ok to trip, just make sure the scope captures".
 - Scope:
   - CH1 IL_MON (1×, 0.5 V/div);
   - CH2 Q3 gate (Dan; 10×, 5 V/div);
-  - CH3 (10×, 2 V/div; what it probes is not recorded);
+  - CH3 SW2 (10×, 2 V/div; Dan confirmed after the capture);
   - CH4 VBUS (10×, 0.5 V/div).
 - **Trigger:** CH4 rising through 5.3 V with HF-reject coupling. CH4's spikes reach 5.56 V in steady DCM; with HF
   reject the scope did not trigger in 4 s of DCM. Single shot, 450 µs before and 150 µs after, 4 ns per point.
@@ -100,15 +100,35 @@ Dan: "ok to trip, just make sure the scope captures".
 | −106 to −65 µs | held high, 9.2 V falling to 7.4 V; dips to about −2 V every 5 µs | held at 5.1–5.5 V; dips to about −2 V every 5 µs | 5.01 → 5.08 V | 0.05–0.12 V |
 | −64 µs to the end | switching every 2.5 µs, −2 to 7.4 V; again within about 0.3–0.7 V of CH3 | about 7.7 V for about 1.6 µs, then about −2 V for about 0.6 µs, each period | 5.10 → 5.70 V (about 3 V/ms) | 0.10–0.12 V |
 
-**Inference, to be confirmed** (CH3 is assumed to be Q3's source, SW2):
-- Q3 turned on at the entry. Its gate-source voltage fell from about 3.8 V to about 2 V over the 40 µs hold, and the
-  5 µs refreshes did not restore it.
-- From −64 µs CH2 tracks CH3, so Q3's gate-source voltage is about zero: Q3 is off.
-  - SW2 then sits about 2.5 V above V_out while L1's current is positive (Q3's reverse conduction).
-  - It sits about 2 V below ground while the current is negative (Q4's reverse conduction).
-  - With SW2 at −2 V instead of V_out, L1's current is pushed up each period, which would drive the rise. VBUS starts
-    rising at the same moment.
-- So the first suspect is Q3's bootstrap supply in CCM.
+**Q3's gate drive, CH2 − CH3** (both 10× probes to board ground; Dan: CH3 is SW2), per 2.5 µs period mean:
+
+| Interval | Q3 V_gs |
+|---|---|
+| DCM, before −107.5 µs | −0.17 V |
+| −105 µs | +3.96 V |
+| −90 µs | +3.05 V |
+| −75 µs | +2.39 V |
+| −67.5 µs | +1.94 V |
+| −62.5 µs to the end | −0.26 to −0.31 V |
+
+During the hold, the refresh dips every 5 µs do not bring V_gs back up: just before and after the −100.5 µs refresh it
+read 3.69 V and 3.59 V. In the high parts of each period after −62.5 µs, CH2 sits 0.4–0.6 V under CH3 (for example
+7.08 V against 7.70 V).
+
+**Measured, IL_MON:**
+- **−105 to −65 µs:** zero for 27–74 % of every period, peaks 0.19–0.49 V.
+- **From −60 µs:** peaks 0.40–0.46 V.
+- IL_MON reads only positive current, so its zeros may be negative current.
+
+**Inference:**
+- **The cause:** Q3's bootstrap droops from about 4 V to about 2 V over 40 µs after the entry, and the 200 ns / 5 µs
+  refresh does not hold it. Q3 then drops out (driver UVLO?) and stays off.
+  - With Q3 off, SW2 sits about 2.5 V above V_out while L1's current is positive.
+  - It sits about 2 V below ground for about 0.6 µs each period, which is Q4's reverse conduction.
+  - This pumps the output: VBUS rises from that moment.
+- **The same signature as 2026-10-20** §3.1 (150 ns / 10 µs, 9 V, 200 kHz), which the 200 ns / 5 µs refresh fixed in
+  steady state.
+- **Not explained:** why Q3 does not come back once SW2 is at −2 V every period.
 
 Files:
 - screenshot `scope_ccm_entry_1923.png`;
