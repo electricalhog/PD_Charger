@@ -293,6 +293,45 @@ separately; this probe read PA10 correctly at 17:17.
 
 Files: `scope_bench_ccm_pwm_g4_1029_1724.png`, `data/scope_bench_ccm_pwm_g4_1029_1724.csv`.
 
+## 10. After P2_L (2026-10-29, 17:29–17:30)
+
+Dan: "p2_l was disconnected; ch2 back on g3, rerun test".
+
+**Gate test, 17:29** (input off; CH2 G3, CH3 SW2):
+- SW2 rang throughout.
+- The 240 ns refresh windows read SW2 −2.8 to +3.1 V.
+- Not conclusive without power. Data: `data/scope_bench_ccm_pwm_g3_1029_1729.csv`.
+
+**5 V CCM entry, 17:30** (restart by `sink req 5000`, DCM 400 kHz, then forced CCM; default refresh; VBUS trigger
+through 5.3 V with HF reject):
+- **SW_OVP again** (last exit OVER_BAND).
+- The firmware trace had filled on a DCM error sample before the entry, so it has no CCM samples.
+
+**Scope** (the window ran −324 to +276 µs from the trigger):
+
+| t from the trigger | Q3 V_gs mean | VBUS mean |
+|---|---|---|
+| before −109 µs (DCM) | −0.26 to −0.28 V | 4.98 V |
+| −104 µs | +3.39 V | 5.01 V |
+| −89 µs | +2.64 V | 5.06 V |
+| −74 µs | +2.06 V | 5.08 V |
+| −69 µs | +1.87 V | 5.08 V |
+| −64 µs to +131 µs | −0.24 to −0.31 V | 5.10 → 5.69 V |
+| from +146 µs | about 0 V, switching stopped (the fault) | 5.67 V falling |
+
+- **Q3 off windows in the hold (V_gs < 0.8 V):** 228–264 ns every 5 µs, from −102.8 µs to −67.8 µs.
+  - SW2's median in each window is −2.46 V, range −3.4 to +8.3 V.
+  - That is the same as section 8, before P2_L was reconnected.
+- **During the hold SW2 also swung −2.8 to +8.6 V in every window,** and IL_MON peaked at 0.46–1.17 V. In sections 4
+  and 8 SW2 sat at 4.6–5.9 V between refreshes.
+
+**Inference:**
+- At the refreshes SW2 still sits about 2.5 V below ground rather than near 0 V. So Q4 does not seem to turn on in
+  the refresh, even after P2_L.
+- **To check:** G4 in the gate test, as in section 9.
+
+Files: `scope_ccm_entry_g3_1029_1730.png`, `data/scope_ccm_entry_g3_1029_1730_ch1234_4ns.csv`.
+
 Files:
 - screenshot `scope_ccm_entry_1923.png`;
 - `data/scope_ccm_entry_1923_ch1234_4ns.csv`;
