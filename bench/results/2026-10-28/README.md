@@ -266,6 +266,33 @@ the firmware or HRTIM.
 Data: `data/scope_ccm_entry_tb1_1029_1718_ch1234_4ns.csv`, `data/trace_ccm400_5v_entry_1029_1718_ovp.csv`, screenshot
 `scope_ccm_entry_tb1_1029_1718.png`.
 
+## 9. Q4's gate in the bench gate test (2026-10-29, 17:23)
+
+Dan: "ch2 on G4, maybe the low side isn't driving". The board was cleared, then stopped to IDLE with the input path off.
+
+**Schematic** (`KiCad/dc-dc.kicad_sch`, connections traced from the file):
+- **U3 (uP1966E, output leg):** Q3 turns on through R9 2.2 Ω and off through R10 1 Ω; Q4 turns on through R12 1 Ω and
+  off through R11 2.2 Ω.
+- **Bootstrap:** C6 100 nF from BOOT to SW2 through R8 0 Ω.
+- **Supply:** VCC +5 V with C5 1 µF.
+
+**Gate test** `bench-ccm-pwm --t-on-ns 470 --fsw 400` (firmware: TA1, TA2, TB1, TB2 enabled):
+- **NORM trigger on CH2 rising through 2.5 V:** never triggered.
+- **AUTO, triggered on SW2 falling** (24 µs, 4 ns per point):
+  - **CH2 (G4) read −0.49 to +0.59 V for the whole capture.**
+  - At the refreshes (SW2 under 0 V for 232–240 ns every 5 µs, down to −3.1 V), G4 read −0.3 to +0.4 V.
+  - On 2026-10-29 at 17:17 the same test showed TB1 low for 240 ns every 5 µs, so TB2 should command Q4 on in those
+    windows.
+
+**So:** Q4's gate does not rise during the refresh, if the probe is on G4. The probe contact on G4 is not verified
+separately; this probe read PA10 correctly at 17:17.
+
+**Not known:** whether TB2 (PA11) reaches U3's LI pin.
+
+**Next:** PA11 in the same gate test.
+
+Files: `scope_bench_ccm_pwm_g4_1029_1724.png`, `data/scope_bench_ccm_pwm_g4_1029_1724.csv`.
+
 Files:
 - screenshot `scope_ccm_entry_1923.png`;
 - `data/scope_ccm_entry_1923_ch1234_4ns.csv`;
