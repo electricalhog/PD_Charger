@@ -220,6 +220,15 @@ Data: `data/scope_ccm_entry_pa10_1948_ch1234_4ns.csv`, `data/trace_ccm400_5v_ent
 
 Files: `scope_bench_ccm_pwm_pa10_1950.png`, `data/scope_bench_ccm_pwm_pa10_1950.csv`.
 
+**2026-10-29, 17:17: probe replaced** (Dan: the old probe was broken).
+- The board had rebooted to its boot defaults (5 V DCM, 200 kHz, CCM off). I stopped it to IDLE.
+- **Gate test again (`bench-ccm-pwm --t-on-ns 470 --fsw 400`):** CH2 shows TB1 with a 5.00 µs period, high 95.2 %
+  (4.76 µs). The low is about 240 ns, which is the 200 ns refresh plus two 20 ns dead times. CH2 read −1.5 to 4.9 V,
+  with ringing on the edges.
+- Gate test off.
+
+Files: `scope_bench_ccm_pwm_pa10_1029.png`, `data/scope_bench_ccm_pwm_pa10_1029.csv`.
+
 Files:
 - screenshot `scope_ccm_entry_1923.png`;
 - `data/scope_ccm_entry_1923_ch1234_4ns.csv`;
