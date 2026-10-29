@@ -229,6 +229,43 @@ Files: `scope_bench_ccm_pwm_pa10_1950.png`, `data/scope_bench_ccm_pwm_pa10_1950.
 
 Files: `scope_bench_ccm_pwm_pa10_1029.png`, `data/scope_bench_ccm_pwm_pa10_1029.csv`.
 
+## 8. The entry with CH2 on TB1 (2026-10-29, 17:18)
+
+**Setup:**
+- Restart from IDLE with `sink req 5000` (Hard Reset, then a 5 V contract). `bu regulator start` is refused in the PD
+  build.
+- DCM at 400 kHz, `regulator_ccm_enable` 1, then 2. Default refresh 200 ns / 5 µs.
+- **Scope:** CH1 IL_MON, CH2 PA10 (TB1, 1 V/div), CH3 SW2, CH4 VBUS. Trigger CH4 through 5.3 V with HF reject,
+  450 µs before and 150 µs after; it stayed armed through 5 s of DCM.
+
+**Trace:** CCM entered at an on-time of 470 ns; V_out went 4967 → 5467 mV in 5 samples; then SW_OVP (last exit
+OVER_BAND).
+
+**Scope, measured** (times from the trigger):
+- **TB1:**
+  - Low in DCM.
+  - High from −111.63 µs, the CCM entry.
+  - From there, low for 240 ns every 5.00 µs (falling at x.87, rising at x.63 µs), the refresh plus two dead times.
+  - This continues unchanged to +132.8 µs. 49 rising and 49 falling edges, no others.
+- **SW2:**
+  - −110 to −75 µs: 4.6–5.9 V between refreshes.
+  - At each refresh it swings to −2.5 to −3.4 V and up to 6–9 V.
+  - From about −70 µs: −2.8 to +8.3 V every period, the pattern of sections 4 and 6 after Q3 dropped out.
+  - At the refreshes from −66.9 µs it reads −2.5 to +0.9 V.
+- **VBUS:** 4.97 V in DCM; 5.07 V at −70 µs; then rising to 5.24 V at −25 µs.
+
+**What this shows:** the MCU keeps commanding Q3 on, with the normal refresh, through the whole event. Q3 stops
+conducting about 40 µs after the entry while TB1 is still high. So the drop-out is on the driver / power side, not in
+the firmware or HRTIM.
+
+**Inference:**
+- During the refreshes SW2 goes to −2.5 to −3.4 V, not near 0 V. That suggests Q4 is not turning on hard in the
+  refresh, or is late.
+- **Next:** probe TB2 (PA11) and Q4's gate.
+
+Data: `data/scope_ccm_entry_tb1_1029_1718_ch1234_4ns.csv`, `data/trace_ccm400_5v_entry_1029_1718_ovp.csv`, screenshot
+`scope_ccm_entry_tb1_1029_1718.png`.
+
 Files:
 - screenshot `scope_ccm_entry_1923.png`;
 - `data/scope_ccm_entry_1923_ch1234_4ns.csv`;
