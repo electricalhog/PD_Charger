@@ -293,7 +293,7 @@ separately; this probe read PA10 correctly at 17:17.
 
 Files: `scope_bench_ccm_pwm_g4_1029_1724.png`, `data/scope_bench_ccm_pwm_g4_1029_1724.csv`.
 
-## 10. After P2_L (2026-10-29, 17:29–17:30)
+## 10. P2_L (2026-10-29, 17:29–17:34)
 
 Dan: "p2_l was disconnected; ch2 back on g3, rerun test".
 
@@ -331,6 +331,25 @@ through 5.3 V with HF reject):
 - **To check:** G4 in the gate test, as in section 9.
 
 Files: `scope_ccm_entry_g3_1029_1730.png`, `data/scope_ccm_entry_g3_1029_1730_ch1234_4ns.csv`.
+
+**Correction to the 17:29–17:30 runs:** Dan, at 17:33: "I still had it disconnected". So P2_L was still open during
+them.
+
+**Gate test with CH2 on G4, 17:32:** CH2 read exactly 0.00 V, with no noise. That is the signature of the broken or
+detached probe on 2026-10-28, so not used.
+
+**5 V CCM entry after Dan reconnected P2_L, 17:34** (CH2 G3, CH3 SW2, CH4 VBUS; default refresh):
+- **Trace:** CCM entered at an on-time of 472 ns; V_out went 5001 → 5450 mV in 5 samples; then SW_OVP (last exit
+  OVER_BAND).
+- **Scope:**
+  - **Q3 V_gs:** +3.86 V at −109 µs, falling to +2.06 V at −74 µs, then off from −69 µs.
+  - **VBUS:** 4.96 V in DCM, 5.07 V at −74 µs, 5.68 V at +126 µs.
+  - **The refreshes** at −105.5 µs to −70.5 µs, 232–268 ns each: SW2's median −2.16 to −2.46 V, minimum −2.8 to
+    −3.4 V. The same as section 8.
+- **So:** no change from before the reconnection. Whether G4 is driven is still unmeasured.
+
+Files: `scope_ccm_entry_g3_1029_1734.png`, `data/scope_ccm_entry_g3_1029_1734_ch1234_4ns.csv`,
+`data/trace_ccm400_5v_entry_1029_1734_ovp.csv`.
 
 Files:
 - screenshot `scope_ccm_entry_1923.png`;
