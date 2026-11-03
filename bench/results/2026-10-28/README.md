@@ -366,6 +366,15 @@ Dan: "back after some rework with Ch1 on sw1, ch2 on pa11, ch3 on sw2, and ch4 o
 
 Files: `scope_bench_ccm_pwm_pa11_1102_2036.png`, `data/scope_bench_ccm_pwm_pa11_1102_2036.csv`.
 
+**Gate test again, 20:43** (Dan: "probe fixed on pa11, ch1 is 10x"; CH1 set to 10X, 5 V/div):
+- **CH2 (PA11):** 196 ns pulses at 3.31 V every 5.00 µs, 5 of them in 24 µs. This is TB2's refresh.
+- **SW2 during each TB2 pulse:** median 0.31 V, range −0.31 to +1.85 V. In the CCM entries of sections 8 and 10 SW2 sat
+  at a median of −2.46 V in the refreshes. That run was with power, this one with the input off, so the two are not
+  directly comparable.
+- **CH1 (SW1):** −2.8 to +33.4 V (edges and ringing). CH4 (TP2): 2.46–3.14 V.
+
+Files: `scope_bench_ccm_pwm_pa11_1102_2043.png`, `data/scope_bench_ccm_pwm_pa11_1102_2043.csv`.
+
 Files:
 - screenshot `scope_ccm_entry_1923.png`;
 - `data/scope_ccm_entry_1923_ch1234_4ns.csv`;
