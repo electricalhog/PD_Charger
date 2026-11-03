@@ -597,6 +597,44 @@ Files:
 - `data/scope_switch_pulse20_g1_1102_2112_ch1234_4ns.csv`;
 - `data/trace_switch_pulse20_rf300_1102_2112.csv`.
 
+## 17. Forced CCM through buck-boost and EPR (2026-11-02, 21:45–21:46)
+
+Dan removed the gate probes ("now that we know it's working") and asked to see CCM through the buck-boost modes and
+EPR. No scope channels were used: the evidence is the firmware trace, the status and the PD log.
+
+**Before:**
+- At 20 V forced CCM the counters had reached 115 entries and 114 exits, all OVER_BAND, about 108 more in 30 min.
+- **Measured** (the trace's first ms, `data/trace_modes_20_to_24.csv`): CCM at 20.42 V hands back to DCM; DCM's pulse
+  sits at its window limit (at_limit) and V_out falls to 18.5 V within 1 ms; CCM re-enters at +1.05 ms.
+
+**20 → 24 V** (SPR position 5):
+- Contract in 59 ms. V_out 24.04 V, V_in 24.9 V, buck-boost at 200 kHz, I_cmd 1.34 A.
+- **The trace:**
+  1. CCM follows the ramp to about 22.0 V, where the on-time reaches the 2060 ns ceiling (at_limit from +60 ms).
+  2. CCM exits on DUTY at +65.75 ms.
+  3. DCM at 400 kHz, at its window limit, falls to 18.35–18.45 V for 7 ms.
+  4. The mode changes to BUCK_BOOST at +72.8 ms (200 kHz), and V_out rises to 23.87 V by +100 ms.
+
+**EPR 28 V** (`sink epr 140`, then `req 28000`):
+- EPR mode entered; contract at position 8 in 60 ms. Buck-boost at 200 kHz, V_out 27.92 V, I_cmd 1.53 A.
+- The trace (error > 400 mV) did not trigger.
+- **Shortly after:** the PD log shows at least 10 POWER_NOT_READY, then CAD_DETACHED (hard resets 1 → 2), a
+  re-attach and a 5 V contract, out of EPR. The PD event ring holds 32 entries, so the start of the sequence is lost.
+- **Cause not known.**
+
+**Back to 20 V and to 5 V:**
+- **20 V (from the 5 V restart):** contract in 195 ms; buck, 400 kHz, CCM re-entered, 19.85 V.
+- **20 → 5 V:** down-ramp in DCM (exit RAMP_DOWN, 135 samples at the DCM window limit), CCM re-entered at 5 V
+  (4.86 V, on-time 467 ns).
+
+**Open:**
+1. **The over-band handbacks at 20 V.** Each one drops V_out about 1.5 V for about 1 ms, because DCM at 400 kHz
+   cannot carry 0.8 A at 20 V.
+2. **The buck → buck-boost hand-over** runs through DCM at 400 kHz (7 ms at 18.4 V while the target is 24 V).
+3. **POWER_NOT_READY / detach at EPR 28 V.**
+
+Data: `data/trace_modes_20_to_24.csv`, `data/trace_modes_to_20000.csv`, `data/trace_modes_to_5000.csv`.
+
 Files:
 - screenshot `scope_ccm_entry_1923.png`;
 - `data/scope_ccm_entry_1923_ch1234_4ns.csv`;
