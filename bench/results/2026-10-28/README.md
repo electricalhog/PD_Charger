@@ -351,6 +351,21 @@ detached probe on 2026-10-28, so not used.
 Files: `scope_ccm_entry_g3_1029_1734.png`, `data/scope_ccm_entry_g3_1029_1734_ch1234_4ns.csv`,
 `data/trace_ccm400_5v_entry_1029_1734_ovp.csv`.
 
+## 11. After Dan's rework (2026-11-02, 20:36)
+
+Dan: "back after some rework with Ch1 on sw1, ch2 on pa11, ch3 on sw2, and ch4 on TP2". The board was IDLE, uptime
+636 s.
+
+**Gate test** `bench-ccm-pwm --t-on-ns 470 --fsw 400` (input off; TA1, TA2, TB1, TB2 enabled):
+- **CH2 (PA11, 1 V/div):** −1.14 to +2.08 V, mean 0.49 V.
+  - A slow ramp around 0.5–1 V with spikes every 2.5 µs.
+  - Crossings of 1.65 V last 0–20 ns.
+  - No 200 ns logic pulse every 5 µs, which TB2 should give.
+- **Others:** CH1 (SW1, scope set 1X) −0.3 to 3.1 V; CH3 (SW2) −1.8 to 5.2 V; CH4 (TP2) 2.46–4.09 V, mean 2.47 V.
+- **Not a valid TB2 measurement.** Asked Dan about the probe on PA11 and the TB2 → P2_L wiring.
+
+Files: `scope_bench_ccm_pwm_pa11_1102_2036.png`, `data/scope_bench_ccm_pwm_pa11_1102_2036.csv`.
+
 Files:
 - screenshot `scope_ccm_entry_1923.png`;
 - `data/scope_ccm_entry_1923_ch1234_4ns.csv`;
