@@ -461,6 +461,58 @@ Files:
 - `data/scope_ccm_entry_g3_1102_2057_ch1234_4ns.csv`;
 - `data/trace_ccm400_5v_entry_1102_2057_ring.csv`.
 
+## 14. Ramps 5 → 9 → 20 V in forced CCM, and a refresh sweep at 20 V (2026-11-02, 21:01–21:05)
+
+Dan: "go for the ramps, and figure out the refresh period parameters".
+
+**Ramps** (sink requests; the firmware trace armed with error > 600 mV, which never triggered, so its ring holds the
+last 102 ms):
+
+| Request | PD transition | After | Last 102 ms of the trace (all CCM) | CCM exits |
+|---|---|---|---|---|
+| 9 V | 59 ms | V_out 9003 mV, on-time 854 ns, integrator −0.284 V, 425 mA | 8899–9106 mV | none |
+| 20 V | 145 ms | V_out 19989 mV, on-time 1916 ns, integrator −0.483 V, 706 mA, not limiting | 19868–20110 mV | none |
+
+The scope (CH4 TP2) caught only the middle of the 9 V ramp and did not trigger on the 20 V ramp, so neither ramp has a
+scope record.
+
+**Refresh sweep at 20 V** (forced CCM, 400 kHz, 25.3 Ω; `scripts/rfsweep.py`):
+- Each setting is written live, then after 0.6 s one 60 µs capture of CH2 (G3) and CH3 (SW2), triggered on SW2 falling.
+- "Before" and "after" are Q3 V_gs (CH2 − CH3) averaged 0.1–0.6 µs before and 0.3–0.8 µs after each refresh.
+- SW2 is its median during the refreshes.
+
+| Refresh / interval | Share | Refreshes | V_gs before | V_gs after | Step | SW2 in refresh | Q3 drop-outs seen | On-time |
+|---|---|---|---|---|---|---|---|---|
+| 300 ns / 5 µs | 6 % | 11 | 3.57 V | 3.77 V | +0.19 V | −0.14 V | none | 1874 ns |
+| 200 ns / 2.5 µs | 8 % | 23 | 3.64 V | 3.67 V | +0.03 V | −0.12 V | none | 1827 ns |
+| **200 ns / 5 µs (default)** | 4 % | 11 | **3.17 V** | 3.39 V | +0.22 V | 0.04 V | none | 1915 ns |
+| 200 ns / 7.5 µs | 2.7 % | 7 | 2.92 V | 3.16 V | +0.25 V | 0.00 V | none | 1945 ns |
+| 150 ns / 5 µs | 3 % | 11 | 2.90 V | 3.07 V | +0.18 V | 0.15 V | none | 1937 ns |
+| 200 ns / 10 µs | 2 % | 5 | 2.56 V | 2.95 V | +0.40 V | 0.00 V | none | 1961 ns |
+| 100 ns / 5 µs | 2 % | 10 | 2.72 V (min 2.57) | 2.86 V | +0.13 V | 0.15 → 1.23 V | **one, 12.1 µs**, SW2 median 21.6 V | 1968 ns |
+| 150 ns / 7.5 µs | 2 % | 7 | 2.67 V (min 2.19) | 2.50 V | −0.17 V | 0.31 V | **one, 13.7 µs**, SW2 median 21.9 V | 1963 ns |
+
+- The sweep stopped there, below 2.5 V before a refresh. The default was restored.
+- **Two CCM exits during the sweep** (exits 4 → 6, the last OVER_BAND). CCM re-entered both times; no fault. They came
+  while the settings were being changed live; which steps caused them was not recorded.
+- **After:** RUNNING, CCM, V_out 20231 mV, on-time 1915 ns, integrator −0.433 V, 705 mA.
+
+**What the numbers give:**
+- **Droop between refreshes:** 0.22 V in 5 µs, 0.24 V in 7.5 µs, 0.39 V in 10 µs (the 200 ns rows), so 30–45 mV/µs.
+- **Inference:** at C6 = 100 nF that is about 3–4.5 mA drawn from the bootstrap while Q3 is held on.
+- **Effect of the refresh length:** the V_gs that Q3 settles at depends mostly on it, 150 → 200 → 300 ns giving
+  2.90 → 3.17 → 3.57 V before a refresh.
+- **Cost of a longer refresh:** it shortens the longest Q1 pulse, T − (refresh + 2 dt + 20 ns) − dt − 60 ns:
+  - 2160 ns at 200 ns, 2060 ns at 300 ns;
+  - 20 V needed 1874–1968 ns here.
+- **Q3 dropped out** at a V_gs before the refresh of about 2.2–2.6 V (this sweep) and about 1.9–2.0 V (the entries
+  before the rework).
+
+Data:
+- `data/scope_refresh_sweep_20v_<refresh>_<interval>.csv`;
+- `data/trace_ccm400_9v_after_ramp_ring.csv`;
+- `data/trace_ccm400_20v_after_ramp_ring.csv`.
+
 Files:
 - screenshot `scope_ccm_entry_1923.png`;
 - `data/scope_ccm_entry_1923_ch1234_4ns.csv`;
