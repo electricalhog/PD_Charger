@@ -417,6 +417,50 @@ Files:
 - `data/scope_tp2_rise_dcm_1102_2052.csv`;
 - `scope_tp2_rise_dcm_1102_2052.png`.
 
+## 13. The 5 V entry with Q3's gate on the scope (2026-11-02, 20:57)
+
+**Before the entry:**
+- Dan reconnected the sink; it attached on CC1 with a 5 V contract.
+- One CH2 check read G3 at −0.4 to +0.4 V in DCM, so the entry waited. After the reconnect CH2 tracked SW2 in DCM
+  (−0.4 to 7.6 V against −0.4 to 7.8 V).
+
+**Setup:**
+- CCM had been running; `regulator_ccm_enable` 1 dropped it to DCM (exit LIGHT_LOAD).
+- **Scope:** CH1 SW1, CH2 G3, CH3 SW2, CH4 TP2. Trigger CH2 rising through 8.5 V, single, 50 µs before and 550 µs
+  after; it stayed armed for 5 s of DCM.
+- Then `regulator_ccm_enable` 2.
+- **Firmware trace:** armed with error > 300 mV; it never triggered.
+
+**Scope, measured** (V_gs = CH2 − CH3, 2.5 µs windows):
+
+| t from the trigger | Q3 V_gs mean | TP2 mean |
+|---|---|---|
+| −50 to −5 µs (DCM) | −0.21 to −0.23 V | 4.96 V |
+| 0 µs (entry) | +4.17 V | 4.99 V |
+| +10 µs | +3.78 V | 5.05 V |
+| +30 µs | +3.63 V | 5.11 V (highest) |
+| +60 µs | +3.57 V | 5.10 V |
+| +110 to +510 µs | +3.41 to +3.47 V | 5.02–5.05 V |
+
+- **The refreshes:** 110 Q3-off windows of 220–232 ns every 5 µs, from +4.8 to +549.8 µs.
+  - **SW2's median in every window: 0.00 V**, minimum −1.2 to −3.1 V.
+  - Before the rework (sections 8 and 10) the median was −2.46 V.
+- **The firmware ring** (the last 2048 samples, 102 ms, all in CCM): V_out 4915–5087 mV, mean 5000 mV, σ 24.7 mV.
+  On-time 476–478 ns.
+- **Status after:** RUNNING, CCM active, V_out 4932 mV, on-time 478 ns, integrator −0.136 V, CCM current 246 mA.
+
+**What this shows:**
+- Q3 stays on: its V_gs settles at about 3.4 V and no longer drops out.
+- The refreshes pull SW2 to ground.
+- TP2 peaked 0.15 V over its DCM level, against the rise to SW_OVP before.
+
+So the CCM entry overshoot was Q4 not driving in the refresh, P2_L being open. It was not the integrator start.
+
+Files:
+- `scope_ccm_entry_g3_1102_2057.png`;
+- `data/scope_ccm_entry_g3_1102_2057_ch1234_4ns.csv`;
+- `data/trace_ccm400_5v_entry_1102_2057_ring.csv`.
+
 Files:
 - screenshot `scope_ccm_entry_1923.png`;
 - `data/scope_ccm_entry_1923_ch1234_4ns.csv`;
