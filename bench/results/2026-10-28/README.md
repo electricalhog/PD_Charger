@@ -1,4 +1,4 @@
-# Bench log 2026-10-28: CCM entry integrator from the fit; the 5 V forced-CCM start still latches SW_OVP (remote)
+# Bench log 2026-10-28 to 11-02: CCM entry integrator from the fit; the 5 V forced-CCM entry overshoot traced to Q4's refresh drive (P2_L), holds after the rework (remote)
 
 | Field | Entry |
 |---|---|
@@ -374,6 +374,48 @@ Files: `scope_bench_ccm_pwm_pa11_1102_2036.png`, `data/scope_bench_ccm_pwm_pa11_
 - **CH1 (SW1):** −2.8 to +33.4 V (edges and ringing). CH4 (TP2): 2.46–3.14 V.
 
 Files: `scope_bench_ccm_pwm_pa11_1102_2043.png`, `data/scope_bench_ccm_pwm_pa11_1102_2043.csv`.
+
+## 12. The 5 V forced-CCM entry holds (2026-11-02, 20:49–20:52)
+
+**Setup and conditions:**
+- CH1 SW1 (10×), CH2 PA11 (TB2), CH3 SW2, CH4 TP2 (VOUTa, the board node). No current channel on the scope this run
+  (Dan: "note the loss of id_mon on the scope").
+- Before the run the USB-C cable had to be reconnected (no attach since boot) and the 25.3 Ω load reconnected. Without
+  the load, DCM read I_cmd 0, I_out 33 mA and skipped pulses at 5.1–5.3 V.
+- With the load: I_cmd 329 mA, I_out 232 mA, on-time 301 ns, V_out 5053 mV.
+- **Scope trigger:** CH4 through 5.3 V with HF reject, single; it stayed armed for 5 s of DCM. The scope's window is
+  −324 to +276 µs (offset −24 µs).
+- Then `regulator_ccm_enable` 2. Default refresh, 400 kHz.
+
+**PD during the run:**
+- Since the cable reconnect, the charger logged 10 attaches and 10 detaches, and 5 contracts.
+- After one detach the board was IDLE with the last CCM exit STOP, and no fault. It then re-attached and restarted on
+  its own.
+- The sink's NUCLEO (ST-LINK VCP) was no longer on USB at 20:52.
+
+**Firmware trace (armed before the write; it captured one of the restarts):**
+- Output switch closed at 4.95 ms; CCM entered at 24.9 ms, after CCM_SWITCH_SETTLE.
+- **During CCM, 24.9 to 50.0 ms (503 samples):** V_out 4880–5087 mV, mean 4998 mV, σ 24.5 mV. On-time 463 → 478 ns.
+  The current column read 168–406 mA in the first 0.2 ms, then 228–266 mA.
+- **No overshoot.** This is a forced-CCM start at 5 V / 400 kHz, the case that latched SW_OVP on 2026-10-23 and 10-28.
+
+**Live status, 20:52, three reads 1 s apart:**
+- RUNNING, CCM active (entries 4, exits 3); V_out 4967–5001 mV, V_in 24.4–24.5 V.
+- On-time 477–478 ns, integrator −0.122 to −0.131 V, CCM current 242–244 mA, not limiting, no fault.
+
+**Scope:**
+- The trigger fired at some point in these restarts.
+- **The capture:** TP2 rising 4.64 → 5.75 V over 600 µs (about 1.9 V/ms), with TB2 low throughout and SW2 in its DCM
+  pattern (−0.3 to 7.4 V). That is DCM, not a CCM entry.
+- **Not explained.** It fell in the attach/detach period.
+
+**Inference:** with P2_L reworked, the 5 V forced-CCM entry no longer overshoots. Not yet measured: Q3's V_gs (no probe
+on G3 this run) and whether the refreshes now pull SW2 to ground with power.
+
+Files:
+- `data/trace_ccm400_5v_forced_start_1102_2051.csv`;
+- `data/scope_tp2_rise_dcm_1102_2052.csv`;
+- `scope_tp2_rise_dcm_1102_2052.png`.
 
 Files:
 - screenshot `scope_ccm_entry_1923.png`;
