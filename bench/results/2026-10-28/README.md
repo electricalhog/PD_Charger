@@ -513,6 +513,45 @@ Data:
 - `data/trace_ccm400_9v_after_ramp_ring.csv`;
 - `data/trace_ccm400_20v_after_ramp_ring.csv`.
 
+## 15. Default refresh 300 ns every 5 µs (2026-11-02, 21:06–21:08)
+
+Dan: "go with 300 ns every 5 µs".
+
+**Firmware:** `CCM_REFRESH_NS` 200 → 300 (interval unchanged, 5 µs).
+- Host test passes; build 0 errors, 0 warnings.
+- ELF sha256 `402240c7e19df223…`, flashed and verified.
+- After the flash the board came up at 20 V DCM, 200 kHz: the sink re-requested its 20 V target.
+- `regulator_ccm_refresh_ns` reads 300.
+
+**5 V forced-CCM entry** (stop, `regulator_ccm_enable` 1 and 400 kHz, restart by `sink req 5000`, then 2; scope as in
+section 13):
+- **Q3 V_gs:** −0.09 V in DCM; +4.37 V at the entry; +3.99 V at +30 µs; +3.92 V at +510 µs.
+- **The 109 refreshes:** Q3 off 333 ns. V_gs before 3.89 V (lowest 3.82 V), after 3.94 V. SW2 median −0.24 V.
+- **TP2:** 10 µs means, 4.897 V in DCM; highest 5.042 V at +30 µs.
+- **Firmware ring** (102 ms, all CCM): V_out 4915–5070 mV, σ 22.9 mV. Status after: on-time 460 ns, integrator
+  −0.172 V, 234 mA, no exits.
+
+**Ramps 5 → 9 → 20 V:**
+
+| Request | PD transition | Ring, last 102 ms (all CCM) | After |
+|---|---|---|---|
+| 9 V | 59 ms | 8882–9106 mV | on-time 838 ns, integrator −0.294 V, 433 mA |
+| 20 V | 145 ms | 19851–20162 mV | on-time 1875 ns, integrator −0.407 V, 699 mA, not limiting |
+
+- No CCM exits.
+- **Not explained:** the status snapshot at 9 V read `v_out_mv` 13332, while the ring over the same time stayed at or
+  under 9106 mV.
+
+**At 20 V:**
+- **11 refreshes:** Q3 off 401 ns. V_gs before 3.65 V (lowest 3.63 V), after 3.79 V. SW2 median −0.31 V.
+- **The sweep (section 14) at 300 ns / 5 µs:** 3.57 / 3.77 V.
+
+Files:
+- `scope_ccm_entry_rf300_1102_2107.png`;
+- `data/scope_ccm_entry_rf300_1102_2107_ch1234_4ns.csv`;
+- `data/scope_rf300_20v_vgs.csv`;
+- `data/trace_rf300_after_ramp_{9000,20000}.csv`.
+
 Files:
 - screenshot `scope_ccm_entry_1923.png`;
 - `data/scope_ccm_entry_1923_ch1234_4ns.csv`;

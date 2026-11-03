@@ -876,7 +876,13 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
  *                        150 ns every 10 us: Q3 dropped out once per PID
  *                        cycle for ~10 us (driver UVLO suspected), SW2
  *                        averaged 0.47 V under V_out, and VBUS carried a
- *                        190 mV 20 kHz line
+ *                        190 mV 20 kHz line.  2026-11-02, 20 V forced CCM
+ *                        at 400 kHz into 25.3 ohm: Q3's V_gs before a
+ *                        refresh is 2.90 / 3.17 / 3.57 V at 150 / 200 /
+ *                        300 ns every 5 us (droop 30-45 mV/us between
+ *                        refreshes); Q3 dropped out at 2.2-2.6 V.  300 ns
+ *                        keeps about 1 V of margin; the longest Q1 pulse
+ *                        becomes 2060 ns (20 V needed 1874 ns)
  * CCM_MIN_ON_NS          shortest Q1 pulse (comparator blanking 100 ns)
  * CCM_MIN_Q2_END_NS      Q2 on at least this long before the period ends
  *                        (> dead time: Q3 turns off one dead time early)
@@ -1000,7 +1006,7 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
 #define CCM_DEADTIME_NS_DEFAULT  20u
 #define CCM_DEADTIME_NS_MIN      10u
 #define CCM_DEADTIME_NS_MAX      40u
-#define CCM_REFRESH_NS           200u    /* default of regulator_ccm_refresh_ns */
+#define CCM_REFRESH_NS           300u    /* default of regulator_ccm_refresh_ns */
 #define CCM_REFRESH_NS_MIN       100u
 #define CCM_REFRESH_NS_MAX       600u
 #define CCM_REFRESH_INTERVAL_NS  5000u   /* default of regulator_ccm_refresh_interval_ns */

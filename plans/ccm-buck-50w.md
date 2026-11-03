@@ -12,7 +12,7 @@ is quiet (SW2 static). The same modulator, at 5 A, is the 20 V / 100 W PDO.
   goes through contract sequences both ways, including the buck-boost handover, with no faults.
 - **Reconnect steps:** the dip is half of DCM's.
 - **Fixed after the first runs:**
-  - Q3's bootstrap: the refresh is now 200 ns every 5 µs; 150 ns every 10 µs dropped Q3 out;
+  - Q3's bootstrap: the refresh is now 300 ns every 5 µs (200 ns until 2026-11-02; bench sweep in bench/results/2026-10-28 §14); 150 ns every 10 µs dropped Q3 out;
   - a pre-existing bug: the HRTIM hardware fault response was never enabled;
   - transitions: down-ramps run in DCM, CCM leaves before mode changes, entry is bumpless.
 - **Open after 2026-10-20:**
