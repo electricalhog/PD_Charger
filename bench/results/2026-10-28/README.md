@@ -552,6 +552,51 @@ Files:
 - `data/scope_rf300_20v_vgs.csv`;
 - `data/trace_rf300_after_ramp_{9000,20000}.csv`.
 
+## 16. Comparator check: Q1 during `switch-pulse 20` at 20 V forced CCM (2026-11-02, 21:12)
+
+Dan: "ch2 on q1".
+
+**Before:**
+- After the 20 V ramp (section 15) CCM had left and re-entered 6 times, all OVER_BAND: entries 7, exits 6, in about
+  4 min.
+- The firmware ring's last 100 ms read 19817–20300 mV. 20 V's over-band margin is 300 mV.
+- **Not investigated yet.**
+
+**Setup:**
+- 20 V forced CCM, 400 kHz, refresh 300 ns / 5 µs, 25.3 Ω, the 3 A limit on ID_MON, `regulator_ccm_peak_ma` 0 (the
+  COMP1 backstop only).
+- **Scope:** CH1 SW1, CH2 G1 (Q1 gate), CH3 SW2, CH4 TP2, all 10× at 5 V/div. Trigger CH4 falling through 18 V with
+  HF reject; it stayed armed for 5 s before. 100 µs before and 500 µs after, 4 ns per point.
+- Q1 on-time is measured where V_gs1 = CH2 − CH1 > 2 V.
+
+**Result:**
+- No fault, the PD contract held, CCM stayed active.
+- `ccm_limit_entries` 0 → 1. One more OVER_BAND exit and re-entry (exits 7).
+
+**Firmware trace** (switch edges at 0.0 and 20.0 ms):
+- V_out 20041 mV at the reconnect; minimum 14349 mV at +0.15 ms.
+- Below 19 V from +0.1 to +4.4 ms. Limiting for 106 samples, +0.1 to +5.35 ms.
+- Highest after the reconnect 20110 mV. CCM throughout.
+
+**Scope, Q1 pulses:**
+- **Before the trigger:** 1836–1844 ns. V_gs1 when on: about 4.5 V.
+- **From +19.3 to +71.8 µs: 10 of 22 pulses ended early,** at 1652, 1268, 1556, 360, 1276, 392, 336, 1592, 1044 and
+  472 ns. The rest ran 1852–1856 ns.
+- **From +74.3 µs** every pulse is 1392–1396 ns (the limit's v_lim from the measured V_out). It rises slowly: 1432 ns
+  at +475 µs.
+- **TP2 (2.5 µs means):** 19.5 V at −13 µs; 16.0 V at +24 µs; about 13.9 V at +75 to +90 µs; 15.1 V at +475 µs.
+
+**Inference:**
+- The pulses that end before the commanded on-time are the COMP1 peak-current backstop cutting Q1, so the hardware
+  comparator acts during the inrush.
+- No current channel was on the scope, so the current at which it cut is not measured here. The 2026-10-23 fit put it
+  at about 7.5–8 A.
+
+Files:
+- `scope_switch_pulse20_g1_1102_2112.png`;
+- `data/scope_switch_pulse20_g1_1102_2112_ch1234_4ns.csv`;
+- `data/trace_switch_pulse20_rf300_1102_2112.csv`.
+
 Files:
 - screenshot `scope_ccm_entry_1923.png`;
 - `data/scope_ccm_entry_1923_ch1234_4ns.csv`;
