@@ -509,10 +509,24 @@ static uint16_t ccm_clamp_cycles  = 0u;   /* PID cycles in a row at the longest 
  * kept across starts: at light load it carries the dead-time and refresh
  * offsets the feedforward misses (bench 2026-10-21/23: -0.18 V at 5 V to
  * -0.42 V at 20 V, 400 kHz, 25.3 ohm). */
-typedef struct { float u_v, v_ref_v; uint32_t period_ns; } CcmULearned;
+typedef struct { float u_v, v_ref_v; uint32_t period_ns; uint8_t kind; } CcmULearned;
 static CcmULearned ccm_u_learned[4];
 _Static_assert(sizeof ccm_u_learned / sizeof ccm_u_learned[0] == CCM_U0_BANDS, "one entry per band");
 static uint32_t ccm_vin0_mv   = 0u;   /* V_in at entry (CCM_VIN_RISE_MV)       */
+/* Which CCM runs (buck_ccm.h): buck in REGULATOR_MODE_BUCK; boost in
+ * REGULATOR_MODE_BOOST, and in REGULATOR_MODE_BUCK_BOOST once V_ref is
+ * CCM_BOOST_ENTER_PERMILLE over the lowest V_out boost CCM reaches
+ * (boost_ccm_v_min); it leaves under CCM_BOOST_EXIT_PERMILLE of it.  The
+ * band below that (about 0.9-1.03 V_in) runs band CCM (buck_ccm.h, band):
+ * the boost legs with Q1's off window widened to CCM_BAND_Q2_NS. */
+#define CCM_KIND_NONE  0u
+#define CCM_KIND_BUCK  1u
+#define CCM_KIND_BOOST 2u
+#define CCM_KIND_BAND  3u
+volatile uint8_t regulator_ccm_kind  = CCM_KIND_NONE;   /* telemetry: the running kind   */
+volatile uint8_t regulator_ccm_boost = CCM_BOOST_ENABLE_DEFAULT;   /* 0: boost CCM off */
+volatile uint8_t regulator_ccm_band  = CCM_BAND_ENABLE_DEFAULT;    /* 0: band CCM off  */
+volatile uint16_t regulator_ccm_band_q2_ns = CCM_BAND_Q2_NS;       /* Q2's window in band CCM */
 
 /** CCM_U0_BAND_MV band of a setpoint. */
 static uint32_t ccm_u_band(uint32_t setpoint_mv)
@@ -523,7 +537,7 @@ static uint32_t ccm_u_band(uint32_t setpoint_mv)
     return b;
 }
 
-static void ccm_timing_cfg(BuckCcmTimingCfg *c)
+static void ccm_timing_cfg(BuckCcmTimingCfg *c, uint8_t kind)
 {
     uint32_t dt = regulator_ccm_deadtime_ns;
     if (dt < CCM_DEADTIME_NS_MIN) { dt = CCM_DEADTIME_NS_MIN; }
@@ -541,6 +555,50 @@ static void ccm_timing_cfg(BuckCcmTimingCfg *c)
     c->refresh_interval_ns = (ivl == 0u) ? sw_period_ns : ivl;   /* invalid multiples: cfg_valid */
     c->min_on_ns           = CCM_MIN_ON_NS;
     c->min_q2_end_ns       = CCM_MIN_Q2_END_NS;
+    if (kind == CCM_KIND_BOOST)
+    {
+        /* Q2 refreshes Q1 inside every Q4 pulse (buck_ccm.h, boost) */
+        c->pulse_start_ns      = rf + 2u * dt + CCM_PULSE_GUARD_NS;
+        c->refresh_interval_ns = sw_period_ns;
+    }
+    else if (kind == CCM_KIND_BAND)
+    {
+        /* Q2's window is the buck off-time; Q4 may end inside it */
+        uint32_t q2 = regulator_ccm_band_q2_ns;
+        if (q2 < CCM_BAND_Q2_NS_MIN) { q2 = CCM_BAND_Q2_NS_MIN; }
+        if (q2 > CCM_BAND_Q2_NS_MAX) { q2 = CCM_BAND_Q2_NS_MAX; }
+        c->refresh_ns          = q2;
+        c->pulse_start_ns      = CCM_BAND_MIN_ON_NS;
+        c->refresh_interval_ns = sw_period_ns;
+    }
+}
+
+static bool ccm_cfg_valid(const BuckCcmTimingCfg *c, uint8_t kind)
+{
+    if (kind == CCM_KIND_BAND)  { return band_ccm_cfg_valid(c); }
+    return (kind == CCM_KIND_BOOST) ? boost_ccm_cfg_valid(c) : buck_ccm_cfg_valid(c);
+}
+
+/** The CCM kind for a mode and setpoint (above), with hysteresis on the
+ *  boost entry when `active` is already CCM_KIND_BOOST. */
+static uint8_t ccm_kind_for(RegulatorMode mode, uint32_t setpoint_mv, uint32_t v_in_mv, uint8_t active)
+{
+    if (mode == REGULATOR_MODE_BUCK) { return CCM_KIND_BUCK; }
+    if (!regulator_ccm_boost)       { return CCM_KIND_NONE; }
+    BuckCcmTimingCfg c;
+    ccm_timing_cfg(&c, CCM_KIND_BOOST);
+    const float v_min_mv = boost_ccm_v_min(&c, (float)v_in_mv);
+    const float v_max_mv = boost_ccm_v_max(&c, (float)v_in_mv);
+    const uint32_t pm = (active == CCM_KIND_BOOST) ? CCM_BOOST_EXIT_PERMILLE : CCM_BOOST_ENTER_PERMILLE;
+    if ((float)setpoint_mv * 100.0f > v_max_mv * (float)CCM_DUTY_ENTER_PCT) { return CCM_KIND_NONE; }
+    if ((float)setpoint_mv * 1000.0f >= v_min_mv * (float)pm)                { return CCM_KIND_BOOST; }
+    /* Under boost's floor: band CCM in buck-boost, down to CCM_BAND_ENTER_PERMILLE
+     * over its own floor (CCM_BAND_EXIT_PERMILLE once running). */
+    if (!regulator_ccm_band || mode != REGULATOR_MODE_BUCK_BOOST)            { return CCM_KIND_NONE; }
+    ccm_timing_cfg(&c, CCM_KIND_BAND);
+    const uint32_t pb = (active == CCM_KIND_BAND) ? CCM_BAND_EXIT_PERMILLE : CCM_BAND_ENTER_PERMILLE;
+    if ((float)setpoint_mv * 1000.0f < boost_ccm_v_min(&c, (float)v_in_mv) * (float)pb) { return CCM_KIND_NONE; }
+    return CCM_KIND_BAND;
 }
 
 /** Synchronized ADC trigger (adc_monitor.h), DCM and any mode outside CCM:
@@ -602,10 +660,9 @@ static uint32_t adc_sync_place(uint32_t per, uint32_t as, uint32_t ae, uint32_t 
  *  regulator_adc_phase_permille of it. */
 volatile uint8_t  regulator_adc_phase_sel      = 0u;
 volatile uint16_t regulator_adc_phase_permille = 500u;
-static uint32_t adc_sync_ccm_trigger_ticks(const BuckCcmTiming *t, uint32_t per_ticks)
+static uint32_t adc_sync_ccm_trigger_ticks_iv(uint32_t q1s, uint32_t q1e, uint32_t q2s, uint32_t q2e,
+                                              uint32_t per_ticks)
 {
-    const uint32_t q1s = t->a_cmp4, q1e = t->a_cmp2;
-    const uint32_t q2s = t->c_cmp2, q2e = per_ticks;
     if (regulator_adc_phase_sel == 0u)
     {
         return adc_sync_place(per_ticks, q1s, q1e, q2s, q2e);
@@ -628,6 +685,11 @@ static uint32_t adc_sync_ccm_trigger_ticks(const BuckCcmTiming *t, uint32_t per_
     if (trig < BUCK_CCM_MIN_COMPARE)             { trig = BUCK_CCM_MIN_COMPARE; }
     if (trig > per_ticks - BUCK_CCM_MIN_COMPARE) { trig = per_ticks - BUCK_CCM_MIN_COMPARE; }
     return trig;
+}
+
+static uint32_t adc_sync_ccm_trigger_ticks(const BuckCcmTiming *t, uint32_t per_ticks)
+{
+    return adc_sync_ccm_trigger_ticks_iv(t->a_cmp4, t->a_cmp2, t->c_cmp2, per_ticks, per_ticks);
 }
 
 /** Period for a mode (see above). */
@@ -693,6 +755,48 @@ static void hrtim_write_ccm_timing(const BuckCcmTiming *t)
         adc_sync_ccm_trigger_ticks(t, ta->PERxR);   /* the synchronized ADC scan */
 }
 
+/** Write one boost or band CCM edge set (buck_ccm.h; preloaded, the caller
+ *  holds the update).  Timer C's Q2 events and Timer D's Q3 events are
+ *  parked: the legs run from Timer A and B compares only.  Timer B CMP1
+ *  (the blanking end) covers Q4's turn-on at the period start and Q1's
+ *  after the refresh: the DCM value, later when band CCM's Q1 turns on
+ *  later (the exit writes the DCM value back). */
+#define TB_CMP1_DCM (DCM_PULSE_START_TICKS + HRTIM_BLANKING_TICKS_BOOST)   /* Timer B blanking end, DCM */
+static void hrtim_write_boost_ccm_timing(const BoostCcmTiming *t)
+{
+    HRTIM_Timerx_TypeDef *ta = &HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A];
+    HRTIM_Timerx_TypeDef *tb = &HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B];
+    ta->CMP2xR = t->a_cmp2;
+    ta->CMP3xR = t->a_cmp3;
+    ta->CMP4xR = t->a_cmp4;
+    ta->SETx1R = HRTIM_SET1R_CMP4;
+    ta->RSTx1R = HRTIM_RST1R_PER;
+    ta->SETx2R = HRTIM_SET2R_CMP2;
+    ta->RSTx2R = HRTIM_RST2R_CMP3;
+    tb->PERxR  = ta->PERxR;
+    tb->CMP2xR = t->b_cmp2;
+    tb->CMP3xR = t->b_cmp3;
+    tb->CMP4xR = t->b_cmp4;
+    {
+        const uint32_t blank = t->a_cmp4 + HRTIM_BLANKING_TICKS_BUCK;
+        tb->CMP1xR = (blank > TB_CMP1_DCM) ? blank : TB_CMP1_DCM;
+    }
+    tb->SETx2R = HRTIM_SET2R_PER;
+    tb->RSTx2R = HRTIM_RST2R_CMP2 | HRTIM_RST2R_EXTVNT4;
+    tb->SETx1R = HRTIM_SET1R_CMP3;
+    tb->RSTx1R = HRTIM_RST1R_CMP4;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP2xR = HRTIM_CMP_PARKED;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP3xR = HRTIM_CMP_PARKED;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_D].CMP3xR = HRTIM_CMP_PARKED;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_D].CMP4xR = HRTIM_CMP_PARKED;
+    /* The scan in Q4's pulse after Q1 is back on, or in Q3's interval
+     * after it (band: Q4 may end first); regulator_adc_phase_sel 1 / 2 pick
+     * one, as in buck. */
+    const uint32_t q3s = (t->a_cmp4 > t->b_cmp3) ? t->a_cmp4 : t->b_cmp3;
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP4xR =
+        adc_sync_ccm_trigger_ticks_iv(t->a_cmp4, t->b_cmp2, q3s, t->b_cmp4, ta->PERxR);
+}
+
 /** Bench CCM PWM is running (regulator_bench_ccm_pwm); restored differently. */
 static bool bench_ccm = false;
 
@@ -708,6 +812,7 @@ static void ccm_leave(RegulatorCcmExit why)
         regulator_ccm_exit_log_index++;
     }
     regulator_ccm_active = 0u;
+    regulator_ccm_kind   = CCM_KIND_NONE;
     ccm_hold = CCM_REENTRY_HOLD;
 }
 
@@ -952,7 +1057,7 @@ void regulator_start(void)
         enter_fault(input_failure);
         return;
     }
-    HAL_Delay(2u);
+    HAL_Delay(4u);   /* ADC2 free-running: 8 results take 2.7 ms (ADC2_FREE_RUN_MEAN) */
 
     /* Re-sample V_in with INPUT_EN now asserted. */
     /* --- Take a fresh V_in reading before mode selection (§5.1) ---
@@ -1502,7 +1607,7 @@ RegulatorBenchResult regulator_bench_ccm_pwm(uint32_t t_on_ns, uint32_t fsw_khz)
     sw_period_ticks = per;
     sw_period_ns    = (per * 1000u) / BUCK_CCM_TICKS_PER_US;
     BuckCcmTimingCfg c;
-    ccm_timing_cfg(&c);
+    ccm_timing_cfg(&c, CCM_KIND_BUCK);
     if (!buck_ccm_cfg_valid(&c))
     {
         sw_period_ticks = saved_ticks;
@@ -1968,8 +2073,16 @@ void regulator_pid_tim7_isr(void)
      * IL_MON), V_out held over CCM_OVER_BAND (DCM then skips), V_in rising
      * (regeneration), or a switch, mode or enable change.  The DCM loop's
      * integrator is held in CCM and preset to the load current on exit. --- */
+    /* The kind this mode and setpoint call for (ccm_kind_for), and its timing. */
+    const uint8_t ccm_want = ccm_kind_for(regulator_mode, effective_setpoint_mv, v_in_mv, regulator_ccm_kind);
+    const uint8_t ccm_k = regulator_ccm_active ? regulator_ccm_kind : ccm_want;
     BuckCcmTimingCfg ccm_cfg;
-    ccm_timing_cfg(&ccm_cfg);
+    ccm_timing_cfg(&ccm_cfg, ccm_k);
+    /* Boost CCM whose DCM fallback is buck-boost (both legs pulsing, high
+     * peaks) wins from a few hundred mA; buck and plain boost only near the
+     * DCM ceiling (plans/scripts/ccm_bb.py crossover table). */
+    const bool ccm_bb_fallback = (ccm_k == CCM_KIND_BOOST || ccm_k == CCM_KIND_BAND) &&
+                                 (regulator_mode == REGULATOR_MODE_BUCK_BOOST);
     bool ccm_enter_now = false, ccm_exit_now = false;
     if (!output_switch_on)                       { ccm_switch_cycles = 0u; }
     else if (ccm_switch_cycles < CCM_SWITCH_SETTLE) { ccm_switch_cycles++; }
@@ -1980,23 +2093,27 @@ void regulator_pid_tim7_isr(void)
     {
         /* Over the skip band: DCM's skipping clamps, CCM cannot.  Twice
          * the band for CCM_ENTRY_GRACE after an entry. */
-        const uint32_t over_mv = (ccm_dwell < CCM_ENTRY_GRACE) ? 2u * skip_above_mv : skip_above_mv;
+        uint32_t band_mv = (effective_setpoint_mv * CCM_OVER_BAND_PCT) / 100u;
+        if (band_mv < CCM_OVER_BAND_MIN_MV) { band_mv = CCM_OVER_BAND_MIN_MV; }
+        if (band_mv < skip_above_mv)        { band_mv = skip_above_mv; }
+        const uint32_t over_mv = (ccm_dwell < CCM_ENTRY_GRACE) ? 2u * band_mv : band_mv;
         if (v_out_mv > effective_setpoint_mv + over_mv) { if (ccm_over_count < 0xFFFFu) { ccm_over_count++; } }
         else                                                  { ccm_over_count = 0u; }
         RegulatorCcmExit why = REGULATOR_CCM_EXIT_NONE;
         if (ccm_exit_request != REGULATOR_CCM_EXIT_NONE)   { why = ccm_exit_request; }
         else if (!regulator_ccm_enable)                    { why = REGULATOR_CCM_EXIT_DISABLED; }
         else if (target_voltage_mv < regulator_commanded_mv) { why = REGULATOR_CCM_EXIT_RAMP_DOWN; }
-        else if (regulator_mode != REGULATOR_MODE_BUCK)    { why = REGULATOR_CCM_EXIT_MODE; }
+        else if (ccm_want != regulator_ccm_kind)          { why = REGULATOR_CCM_EXIT_MODE; }
         /* A SWITCH_PULSE keeps CCM: its reconnect is the bench's load step. */
         else if (softstart_active || (!output_switch_on && !switch_pulse_active))
                                                            { why = REGULATOR_CCM_EXIT_SWITCH; }
-        else if (!buck_ccm_cfg_valid(&ccm_cfg))            { why = REGULATOR_CCM_EXIT_BAD_CONFIG; }
+        else if (!ccm_cfg_valid(&ccm_cfg, ccm_k))         { why = REGULATOR_CCM_EXIT_BAD_CONFIG; }
         else if (v_in_mv > ccm_vin0_mv + CCM_VIN_RISE_MV)  { why = REGULATOR_CCM_EXIT_VIN_RISE; }
         else if (ccm_over_count >= CCM_OVER_BAND_CYCLES)   { why = REGULATOR_CCM_EXIT_OVER_BAND; }
         else if (ccm_clamp_cycles >= CCM_DUTY_CLAMP_CYCLES) { why = REGULATOR_CCM_EXIT_DUTY; }
         else if (regulator_ccm_enable != CCM_ENABLE_FORCED && ccm_dwell >= CCM_MIN_DWELL &&
-                 (float)regulator_ccm_i_avg_ma * 100.0f < (float)CCM_EXIT_PCT * i_max_ma)
+                 ((ccm_bb_fallback && (float)regulator_ccm_i_avg_ma < (float)CCM_BOOST_EXIT_MA) ||
+                  (!ccm_bb_fallback && (float)regulator_ccm_i_avg_ma * 100.0f < (float)CCM_EXIT_PCT * i_max_ma)))
         {
             why = REGULATOR_CCM_EXIT_LIGHT_LOAD;
         }
@@ -2017,15 +2134,16 @@ void regulator_pid_tim7_isr(void)
         }
         else if (ccm_dwell < 0xFFFFu) { ccm_dwell++; }
     }
-    else if (regulator_ccm_enable && regulator_mode == REGULATOR_MODE_BUCK && !softstart_active &&
-             output_switch_on && ccm_hold == 0u && buck_ccm_cfg_valid(&ccm_cfg) &&
+    else if (regulator_ccm_enable && ccm_want != CCM_KIND_NONE && !softstart_active &&
+             output_switch_on && ccm_hold == 0u && ccm_cfg_valid(&ccm_cfg, ccm_want) &&
              ccm_exit_request == REGULATOR_CCM_EXIT_NONE &&
              target_voltage_mv >= regulator_commanded_mv &&
              ccm_switch_cycles >= CCM_SWITCH_SETTLE &&
              v_out_mv <= effective_setpoint_mv + skip_above_mv / 2u &&
-             effective_setpoint_mv * 100u <= ccm_v_cap_mv * CCM_DUTY_ENTER_PCT &&
+             (ccm_want != CCM_KIND_BUCK || effective_setpoint_mv * 100u <= ccm_v_cap_mv * CCM_DUTY_ENTER_PCT) &&
              (regulator_ccm_enable == CCM_ENABLE_FORCED ||
-              regulator_i_cmd_ma * 100.0f >= (float)CCM_ENTER_PCT * i_max_ma))
+              (ccm_bb_fallback ? (regulator_i_cmd_ma >= (float)CCM_BOOST_ENTER_MA)
+                               : (regulator_i_cmd_ma * 100.0f >= (float)CCM_ENTER_PCT * i_max_ma))))
     {
         /* With the watchdog ISR held off: never enter with Q1 skipped, and
          * from here the window stays open (step 7b). */
@@ -2033,6 +2151,7 @@ void regulator_pid_tim7_isr(void)
         if (regulator_pulses_skipped == 0u)
         {
             regulator_ccm_active = 1u;
+            regulator_ccm_kind   = ccm_want;
             adc_monitor_awd_window(0u, 0xFFFu);
         }
         __enable_irq();
@@ -2050,13 +2169,28 @@ void regulator_pid_tim7_isr(void)
              * band last ran with, scaled to V_ref (CCM_U0_*). */
             const float v_ref_v = (float)effective_setpoint_mv * 1e-3f;
             const CcmULearned *ul = &ccm_u_learned[ccm_u_band(effective_setpoint_mv)];
-            const float u_base = (ul->period_ns == ccm_cfg.period_ns && ul->v_ref_v > 0.0f)
-                               ? ul->u_v * v_ref_v / ul->v_ref_v
-                               : -((float)CCM_U0_PERMILLE * 1e-3f * v_ref_v + (float)CCM_U0_MV * 1e-3f);
-            buck_ccm_reset(&ccm_state,
-                           u_base + ((float)v_out_mv - (float)effective_setpoint_mv) * 1e-3f
-                                    * (1.0f - buck_ccm_refresh_share(&ccm_cfg)),
-                           (float)effective_setpoint_mv * 1e-3f, (float)v_out_mv * 1e-3f);
+            const bool learned = ul->period_ns == ccm_cfg.period_ns && ul->v_ref_v > 0.0f && ul->kind == ccm_want;
+            float u0;
+            if (ccm_want != CCM_KIND_BUCK)
+            {
+                /* Boost and band: the law's n is in output volts, so the
+                 * first duty reproduces V_out with u = V_out - V_ref plus the
+                 * losses (learned, else CCM_BOOST_U0_MV, or for band
+                 * CCM_BAND_U0_PERMILLE of V_ref). */
+                const float u_def = (ccm_want == CCM_KIND_BAND) ? (float)CCM_BAND_U0_PERMILLE * 1e-3f * v_ref_v
+                                                                : (float)CCM_BOOST_U0_MV * 1e-3f;
+                const float u_base = learned ? ul->u_v * v_ref_v / ul->v_ref_v : u_def;
+                u0 = u_base + ((float)v_out_mv - (float)effective_setpoint_mv) * 1e-3f;
+            }
+            else
+            {
+                const float u_base = learned
+                                   ? ul->u_v * v_ref_v / ul->v_ref_v
+                                   : -((float)CCM_U0_PERMILLE * 1e-3f * v_ref_v + (float)CCM_U0_MV * 1e-3f);
+                u0 = u_base + ((float)v_out_mv - (float)effective_setpoint_mv) * 1e-3f
+                              * (1.0f - buck_ccm_refresh_share(&ccm_cfg));
+            }
+            buck_ccm_reset(&ccm_state, u0, (float)effective_setpoint_mv * 1e-3f, (float)v_out_mv * 1e-3f);
         }
     }
 
@@ -2169,11 +2303,22 @@ void regulator_pid_tim7_isr(void)
         const uint8_t was_limiting = ccm_state.limiting;
         buck_ccm_limit(&ccm_state, &g, (float)effective_setpoint_mv * 1e-3f, (float)v_out_mv * 1e-3f,
                        (float)i_lim_meas_ma * 1e-3f);
-        (void)buck_ccm_update(&ccm_state, &g, &ccm_cfg, (float)v_out_mv * 1e-3f, (float)v_in_mv * 1e-3f);
-        BuckCcmTiming t;
-        buck_ccm_timing_ticks(&ccm_cfg, ccm_state.t_on_ticks, &t);   /* 184 ps steps */
-        hrtim_write_ccm_timing(&t);
-        regulator_on_time_ns = (uint16_t)t.t_on_ns;
+        if (regulator_ccm_kind == CCM_KIND_BOOST || regulator_ccm_kind == CCM_KIND_BAND)
+        {
+            (void)boost_ccm_update(&ccm_state, &g, &ccm_cfg, (float)v_out_mv * 1e-3f, (float)v_in_mv * 1e-3f);
+            BoostCcmTiming t;
+            boost_ccm_timing_ticks(&ccm_cfg, ccm_state.t_on_ticks, &t);
+            hrtim_write_boost_ccm_timing(&t);
+            regulator_on_time_ns = (uint16_t)t.t_on_ns;
+        }
+        else
+        {
+            (void)buck_ccm_update(&ccm_state, &g, &ccm_cfg, (float)v_out_mv * 1e-3f, (float)v_in_mv * 1e-3f);
+            BuckCcmTiming t;
+            buck_ccm_timing_ticks(&ccm_cfg, ccm_state.t_on_ticks, &t);   /* 184 ps steps */
+            hrtim_write_ccm_timing(&t);
+            regulator_on_time_ns = (uint16_t)t.t_on_ns;
+        }
         regulator_ccm_u_mv   = ccm_state.u_v * 1e3f;
         regulator_ccm_limiting = ccm_state.limiting;
         regulator_ccm_v_lim_mv = ccm_state.limiting ? ccm_state.v_lim_v * 1e3f : 0.0f;
@@ -2186,6 +2331,7 @@ void regulator_pid_tim7_isr(void)
             ul->u_v       = ccm_state.u_v;
             ul->v_ref_v   = (float)effective_setpoint_mv * 1e-3f;
             ul->period_ns = ccm_cfg.period_ns;
+            ul->kind      = regulator_ccm_kind;
         }
         if (ccm_state.clamp > 0) { if (ccm_clamp_cycles < 0xFFFFu) { ccm_clamp_cycles++; } }
         else                     { ccm_clamp_cycles = 0u; }
@@ -2197,9 +2343,12 @@ void regulator_pid_tim7_isr(void)
     {
     if (ccm_exit_now)
     {
-        /* Back to the buck DCM legs (Timer A CMP3, Timer B period and
+        /* Back to the mode's DCM legs (Timer A CMP3, Timer B period and
          * sources); the writes below then set this cycle's DCM edges. */
-        hrtim_apply_buck_mode_static_leg();
+        if (regulator_mode == REGULATOR_MODE_BUCK)            { hrtim_apply_buck_mode_static_leg(); }
+        else if (regulator_mode == REGULATOR_MODE_BUCK_BOOST) { hrtim_apply_buck_boost_legs(); }
+        else                                                  { hrtim_apply_boost_mode_static_leg(); }
+        HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP1xR = TB_CMP1_DCM;   /* band CCM moves it */
     }
     /* The synchronized ADC scan, clear of the pulse's edges and of the ring
      * after the discharge (2026-10-23: at the period's end it caught the
@@ -3189,8 +3338,17 @@ static bool software_safety_checks_pass(uint32_t v_out_mv,
     if (v_setpoint_mv > 0u)
     {
         uint32_t ovp_threshold = (ovp_ref_mv * OVP_RELATIVE_PCT) / 100u;
-        if (v_out_mv > ovp_threshold)
+        /* Held OVP_RELATIVE_CYCLES PID cycles: VD_MON bursts that alternate
+         * period to period (5 of 9 samples at 5.5-7.3 V among 5.0 V ones,
+         * which the output caps cannot do) tripped it at the 5 V restart
+         * after an EPR hard reset, twice on 2026-11-03.  The absolute OVP
+         * above stays immediate. */
+        static uint8_t ovp_cycles = 0u;
+        if (v_out_mv > ovp_threshold) { if (ovp_cycles < 0xFFu) { ovp_cycles++; } }
+        else                          { ovp_cycles = 0u; }
+        if (ovp_cycles >= OVP_RELATIVE_CYCLES)
         {
+            ovp_cycles = 0u;
             record_fault_snapshot(v_out_mv, v_in_mv, v_setpoint_mv);
             enter_fault(REGULATOR_FAULT_SW_OVP);
             return false;

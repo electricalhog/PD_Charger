@@ -100,22 +100,25 @@
 #define TIMX_CHANNEL_CH2               LL_TIM_CHANNEL_CH2
 #define TIMX_CHANNEL_CH3               LL_TIM_CHANNEL_CH3
 #define TIMX_CHANNEL_CH4               LL_TIM_CHANNEL_CH4
-#define TIMX_CHANNEL1_SETEVENT         do{                                                                    \
-                                          LL_TIM_OC_SetCompareCH1(TIMX, (TimeUs + TIMX->CNT) % TIM_MAX_TIME);\
-                                          LL_TIM_ClearFlag_CC1(TIMX);                                         \
+/* Arm one timer-server channel TimeUs from now.  The compare write and the
+ * flag clear are one critical section (a few cycles): ST's version did them
+ * with interrupts on, so a regulator ISR (priority 0-2, up to ~45 us) between
+ * them let the 30 us GoodCRC compare match during the preemption, and the
+ * clear then erased that match.  The next one came a full TIM1 wrap (10 ms)
+ * later, PRL_GoodCRC busy-waited for it, and the sink gave up on its
+ * EPR_KeepAlive: Soft_Reset, then Hard Reset (bench 2026-11-03, 28 V EPR
+ * drops every 7-90 s; ucpd_ring: RX end -> GoodCRC 10034 us vs 37-49 us). */
+#define TIMX_SETEVENT(_ch_)            do{                                                                    \
+                                          const uint32_t _pm = __get_PRIMASK();                               \
+                                          __disable_irq();                                                    \
+                                          LL_TIM_OC_SetCompareCH##_ch_(TIMX, (TimeUs + TIMX->CNT) % TIM_MAX_TIME);\
+                                          LL_TIM_ClearFlag_CC##_ch_(TIMX);                                    \
+                                          __set_PRIMASK(_pm);                                                 \
                                        }while(0)
-#define TIMX_CHANNEL2_SETEVENT         do{                                                                    \
-                                          LL_TIM_OC_SetCompareCH2(TIMX, (TimeUs + TIMX->CNT) % TIM_MAX_TIME);\
-                                          LL_TIM_ClearFlag_CC2(TIMX);                                         \
-                                       }while(0)
-#define TIMX_CHANNEL3_SETEVENT         do{                                                                    \
-                                          LL_TIM_OC_SetCompareCH3(TIMX, (TimeUs + TIMX->CNT) % TIM_MAX_TIME);\
-                                          LL_TIM_ClearFlag_CC3(TIMX);                                         \
-                                       }while(0)
-#define TIMX_CHANNEL4_SETEVENT         do{                                                                    \
-                                          LL_TIM_OC_SetCompareCH4(TIMX, (TimeUs + TIMX->CNT) % TIM_MAX_TIME);\
-                                          LL_TIM_ClearFlag_CC4(TIMX);                                         \
-                                       }while(0)
+#define TIMX_CHANNEL1_SETEVENT         TIMX_SETEVENT(1)
+#define TIMX_CHANNEL2_SETEVENT         TIMX_SETEVENT(2)
+#define TIMX_CHANNEL3_SETEVENT         TIMX_SETEVENT(3)
+#define TIMX_CHANNEL4_SETEVENT         TIMX_SETEVENT(4)
 #define TIMX_CHANNEL1_GETFLAG          LL_TIM_IsActiveFlag_CC1
 #define TIMX_CHANNEL2_GETFLAG          LL_TIM_IsActiveFlag_CC2
 #define TIMX_CHANNEL3_GETFLAG          LL_TIM_IsActiveFlag_CC3

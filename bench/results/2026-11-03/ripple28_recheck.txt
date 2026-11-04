@@ -1,0 +1,8 @@
+{'state': 'RUNNING', 'fault': [], 'mode': 'BUCK_BOOST', 'tgt': 28000, 'v': 27940, 'vin': 24280, 'ccm': 1, 'kind': 2, 'fsw': 200, 'ton': 847, 'u': -464.9503, 'iout': 798, 'iid': 759, 'iin': 1530, 'pin': 37351, 'pout': 22366, 'lim': 0, 'ent': 15, 'ex': 14, 'why': 'MODE', 'skip': 0, 'icmd': 766.0} {'contract_mv': 28000, 'hard_resets': 3, 'detaches': 3}
+2 RUNNING 2 28061 572.5 190.1 -1.0096 1.8831 bringup_out/20261103-200742_scope_ch4.csv
+2 RUNNING 2 28078 565.3 191.7 -1.0096 1.8831 bringup_out/20261103-200747_scope_ch4.csv
+2 RUNNING 2 28044 575.1 196.1 -1.0096 1.8831 bringup_out/20261103-200753_scope_ch4.csv
+1 RUNNING 2 27957 575.8 192.0 -1.0096 1.8831 bringup_out/20261103-200802_scope_ch4.csv
+1 RUNNING 2 27871 568.1 192.4 -1.0096 1.8831 bringup_out/20261103-200808_scope_ch4.csv
+1 RUNNING 2 27923 572.0 191.5 -1.0096 1.8831 bringup_out/20261103-200813_scope_ch4.csv
+{'contract_mv': 28000, 'hard_resets': 3, 'detaches': 3}

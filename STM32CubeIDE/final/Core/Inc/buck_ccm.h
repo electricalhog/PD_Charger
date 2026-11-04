@@ -159,6 +159,70 @@ float buck_ccm_ripple_a(float v_in_v, float v_out_v, uint32_t t_on_ns, float l_h
  *  below 0, and m = I once it is not.  Returns I (down to -ripple/2). */
 float buck_ccm_unclip_a(float m_a, float ripple_a);
 
+/* ---------------------------------------------------------------------------
+ * Boost forced CCM (plans/regulation-strategy.md 3.5), 200 kHz: the refresh
+ * interval is the switching period.  Legs, all edges in one Timer A/B period:
+ *   Q4 (TB2)  on at the period start (Timer B period), off at Timer B CMP2
+ *             (the on-time, at least pulse_start_ns)
+ *   Q3 (TB1)  the rectifier: on one dead time after Q4 (Timer B CMP3), off
+ *             one dead time before the period ends (Timer B CMP4)
+ *   Q1 (TA1)  held on: off at the period start (Timer A period), on again at
+ *             Timer A CMP4 = refresh + 2 dead times
+ *   Q2 (TA2)  Q1's bootstrap refresh: Timer A CMP2 (one dead time) to CMP3,
+ *             inside Q4's on-time, so L1 sees 0 V for refresh_ns
+ * Duty law, once per PID cycle (volt-second balance:
+ * V_in (T - t_refresh) = V_out (T - t_on); u carries the losses):
+ *   t_on = T (1 - V_in (1 - r) / (V_ref + kp e + u)),   u += ki e dt
+ * The plant from u to V_out is unity at DC, as in buck; the L-C pole moves to
+ * (1 - D) / (2 pi sqrt(L C)) and a RHP zero sits at (1 - D)^2 R / (2 pi L)
+ * (plans/scripts/ccm_bb.py: 34 kHz or more at 10-28 V, ki 3142 keeps 77 deg).
+ * The current limit (buck_ccm_limit) is shared: it lowers v_cmd, which in
+ * boost cannot go below V_in (1 - r) / (1 - D_min).
+ * -------------------------------------------------------------------------*/
+typedef struct
+{
+    uint32_t a_cmp2;   /**< Q2 on (Q1 went off at the period start) */
+    uint32_t a_cmp3;   /**< Q2 off                                  */
+    uint32_t a_cmp4;   /**< Q1 on                                   */
+    uint32_t b_cmp2;   /**< Q4 off                                  */
+    uint32_t b_cmp3;   /**< Q3 on                                   */
+    uint32_t b_cmp4;   /**< Q3 off                                  */
+    uint32_t t_on_ns;  /**< Q4 on-time programmed                   */
+} BoostCcmTiming;
+
+/** Longest boost duty the law commands (V_out up to 1/(1-0.75) = 4 V_in). */
+#define BOOST_CCM_MAX_DUTY 0.75f
+
+/** Shortest Q4 pulse: the refresh plus both dead times plus a margin
+ *  (cfg->pulse_start_ns, which ccm_timing_cfg builds as exactly that). */
+uint32_t boost_ccm_min_on_ns(const BuckCcmTimingCfg *c);
+/** Longest Q4 pulse: Q3 on for min_q2_end_ns, a dead time each side, and
+ *  never over BOOST_CCM_MAX_DUTY. */
+uint32_t boost_ccm_max_on_ns(const BuckCcmTimingCfg *c);
+/** True when the refresh interval is the period, every edge keeps its dead
+ *  time and every compare is valid (dead time >= 18 ns: CMP2 = one dead time). */
+bool boost_ccm_cfg_valid(const BuckCcmTimingCfg *c);
+/** Band CCM (V_out about V_in): the boost legs with Q1's off window
+ *  (refresh_ns + 2 dt, Q2 on inside it) widened to CCM_BAND_Q2_NS and Q4's
+ *  pulse allowed to end inside it (pulse_start_ns, the shortest Q4 pulse, is
+ *  then shorter than the window).  Volt-second balance holds either way:
+ *  V_in (T - t_window) = V_out (T - t_on), so the boost law and timing
+ *  apply unchanged; the shortest pulse reaches V_in (1 - r) / (1 - D_min),
+ *  below V_in.  As boost_ccm_cfg_valid, without the Q4-covers-the-window
+ *  rule; the shortest Q4 pulse must still be min_on_ns. */
+bool band_ccm_cfg_valid(const BuckCcmTimingCfg *c);
+/** Register values for a Q4 on-time in ticks (clamped). */
+void boost_ccm_timing_ticks(const BuckCcmTimingCfg *c, uint32_t t_on_ticks, BoostCcmTiming *out);
+/** Lowest V_out the boost law reaches (at the shortest pulse) for V_in [V]. */
+float boost_ccm_v_min(const BuckCcmTimingCfg *c, float v_in_v);
+/** Highest, at the longest pulse. */
+float boost_ccm_v_max(const BuckCcmTimingCfg *c, float v_in_v);
+/** The boost duty law (above): returns Q4's on-time [ns], sets s->t_on_ticks
+ *  and s->clamp; the same integrator, limit and back-calculation rules as
+ *  buck_ccm_update. */
+uint32_t boost_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmTimingCfg *c,
+                          float v_out_v, float v_in_v);
+
 #ifdef __cplusplus
 }
 #endif

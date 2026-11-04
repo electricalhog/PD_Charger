@@ -293,6 +293,14 @@ void LPUART1_IRQHandler(void)
  * (numerically; lower number = higher urgency on Cortex-M4 with BASEPRI).
  * During bring-up verify with: NVIC->IP[IRQn] >> 4 in debugger memory view. */
 
+/* Bench instrumentation (2026-11-03, EPR KeepAlive drops): DWT cycles spent
+ * in each interrupt above UCPD1's priority, cumulative.  [0] TIM6 [1] TIM7 PID
+ * [2] TIM4 [3] HRTIM Timer A [4] ADC1_2 [5] HRTIM fault.  ucpd_ring_log()
+ * snapshots it, so a ring entry pair shows how long UCPD was preempted. */
+volatile uint32_t isr_hp_cyc[6];
+#define ISR_HP_BEGIN() const uint32_t isr_hp_c0 = DWT->CYCCNT
+#define ISR_HP_END(i)  (isr_hp_cyc[(i)] += DWT->CYCCNT - isr_hp_c0)
+
 /**
  * @brief TIM6 and DAC underrun interrupt handler.
  *        TIM6 is used for slope compensation (2 MHz, priority 0).
@@ -301,6 +309,7 @@ void LPUART1_IRQHandler(void)
  */
 void TIM6_DAC_IRQHandler(void)
 {
+  ISR_HP_BEGIN();
   /* Clear the TIM6 update interrupt flag */
   if (__HAL_TIM_GET_FLAG(&htim6, TIM_FLAG_UPDATE) &&
       __HAL_TIM_GET_IT_SOURCE(&htim6, TIM_IT_UPDATE))
@@ -308,6 +317,7 @@ void TIM6_DAC_IRQHandler(void)
     __HAL_TIM_CLEAR_IT(&htim6, TIM_IT_UPDATE);
     slope_comp_tim6_isr();
   }
+  ISR_HP_END(0);
 }
 
 /**
@@ -319,6 +329,7 @@ void TIM6_DAC_IRQHandler(void)
  */
 void TIM7_DAC_IRQHandler(void)
 {
+  ISR_HP_BEGIN();
   /* Clear the TIM7 update interrupt flag */
   if (__HAL_TIM_GET_FLAG(&htim7, TIM_FLAG_UPDATE) &&
       __HAL_TIM_GET_IT_SOURCE(&htim7, TIM_IT_UPDATE))
@@ -326,6 +337,7 @@ void TIM7_DAC_IRQHandler(void)
     __HAL_TIM_CLEAR_IT(&htim7, TIM_IT_UPDATE);
     regulator_pid_tim7_isr();
   }
+  ISR_HP_END(1);
 }
 
 /**
@@ -335,11 +347,13 @@ void TIM7_DAC_IRQHandler(void)
  */
 void TIM4_IRQHandler(void)
 {
+  ISR_HP_BEGIN();
   if ((TIM4->SR & TIM_SR_UIF) != 0u)
   {
     TIM4->SR = ~TIM_SR_UIF;
     regulator_switch_pulse_tim4_isr();
   }
+  ISR_HP_END(2);
 }
 
 /**
@@ -349,6 +363,7 @@ void TIM4_IRQHandler(void)
  */
 void HRTIM1_TIMA_IRQHandler(void)
 {
+  ISR_HP_BEGIN();
   /* Check for repetition (period) interrupt */
   if (__HAL_HRTIM_TIMER_GET_ITSTATUS(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A,
                                       HRTIM_TIM_IT_REP))
@@ -357,6 +372,7 @@ void HRTIM1_TIMA_IRQHandler(void)
                                 HRTIM_TIM_IT_REP);
     regulator_hrtim_tima_period_isr();
   }
+  ISR_HP_END(3);
 }
 
 /**
@@ -366,17 +382,21 @@ void HRTIM1_TIMA_IRQHandler(void)
  */
 void ADC1_2_IRQHandler(void)
 {
+  ISR_HP_BEGIN();
   /* ADC1 analog watchdog 1: V_out crossed the pulse-skip band (regulator.c) */
   if ((ADC1->ISR & ADC_ISR_AWD1) && (ADC1->IER & ADC_IER_AWD1IE))
   {
     regulator_adc1_awd_isr();
   }
+  ISR_HP_END(4);
 }
 
 void HRTIM1_FLT_IRQHandler(void)
 {
+  ISR_HP_BEGIN();
   regulator_hrtim_fault_isr();
   /* enter_fault() latches FAULT and disarms this IRQ; regulator_start() re-arms it */
+  ISR_HP_END(5);
 }
 
 /* USER CODE END 1 */

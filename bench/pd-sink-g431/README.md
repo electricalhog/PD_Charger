@@ -106,3 +106,7 @@ tools/bringup/bu sink epr 14 --wait 3        # collect the EPR entry events for 
 - **A source-initiated EPR exit is not tracked** beyond what the policy engine does. The next
   `getcaps` or `req` may then use the wrong request type until the source's caps arrive.
 - **Sink_Capabilities** is the library default: 5 V, 1 A.
+- **No VBUS sensing** (VBUS bypasses the shield). After a Hard Reset, `wait_for_vbus` waits a fixed 1 s
+  (`VBUS_RECOVER_MS`) before SinkWaitCap starts. Each Hard Reset the sink sends is reported as
+  `EVT hard_reset_tx last_tx= tx_age_ms= last_rx= rx_age_ms=` (PD headers); a received one is reported as
+  `EVT hard_reset_rx`.

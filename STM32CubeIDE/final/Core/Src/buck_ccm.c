@@ -160,3 +160,117 @@ float buck_ccm_unclip_a(float m_a, float ripple_a)
     if (m_a <= 0.0f)                                  { return -0.5f * ripple_a; }
     return sqrtf(2.0f * ripple_a * m_a) - 0.5f * ripple_a;
 }
+
+/* --- Boost forced CCM (buck_ccm.h) --------------------------------------- */
+
+uint32_t boost_ccm_min_on_ns(const BuckCcmTimingCfg *c)
+{
+    return c->pulse_start_ns;
+}
+
+uint32_t boost_ccm_max_on_ns(const BuckCcmTimingCfg *c)
+{
+    const uint32_t used = 2u * c->dt_ns + c->min_q2_end_ns;
+    uint32_t m = (c->period_ns > used) ? (c->period_ns - used) : 0u;
+    const uint32_t cap = (uint32_t)((float)c->period_ns * BOOST_CCM_MAX_DUTY);
+    return (m < cap) ? m : cap;
+}
+
+bool boost_ccm_cfg_valid(const BuckCcmTimingCfg *c)
+{
+    if (c->period_ns == 0u || c->refresh_ns == 0u)                                     { return false; }
+    if (c->refresh_interval_ns != c->period_ns)                                        { return false; }
+    if (buck_ccm_ticks(c->period_ns) > BUCK_CCM_MAX_COMPARE)                           { return false; }
+    if (buck_ccm_ticks(c->dt_ns) < BUCK_CCM_MIN_COMPARE)                               { return false; }
+    /* Q4 still on a margin after Q1 is back on */
+    if (c->pulse_start_ns < c->refresh_ns + 2u * c->dt_ns + 10u)                       { return false; }
+    if (c->min_q2_end_ns == 0u)                                                        { return false; }
+    if (boost_ccm_max_on_ns(c) <= boost_ccm_min_on_ns(c))                              { return false; }
+    return true;
+}
+
+bool band_ccm_cfg_valid(const BuckCcmTimingCfg *c)
+{
+    if (c->period_ns == 0u || c->refresh_ns == 0u)                                     { return false; }
+    if (c->refresh_interval_ns != c->period_ns)                                        { return false; }
+    if (buck_ccm_ticks(c->period_ns) > BUCK_CCM_MAX_COMPARE)                           { return false; }
+    if (buck_ccm_ticks(c->dt_ns) < BUCK_CCM_MIN_COMPARE)                               { return false; }
+    if (c->pulse_start_ns < c->min_on_ns || c->min_on_ns == 0u)                        { return false; }
+    if (c->min_q2_end_ns == 0u)                                                        { return false; }
+    /* Q1 back on before Q3's interval ends */
+    if (c->refresh_ns + 2u * c->dt_ns + c->min_q2_end_ns >= c->period_ns - c->dt_ns)   { return false; }
+    if (boost_ccm_max_on_ns(c) <= boost_ccm_min_on_ns(c))                              { return false; }
+    return true;
+}
+
+void boost_ccm_timing_ticks(const BuckCcmTimingCfg *c, uint32_t t_on_ticks, BoostCcmTiming *out)
+{
+    const uint32_t max_on = buck_ccm_ticks(boost_ccm_max_on_ns(c));
+    const uint32_t min_on = buck_ccm_ticks(boost_ccm_min_on_ns(c));
+    if (t_on_ticks > max_on) { t_on_ticks = max_on; }
+    if (t_on_ticks < min_on) { t_on_ticks = min_on; }
+    const uint32_t dt = buck_ccm_ticks(c->dt_ns);
+    const uint32_t per = buck_ccm_ticks(c->period_ns);
+    out->t_on_ns = (t_on_ticks * 1000u + BUCK_CCM_TICKS_PER_US / 2u) / BUCK_CCM_TICKS_PER_US;
+    out->a_cmp2  = dt;
+    out->a_cmp3  = dt + buck_ccm_ticks(c->refresh_ns);
+    out->a_cmp4  = out->a_cmp3 + dt;
+    out->b_cmp2  = t_on_ticks;
+    out->b_cmp3  = t_on_ticks + dt;
+    out->b_cmp4  = per - dt;
+}
+
+float boost_ccm_v_min(const BuckCcmTimingCfg *c, float v_in_v)
+{
+    const float r = buck_ccm_refresh_share(c);
+    return v_in_v * (1.0f - r) / (1.0f - (float)boost_ccm_min_on_ns(c) / (float)c->period_ns);
+}
+
+float boost_ccm_v_max(const BuckCcmTimingCfg *c, float v_in_v)
+{
+    const float r = buck_ccm_refresh_share(c);
+    return v_in_v * (1.0f - r) / (1.0f - (float)boost_ccm_max_on_ns(c) / (float)c->period_ns);
+}
+
+uint32_t boost_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmTimingCfg *c,
+                          float v_out_v, float v_in_v)
+{
+    const float v_cmd = s->v_cmd_v;
+    const float e = v_cmd - v_out_v;
+    float u = s->limiting ? s->u_v : (s->u_v + g->ki * e * g->dt_s);
+    if (u > g->u_max_v) { u = g->u_max_v; }
+    if (u < g->u_min_v) { u = g->u_min_v; }
+    if (v_in_v < 1.0f) { v_in_v = 1.0f; }
+
+    const float vin_r = v_in_v * (1.0f - buck_ccm_refresh_share(c));
+    const float d_v  = -g->kd * (v_out_v - s->v_prev_v) / g->dt_s;
+    s->v_prev_v = v_out_v;
+    const float ff_i = g->kff_l * (s->i_out_a - s->i_prev_a) / g->dt_s + g->kff_r * s->i_out_a;
+    s->i_prev_a = s->i_out_a;
+    const float per = (float)c->period_ns;
+    const float max_on = (float)boost_ccm_max_on_ns(c);
+    const float min_on = (float)boost_ccm_min_on_ns(c);
+    const float rest = v_cmd + g->kp * e + d_v + ff_i;   /* n = rest + u */
+    float n = rest + u;
+    float t_on;
+    int8_t clamp = 0;
+    if (n <= vin_r) { t_on = min_on; clamp = -1; }
+    else
+    {
+        t_on = per * (1.0f - vin_r / n);
+        if (t_on >= max_on)      { t_on = max_on; clamp = 1; }
+        else if (t_on <= min_on) { t_on = min_on; clamp = -1; }
+    }
+    /* Back-calculation at a clamp, as buck_ccm_update. */
+    if (!s->limiting && ((clamp > 0 && e > 0.0f) || (clamp < 0 && e < 0.0f)))
+    {
+        const float u_edge = vin_r / (1.0f - t_on / per) - rest;
+        u = (u_edge < s->u_v) == (clamp > 0) ? u_edge : s->u_v;
+        if (u > g->u_max_v) { u = g->u_max_v; }
+        if (u < g->u_min_v) { u = g->u_min_v; }
+    }
+    s->u_v        = u;
+    s->clamp      = clamp;
+    s->t_on_ticks = (uint32_t)(t_on * (float)BUCK_CCM_TICKS_PER_US * 1e-3f + 0.5f);
+    return (uint32_t)(t_on + 0.5f);
+}

@@ -81,6 +81,9 @@ extern "C" {
 #define ADC1_DMA_SCANS                  64u
 #define ADC1_DMA_BUFFER_LENGTH          (ADC1_SCAN_LENGTH * ADC1_DMA_SCANS)
 #define ADC2_DMA_SCANS                  32u
+/** 1: ADC2 [VS_MON, ID_MON] free-running, 256x oversampled: true period means
+ *  (adc_monitor_init).  0: one scan per HRTIM ADC trigger 1, like ADC1. */
+#define ADC2_FREE_RUN_MEAN              1u
 #define ADC2_DMA_BUFFER_LENGTH          (ADC_SYNC_SCAN_LENGTH * ADC2_DMA_SCANS)
 /** VD_MON samples the trimmed mean may use. */
 #define ADC1_AVG_SCANS                  20u

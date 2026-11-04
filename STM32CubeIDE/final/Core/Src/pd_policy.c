@@ -10,7 +10,15 @@
 #include "regulator.h"
 #include "main.h"
 #include "usbpd_def.h"
+#include "usbpd_devices_conf.h"
 #include <string.h>
+
+/* The timer-server arm in usbpd_devices_conf.h is outside CubeMX's USER CODE
+ * sections: a regeneration restores ST's racy version, which drops EPR
+ * contracts (bench 2026-11-03, see the TIMX_SETEVENT comment there). */
+#ifndef TIMX_SETEVENT
+#error "usbpd_devices_conf.h was regenerated: re-apply TIMX_SETEVENT (atomic compare + flag clear)"
+#endif
 
 volatile PdStatus pd_status;
 
@@ -203,6 +211,15 @@ void pd_status_event(uint32_t code)
 {
     uint32_t primask = __get_PRIMASK();
     __disable_irq();
+    /* A repeat of the newest entry is not stored: IsPowerReady polls every
+     * 2 ms while VBUS decays, and 19 of them pushed the event that started
+     * an EPR 28 V hard reset out of the ring (2026-11-03). */
+    if (pd_status.ev_count != 0u &&
+        pd_status.ev_code[(pd_status.ev_count - 1u) % PD_STATUS_EVENTS] == code)
+    {
+        __set_PRIMASK(primask);
+        return;
+    }
     uint32_t slot = pd_status.ev_count % PD_STATUS_EVENTS;
     pd_status.ev_tick[slot] = HAL_GetTick();
     pd_status.ev_code[slot] = code;

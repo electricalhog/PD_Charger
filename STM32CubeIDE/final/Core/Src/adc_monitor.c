@@ -138,6 +138,21 @@ void adc_monitor_init(void)
         LL_ADC_SetChannelSamplingTime(a, i_ch[k], ADC_SYNC_I_SAMPLING);
         a->JSQR = 0u;
     }
+#if ADC2_FREE_RUN_MEAN
+    /* ADC2 free-running with 256x oversampling (2026-11-03): ID_MON is a
+     * pulsed current outside buck CCM (Q3's), and its amplifier rings after
+     * every edge, so one sample per period at a fixed phase read 0 A in
+     * buck-boost DCM and 2 A in boost CCM for 1.1 A out (bench 2026-11-03).
+     * A conversion every 19 ADC clocks (447 ns) is not a divisor of the
+     * switching period (5000 / 447.06 = 11.18, 425 phases before the
+     * pattern repeats), so each result averages 256 phases spread over the
+     * period: the period mean of a linear amplifier's output is the mean of
+     * its input.  VS_MON (V_in) is averaged the same way (223 us). */
+    LL_ADC_REG_SetTriggerSource(ADC2, LL_ADC_REG_TRIG_SOFTWARE);
+    LL_ADC_REG_SetContinuousMode(ADC2, LL_ADC_REG_CONV_CONTINUOUS);
+    LL_ADC_SetOverSamplingScope(ADC2, LL_ADC_OVS_GRP_REGULAR_CONTINUED);
+    LL_ADC_ConfigOverSamplingRatioShift(ADC2, LL_ADC_OVS_RATIO_256, LL_ADC_OVS_SHIFT_RIGHT_8);
+#endif
 }
 
 uint32_t adc_monitor_latest_scan(void)

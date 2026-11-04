@@ -35,6 +35,9 @@
 /* Private function prototypes -----------------------------------------------*/
 /* Private functions ---------------------------------------------------------*/
 void PORTx_IRQHandler(uint8_t PortNum);
+extern volatile uint32_t ucpd_dbg[21];
+extern volatile uint32_t ucpd_ring_freeze;
+void ucpd_ring_log(uint32_t kind, uint32_t hdr);   /* usbpd_phy_hw_if.c */
 
 void USBPD_PORT0_IRQHandler(void)
 {
@@ -52,6 +55,7 @@ void PORTx_IRQHandler(uint8_t PortNum)
     /* TXIS no need to enable it all the transfer are done by DMA */
     if (UCPD_SR_TXMSGDISC == (_interrupt & UCPD_SR_TXMSGDISC))
     {
+      ucpd_dbg[6]++;
       /* Message has been discarded */
       LL_UCPD_ClearFlag_TxMSGDISC(hucpd);
       CLEAR_BIT(Ports[PortNum].hdmatx->CCR, DMA_CCR_EN);
@@ -62,6 +66,7 @@ void PORTx_IRQHandler(uint8_t PortNum)
 
     if (UCPD_SR_TXMSGSENT == (_interrupt & UCPD_SR_TXMSGSENT))
     {
+      ucpd_dbg[5]++;
       /* Message has been fully transferred */
       LL_UCPD_ClearFlag_TxMSGSENT(hucpd);
       CLEAR_BIT(Ports[PortNum].hdmatx->CCR, DMA_CCR_EN);
@@ -76,6 +81,7 @@ void PORTx_IRQHandler(uint8_t PortNum)
 
     if (UCPD_SR_TXMSGABT == (_interrupt & UCPD_SR_TXMSGABT))
     {
+      ucpd_dbg[7]++;
       LL_UCPD_ClearFlag_TxMSGABT(hucpd);
       CLEAR_BIT(Ports[PortNum].hdmatx->CCR, DMA_CCR_EN);
       while ((Ports[PortNum].hdmatx->CCR &  DMA_CCR_EN) == DMA_CCR_EN);
@@ -113,6 +119,7 @@ void PORTx_IRQHandler(uint8_t PortNum)
     /* RXORDDET: not needed so stack will not enabled this interrupt */
     if (UCPD_SR_RXORDDET == (_interrupt & UCPD_SR_RXORDDET))
     {
+      ucpd_dbg[0]++;
       if (LL_UCPD_RXORDSET_CABLE_RESET == hucpd->RX_ORDSET)
       {
         /* Cable reset detected */
@@ -131,6 +138,9 @@ void PORTx_IRQHandler(uint8_t PortNum)
     /* Check RXHRSTDET */
     if (UCPD_SR_RXHRSTDET == (_interrupt & UCPD_SR_RXHRSTDET))
     {
+      ucpd_dbg[4]++;
+      ucpd_ring_log(4u, 0u);
+      ucpd_ring_freeze = 1u;
       Ports[PortNum].cbs.USBPD_HW_IF_RX_ResetIndication(PortNum, USBPD_SOPTYPE_HARD_RESET);
       LL_UCPD_ClearFlag_RxHRST(hucpd);
       return;
@@ -139,6 +149,7 @@ void PORTx_IRQHandler(uint8_t PortNum)
     /* Check RXOVR */
     if (UCPD_SR_RXOVR == (_interrupt & UCPD_SR_RXOVR))
     {
+      ucpd_dbg[3]++;
       /* Nothing to do, the message will be discarded and port Partner will try sending again. */
       ovrflag = 1;
       LL_UCPD_ClearFlag_RxOvr(hucpd);
@@ -148,6 +159,8 @@ void PORTx_IRQHandler(uint8_t PortNum)
     /* Check RXMSGEND an Rx message has been received */
     if (UCPD_SR_RXMSGEND == (_interrupt & UCPD_SR_RXMSGEND))
     {
+      ucpd_dbg[1]++;
+      if (((_interrupt & UCPD_SR_RXERR) != 0u) || (ovrflag != 0u)) { ucpd_dbg[2]++; }
       Ports[PortNum].RXStatus = USBPD_FALSE;
 
       /* For DMA mode, add a check to ensure the number of data received matches
@@ -170,6 +183,9 @@ void PORTx_IRQHandler(uint8_t PortNum)
 
       if (((_interrupt & UCPD_SR_RXERR) == 0u) && (ovrflag == 0u))
       {
+        ucpd_dbg[19] = DWT->CYCCNT;   /* GoodCRC latency (usbpd_phy_hw_if.c) */
+        ucpd_dbg[20] = 1u;
+        ucpd_ring_log(1u, (uint32_t)Ports[PortNum].ptr_RxBuff[0] | ((uint32_t)Ports[PortNum].ptr_RxBuff[1] << 8));
         /* Rx message has been received without error */
         Ports[PortNum].cbs.USBPD_HW_IF_RX_Completed(PortNum, hucpd->RX_ORDSET & UCPD_RX_ORDSET_RXORDSET);
       }

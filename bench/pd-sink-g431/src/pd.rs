@@ -8,7 +8,7 @@ use embassy_futures::select::{Either, select};
 use embassy_stm32::gpio::Output;
 use embassy_stm32::ucpd::{self, CcPhy, CcPull, CcSel, CcVState, PdPhy, Ucpd};
 use embassy_stm32::{Peri, bind_interrupts, dma, peripherals};
-use embassy_time::{Duration, Timer, with_timeout};
+use embassy_time::{Duration, Instant, Timer, with_timeout};
 use uom::si::electric_current::milliampere;
 use uom::si::electric_potential::millivolt;
 use uom::si::power::{milliwatt, watt};
@@ -40,23 +40,53 @@ pub struct UcpdResources {
     pub tx_dma: Peri<'static, peripherals::DMA1_CH2>,
 }
 
+/// After a Hard Reset the source takes VBUS to vSafe0V and back to vSafe5V
+/// (tSafe0V + tSrcRecover + tSrcTurnOn) before it sends capabilities.  VBUS
+/// never reaches the G431 (README, Wiring), so `wait_for_vbus` waits this long
+/// instead.  Returning at once started SinkWaitCap (465 ms) at the reset: the
+/// PD_Charger source sent capabilities about 1.1 s after one, so the sink
+/// reset twice more and gave up with a detach (2026-11-03).
+const VBUS_RECOVER_MS: u64 = 1000;
+
 struct UcpdSinkDriver<'d> {
     pd_phy: PdPhy<'d, peripherals::UCPD1>,
+    /// A Hard Reset was sent or received: the next `wait_for_vbus` waits.
+    after_hard_reset: bool,
+    /// The last message header sent / received and when (Hard Reset report).
+    last_tx: (u16, Instant),
+    last_rx: (u16, Instant),
+}
+
+fn header(data: &[u8]) -> u16 {
+    if data.len() >= 2 { u16::from_le_bytes([data[0], data[1]]) } else { 0 }
 }
 
 impl SinkDriver for UcpdSinkDriver<'_> {
     async fn wait_for_vbus(&mut self) {
-        // The policy engine only runs while attached, so VBUS is present.
+        // At attach VBUS is present: the policy engine only runs while attached.
+        if self.after_hard_reset {
+            self.after_hard_reset = false;
+            Timer::after_millis(VBUS_RECOVER_MS).await;
+        }
     }
 
     async fn receive(&mut self, buffer: &mut [u8]) -> Result<usize, usbpd_traits::DriverRxError> {
-        self.pd_phy.receive(buffer).await.map_err(|err| match err {
-            ucpd::RxError::Crc | ucpd::RxError::Overrun => usbpd_traits::DriverRxError::Discarded,
-            ucpd::RxError::HardReset => usbpd_traits::DriverRxError::HardReset,
-        })
+        match self.pd_phy.receive(buffer).await {
+            Ok(n) => {
+                self.last_rx = (header(&buffer[..n]), Instant::now());
+                Ok(n)
+            }
+            Err(ucpd::RxError::Crc | ucpd::RxError::Overrun) => Err(usbpd_traits::DriverRxError::Discarded),
+            Err(ucpd::RxError::HardReset) => {
+                self.after_hard_reset = true;
+                emit!("EVT hard_reset_rx");
+                Err(usbpd_traits::DriverRxError::HardReset)
+            }
+        }
     }
 
     async fn transmit(&mut self, data: &[u8]) -> Result<(), usbpd_traits::DriverTxError> {
+        self.last_tx = (header(data), Instant::now());
         self.pd_phy.transmit(data).await.map_err(|err| match err {
             ucpd::TxError::Discarded => usbpd_traits::DriverTxError::Discarded,
             ucpd::TxError::HardReset => usbpd_traits::DriverTxError::HardReset,
@@ -64,6 +94,16 @@ impl SinkDriver for UcpdSinkDriver<'_> {
     }
 
     async fn transmit_hard_reset(&mut self) -> Result<(), usbpd_traits::DriverTxError> {
+        // Header: bits 0-4 message type, 12-14 data objects, 15 extended.
+        let now = Instant::now();
+        emit!(
+            "EVT hard_reset_tx last_tx=0x{:04x} tx_age_ms={} last_rx=0x{:04x} rx_age_ms={}",
+            self.last_tx.0,
+            (now - self.last_tx.1).as_millis(),
+            self.last_rx.0,
+            (now - self.last_rx.1).as_millis()
+        );
+        self.after_hard_reset = true;
         self.pd_phy.transmit_hardreset().await.map_err(|err| match err {
             ucpd::TxError::Discarded => usbpd_traits::DriverTxError::Discarded,
             ucpd::TxError::HardReset => usbpd_traits::DriverTxError::HardReset,
@@ -424,7 +464,10 @@ pub async fn ucpd_task(mut res: UcpdResources, mut led: Output<'static>) {
 
         let (mut cc_phy, pd_phy) = ucpd.split_pd_phy(res.rx_dma.reborrow(), res.tx_dma.reborrow(), Irqs, cc_sel);
         let mut sink: Sink<UcpdSinkDriver<'_>, EmbassySinkTimer, _> =
-            Sink::new(UcpdSinkDriver { pd_phy }, Device::default());
+            Sink::new(
+                UcpdSinkDriver { pd_phy, after_hard_reset: false, last_tx: (0, Instant::now()), last_rx: (0, Instant::now()) },
+                Device::default(),
+            );
 
         let led_watch = async {
             // LD2 mirrors "contract active" without touching the PE.

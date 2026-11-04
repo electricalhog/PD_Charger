@@ -829,8 +829,11 @@ _Static_assert(DCM_PULSE_START_TICKS + MAX_ON_TIME_COUNTS + DCM_REFRESH_DEADTIME
  * 200 kHz ripple is 6 A p-p and the valley sits at 0 A, on the CCM
  * boundary; at 400 kHz it is 3 A p-p, valley +1.5 A, peak 4.5 A.  The cost
  * is about 0.15 W at 20 V / 2.5 A (98.1 against 98.4 %, model).
+ * 200 kHz since 2026-11-03 (plans/regulation-strategy.md 3.2): duty ceiling
+ * 0.93 against 0.86 (buck CCM to ~23 V from 24.9 V), lower loss in the
+ * model, and the widened handback rule removed the 0.4/s exits at 200 kHz.
  */
-#define BUCK_FSW_KHZ_DEFAULT 400u
+#define BUCK_FSW_KHZ_DEFAULT 200u
 #define BUCK_PERIOD_COUNTS_400 ((uint32_t)(HRTIM_PRESCALER_MUL * (SYSCLK_HZ / 400000UL)))
 _Static_assert(HRTIM_PERIOD_COUNTS == 2u * BUCK_PERIOD_COUNTS_400,
                "the 400 kHz buck period must divide the master (ADC trigger) period");
@@ -997,7 +1000,7 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
  *                        (duty 0.82 measured, maximum 0.864) out of CCM at
  *                        400 kHz, where DCM carries only 0.54 A
  */
-#define CCM_ENABLE_DEFAULT       0u
+#define CCM_ENABLE_DEFAULT       1u      /* auto: CCM where the model says it wins (2026-11-03) */
 #define CCM_ENABLE_FORCED        2u
 #define CCM_KI_DEFAULT           3142.0f
 #define CCM_KP_DEFAULT           0.0f
@@ -1017,7 +1020,11 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
 #define CCM_EXIT_PCT             50u
 #define CCM_MIN_DWELL            400u    /* 20 ms at 20 kHz */
 #define CCM_REENTRY_HOLD         20u     /* 1 ms: DCM cannot carry the load long */
-#define CCM_OVER_BAND_CYCLES     2u      /* 100 us over the skip band: DCM (skipping) clamps it */
+#define CCM_OVER_BAND_CYCLES     20u     /* 1 ms over the band: DCM (skipping) clamps it.  Was 2 cycles over the
+                                            skip band: single VD_MON outliers (+1.2 V at 28 V, 2026-11-03) and the
+                                            200 kHz spread handed back 0.4/s (plans/regulation-strategy.md 3.4) */
+#define CCM_OVER_BAND_PCT        3u      /* band: max(this % of V_ref, CCM_OVER_BAND_MIN_MV, the skip band) */
+#define CCM_OVER_BAND_MIN_MV     400u
 #define CCM_SWITCH_SETTLE        400u    /* PID cycles (20 ms) after the output switch closes */
 #define CCM_ENTRY_GRACE          100u    /* PID cycles (5 ms) with twice the over-band margin */
 #define CCM_VIN_RISE_MV          2000u
@@ -1033,6 +1040,42 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
 #define ID_GAIN_PERMILLE_DEFAULT 952
 #define CCM_MODE_SETTLE          4u      /* PID cycles in DCM before a mode change after CCM */
 #define CCM_DUTY_ENTER_PCT       100u    /* CCM only while V_ref <= this % of V_in x D_max */
+/* Boost forced CCM (buck_ccm.h, plans/regulation-strategy.md 3.5): 200 kHz,
+ * in boost and in buck-boost once V_ref is ENTER_PERMILLE over the lowest V_out
+ * the boost law reaches (boost_ccm_v_min, about 1.01 V_in); out under
+ * EXIT_PERMILLE.  U0 is the integrator's first value when no learned one
+ * exists (losses the feedforward misses, model: +0.05 V at 28 V / 1 A from
+ * 25 V, plans/scripts/ccm_bb.py). */
+#define CCM_BOOST_ENABLE_DEFAULT 1u
+#define CCM_BOOST_ENTER_PERMILLE 1030u
+#define CCM_BOOST_EXIT_PERMILLE  1010u
+#define CCM_BOOST_U0_MV          100
+/* Auto CCM (regulator_ccm_enable 1) for boost CCM over buck-boost DCM: enter
+ * when the DCM loop's command (its output-current estimate) reaches ENTER_MA,
+ * leave when CCM's ID_MON mean is under EXIT_MA.  Model crossover 0.35 A at
+ * 28 V from 24.9 V (ccm_bb.py); ID_MON reads 0.7x in boost CCM (bench
+ * 2026-11-03: 768 mA for 1103 mA), so EXIT_MA is about 0.3 A real. */
+#define CCM_BOOST_ENTER_MA       400u
+#define CCM_BOOST_EXIT_MA        200u
+
+/* Band CCM (buck_ccm.h, band; 2026-11-03): buck-boost in CCM for V_out near
+ * V_in, where boost CCM cannot go (its floor is 1.01 V_in) and DCM
+ * buck-boost rippled 0.74-0.78 V p-p at 24 V from 24.9 V, 25.3 ohm.  Q2 on
+ * for CCM_BAND_Q2_NS (runtime regulator_ccm_band_q2_ns) after Q1 turns off at
+ * the period start; Q4 pulses from CCM_BAND_MIN_ON_NS.  640 ns + 2 x 20 ns
+ * of 5 us reaches 0.90 V_in at the shortest pulse (host test test_band).
+ * Entered in buck-boost under boost's entry, at CCM_BAND_ENTER_PERMILLE of
+ * the band's floor or more; left under CCM_BAND_EXIT_PERMILLE. */
+#define CCM_BAND_ENABLE_DEFAULT  1u
+#define CCM_BAND_Q2_NS           640u
+#define CCM_BAND_Q2_NS_MIN       300u
+#define CCM_BAND_Q2_NS_MAX       1500u
+#define CCM_BAND_MIN_ON_NS       150u
+#define CCM_BAND_ENTER_PERMILLE  1015u
+#define CCM_BAND_EXIT_PERMILLE   1003u
+/* Integrator at a band entry with nothing learned: bench 2026-11-03, 24 V from
+ * 24.3 V, 25.3 ohm, settled at -0.46 V (forced and auto). */
+#define CCM_BAND_U0_PERMILLE     (-19)
 #define CCM_DUTY_CLAMP_CYCLES    20u     /* leave after this many PID cycles at the longest pulse */
 #define CCM_OCP_CYCLES           20u     /* 1 ms */
 _Static_assert(CCM_REFRESH_NS_MAX + 3u * CCM_DEADTIME_NS_MAX + CCM_PULSE_GUARD_NS + CCM_MIN_ON_NS +
@@ -1289,6 +1332,7 @@ _Static_assert(PID_OUTPUT_MAX > PID_OUTPUT_MIN && PID_OUTPUT_MAX <= 4095,
  * Range  : [105, 150]
  */
 #define OVP_RELATIVE_PCT 110u
+#define OVP_RELATIVE_CYCLES 3u   /* PID cycles (150 us) over OVP_RELATIVE_PCT before SW_OVP */
 
 /**
  * OVP_HOLD_RELEASE_PCT — A downward transition holds the relative OVP at the

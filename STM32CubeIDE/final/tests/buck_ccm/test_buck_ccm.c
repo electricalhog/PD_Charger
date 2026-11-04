@@ -772,6 +772,182 @@ static void replay(float r0, float tau, float open_ms, float floor_v, float il_c
 }
 #endif
 
+
+/* Boost CCM (buck_ccm.h): plays the program tick by tick and checks every
+ * edge on both legs, then runs the duty law on an averaged boost plant.
+ *   Q1 TA1  reset Timer A period, set Timer A CMP4
+ *   Q2 TA2  set Timer A CMP2, reset Timer A CMP3
+ *   Q4 TB2  set Timer B period, reset Timer B CMP2
+ *   Q3 TB1  set Timer B CMP3, reset Timer B CMP4                            */
+static void boost_play(const BuckCcmTimingCfg *c, const BoostCcmTiming *t, bool band)
+{
+    const uint32_t per = buck_ccm_ticks(c->period_ns), dt = buck_ccm_ticks(c->dt_ns);
+    CHECK(t->a_cmp2 >= BUCK_CCM_MIN_COMPARE && t->b_cmp4 < per && t->b_cmp3 < t->b_cmp4,
+          "compares a2 %u b3 %u b4 %u per %u", t->a_cmp2, t->b_cmp3, t->b_cmp4, per);
+    int q1 = 1, q2 = 0, q3 = 0, q4 = 0;
+    uint32_t off1 = 0, off2 = 0, off3 = 0, off4 = 0, q4_on_at = 0, q2_on_at = 0, q2_off_at = 0;
+    bool q2_seen = false;
+    for (uint32_t n = 0; n < 3u * per; n++)
+    {
+        const uint32_t k = n % per;
+        int n1 = q1, n2 = q2, n3 = q3, n4 = q4;
+        if (k == 0u)        { n1 = 0; n4 = 1; }
+        if (k == t->a_cmp2) { n2 = 1; }
+        if (k == t->a_cmp3) { n2 = 0; }
+        if (k == t->a_cmp4) { n1 = 1; }
+        if (k == t->b_cmp2) { n4 = 0; }
+        if (k == t->b_cmp3) { n3 = 1; }
+        if (k == t->b_cmp4) { n3 = 0; }
+        if (n >= per)
+        {
+            if (n1 && !q1) { CHECK(n - off2 >= dt, "Q1 on %u ticks after Q2 off", n - off2); }
+            if (n2 && !q2) { CHECK(n - off1 >= dt, "Q2 on %u ticks after Q1 off", n - off1); q2_on_at = k; q2_seen = true; }
+            if (n3 && !q3) { CHECK(n - off4 >= dt, "Q3 on %u ticks after Q4 off", n - off4); }
+            if (n4 && !q4) { CHECK(n - off3 >= dt, "Q4 on %u ticks after Q3 off", n - off3); q4_on_at = n; }
+            if (!n2 && q2) { q2_off_at = k; CHECK(band || n4, "refresh ends with Q4 off (k %u)", k); }
+            if (n2 && !band) { CHECK(n4, "Q2 on while Q4 is off (k %u): L1 would see -V_out", k); }
+        }
+        if (!n1 && q1) { off1 = n; }
+        if (!n2 && q2) { off2 = n; }
+        if (!n3 && q3) { off3 = n; }
+        if (!n4 && q4) { off4 = n; CHECK(n < per || n - q4_on_at == t->b_cmp2, "Q4 pulse"); }
+        CHECK(!(n1 && n2) && !(n3 && n4), "shoot-through at %u: %d%d %d%d", n, n1, n2, n3, n4);
+        q1 = n1; q2 = n2; q3 = n3; q4 = n4;
+    }
+    CHECK(q2_seen && q2_off_at - q2_on_at == buck_ccm_ticks(c->refresh_ns), "refresh %u ticks", q2_off_at - q2_on_at);
+}
+
+typedef struct { float v_min, v_max, v_end, il_max, u_end; int clamps; } BoostSim;
+
+/* Averaged boost from 'v0' at V_ref with a load step r1 -> r2 at 10 ms. */
+static const BuckCcmTimingCfg *boost_sim_cfg;   /* NULL: boost at 200 kHz */
+static BoostSim boost_sim(float v_in, float v_ref, float v0, float r1, float r2, float c_uf, float ilim)
+{
+    BuckCcmTimingCfg c = { .period_ns = 5000u, .pulse_start_ns = 360u, .dt_ns = 20u, .refresh_ns = 300u,
+                           .refresh_interval_ns = 5000u, .min_on_ns = 100u, .min_q2_end_ns = 60u };
+    if (boost_sim_cfg) { c = *boost_sim_cfg; }
+    const BuckCcmGains g = { .ki = 3142.0f, .kp = 0.0f, .u_min_v = -1.0f, .u_max_v = 2.0f, .dt_s = 50e-6f,
+                             .ilim_a = ilim, .kl = 400.0f, .dt_lim_s = 50e-6f };
+    BuckCcmState s = { 0 };
+    buck_ccm_reset(&s, 0.0f, v_ref, v0);
+    const float l = 4.7e-6f, cc = c_uf * 1e-6f, rs = 0.03f,
+                rp = (float)(c.refresh_ns + 2u * c.dt_ns) / (float)c.period_ns;   /* Q1's off window */
+    float v = v0, il = v0 / r1 / (v_in / v0), d = 1.0f - v_in * (1.0f - rp) / v0, vmeas = v0;
+    BoostSim r = { 1e9f, -1e9f, 0, 0, 0, 0 };
+    const float h = 0.25e-6f;
+    for (int cyc = 0; cyc < 400; cyc++)               /* 20 ms */
+    {
+        const float rl = (cyc < 200) ? r1 : r2;
+        float io = vmeas / rl;
+        buck_ccm_limit(&s, &g, v_ref, vmeas, io);
+        boost_ccm_update(&s, &g, &c, vmeas, v_in);
+        if (s.clamp) { r.clamps++; }
+        BoostCcmTiming t;
+        boost_ccm_timing_ticks(&c, s.t_on_ticks, &t);
+        const float dn = (float)t.t_on_ns / 5000.0f;
+        float acc = 0; int na = 0;
+        for (int k = 0; k < 200; k++)                 /* 50 us; the new duty lands 13 us in */
+        {
+            if (k == 52) { d = dn; }
+            const float vl = v_in * (1.0f - rp) - v * (1.0f - d) - il * rs;
+            il += vl / l * h;
+            v  += (il * (1.0f - d) - v / rl) / cc * h;
+            if (cyc > 2) { if (v < r.v_min) { r.v_min = v; } if (v > r.v_max) { r.v_max = v; } }
+            if (il > r.il_max) { r.il_max = il; }
+            if (k >= 20) { acc += v; na++; }
+        }
+        vmeas = acc / (float)na;
+    }
+    r.v_end = v; r.u_end = s.u_v;
+    return r;
+}
+
+static void test_boost(void)
+{
+    printf("boost CCM:\n");
+    for (uint32_t dtn = 20u; dtn <= 40u; dtn += 20u)
+    {
+        BuckCcmTimingCfg c = { .period_ns = 5000u, .pulse_start_ns = 300u + 2u * dtn + 20u, .dt_ns = dtn,
+                               .refresh_ns = 300u, .refresh_interval_ns = 5000u, .min_on_ns = 100u,
+                               .min_q2_end_ns = 60u };
+        CHECK(boost_ccm_cfg_valid(&c), "cfg dt %u", dtn);
+        for (uint32_t on = 0u; on <= 5000u; on += 37u)
+        {
+            BoostCcmTiming t;
+            boost_ccm_timing_ticks(&c, buck_ccm_ticks(on), &t);
+            CHECK(t.t_on_ns >= boost_ccm_min_on_ns(&c) - 1u && t.t_on_ns <= boost_ccm_max_on_ns(&c) + 1u,
+                  "on %u -> %u", on, t.t_on_ns);
+            boost_play(&c, &t, false);
+        }
+    }
+    BuckCcmTimingCfg bad = { .period_ns = 2500u, .pulse_start_ns = 360u, .dt_ns = 20u, .refresh_ns = 300u,
+                             .refresh_interval_ns = 5000u, .min_on_ns = 100u, .min_q2_end_ns = 60u };
+    CHECK(!boost_ccm_cfg_valid(&bad), "400 kHz with a 5 us refresh interval must be refused");
+    bad.period_ns = 5000u; bad.dt_ns = 10u; bad.pulse_start_ns = 340u;
+    CHECK(!boost_ccm_cfg_valid(&bad), "10 ns dead time (CMP2 under the minimum) must be refused");
+
+    const struct { float vin, vref, r1, r2; } pts[] = {
+        { 24.9f, 28.0f, 25.3f, 25.3f }, { 24.9f, 28.0f, 25.3f, 9.0f }, { 24.9f, 28.0f, 9.0f, 25.3f },
+        { 15.0f, 20.0f, 25.3f, 5.0f }, { 10.0f, 20.0f, 20.0f, 6.7f }, { 10.0f, 28.0f, 25.3f, 9.3f },
+        { 20.0f, 20.5f, 25.3f, 25.3f },
+    };
+    for (unsigned j = 0; j < sizeof pts / sizeof pts[0]; j++)
+    {
+        const BoostSim r = boost_sim(pts[j].vin, pts[j].vref, pts[j].vref, pts[j].r1, pts[j].r2, 55.0f, 0.0f);
+        printf("  %4.1f -> %4.1f V, %5.1f -> %5.1f ohm: V %6.3f..%6.3f end %6.3f, IL max %5.2f A, u %+.3f, clamps %d\n",
+               pts[j].vin, pts[j].vref, pts[j].r1, pts[j].r2, r.v_min, r.v_max, r.v_end, r.il_max, r.u_end, r.clamps);
+        CHECK(fabsf(r.v_end - pts[j].vref) < 0.05f * pts[j].vref, "boost %.1f->%.1f end %.3f",
+              pts[j].vin, pts[j].vref, r.v_end);
+        CHECK(r.v_max < 1.1f * pts[j].vref, "boost overshoot %.3f", r.v_max);
+    }
+    /* The limit folds a boost output only down to boost_ccm_v_min (about
+     * V_in): below that the current is the load's, at the shortest pulse. */
+    BuckCcmTimingCfg c0 = { .period_ns = 5000u, .pulse_start_ns = 360u, .dt_ns = 20u, .refresh_ns = 300u,
+                            .refresh_interval_ns = 5000u, .min_on_ns = 100u, .min_q2_end_ns = 60u };
+    const float vmin = boost_ccm_v_min(&c0, 24.9f);
+    const BoostSim lim = boost_sim(24.9f, 28.0f, 28.0f, 25.3f, 9.0f, 55.0f, 2.9f);
+    const BoostSim floor = boost_sim(24.9f, 28.0f, 28.0f, 25.3f, 9.0f, 55.0f, 1.5f);
+    printf("  limit 2.9 A, 28 V into 9 ohm: end %.3f V (I %.2f A); limit 1.5 A: end %.3f V, floor %.3f V\n",
+           lim.v_end, lim.v_end / 9.0f, floor.v_end, vmin);
+    /* R / kl = 22 ms into 9 ohm: 10 ms after the step it is still folding */
+    CHECK(lim.v_end < 27.5f && lim.v_end / 9.0f > 2.9f, "boost limit 2.9 A end %.3f", lim.v_end);
+    CHECK(floor.v_end > vmin - 0.5f && floor.v_end < vmin + 0.5f, "boost limit floor end %.3f", floor.v_end);
+}
+
+/* Band CCM (buck_ccm.h): the boost program with Q1's off window widened to
+ * 640 ns + 2 dt and Q4 pulses down to 150 ns, ending inside it. */
+static void test_band(void)
+{
+    printf("band CCM:\n");
+    const BuckCcmTimingCfg c = { .period_ns = 5000u, .pulse_start_ns = 150u, .dt_ns = 20u, .refresh_ns = 640u,
+                                 .refresh_interval_ns = 5000u, .min_on_ns = 100u, .min_q2_end_ns = 60u };
+    CHECK(band_ccm_cfg_valid(&c), "band cfg");
+    CHECK(!boost_ccm_cfg_valid(&c), "boost must refuse a Q4 pulse shorter than the window");
+    for (uint32_t on = 0u; on <= 5000u; on += 23u)
+    {
+        BoostCcmTiming t;
+        boost_ccm_timing_ticks(&c, buck_ccm_ticks(on), &t);
+        boost_play(&c, &t, true);
+    }
+    printf("  V_out range at 24.9 V in: %.2f..%.2f V\n", boost_ccm_v_min(&c, 24.9f), boost_ccm_v_max(&c, 24.9f));
+    CHECK(boost_ccm_v_min(&c, 24.9f) < 0.92f * 24.9f, "band reaches 0.92 V_in");
+    boost_sim_cfg = &c;
+    const struct { float vin, vref, r1, r2; } pts[] = {
+        { 24.9f, 24.0f, 25.3f, 25.3f }, { 24.9f, 24.0f, 25.3f, 9.0f }, { 24.9f, 24.0f, 9.0f, 25.3f },
+        { 24.9f, 25.5f, 25.3f, 9.0f }, { 20.0f, 19.0f, 25.3f, 7.0f }, { 10.0f, 9.5f, 25.3f, 4.0f },
+    };
+    for (unsigned j = 0; j < sizeof pts / sizeof pts[0]; j++)
+    {
+        const BoostSim r = boost_sim(pts[j].vin, pts[j].vref, pts[j].vref, pts[j].r1, pts[j].r2, 55.0f, 0.0f);
+        printf("  %4.1f -> %4.1f V, %5.1f -> %5.1f ohm: V %6.3f..%6.3f end %6.3f, IL max %5.2f A, u %+.3f, clamps %d\n",
+               pts[j].vin, pts[j].vref, pts[j].r1, pts[j].r2, r.v_min, r.v_max, r.v_end, r.il_max, r.u_end, r.clamps);
+        CHECK(fabsf(r.v_end - pts[j].vref) < 0.02f * pts[j].vref, "band %.1f->%.1f end %.3f",
+              pts[j].vin, pts[j].vref, r.v_end);
+        CHECK(r.v_max < 1.08f * pts[j].vref, "band overshoot %.3f", r.v_max);
+    }
+    boost_sim_cfg = NULL;
+}
+
 int main(int argc, char **argv)
 {
     (void)argc; (void)argv;
@@ -797,6 +973,8 @@ int main(int argc, char **argv)
     test_unclip();
     test_limit();
     test_entry();
+    test_boost();
+    test_band();
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("buck_ccm: all checks passed\n");
     return 0;

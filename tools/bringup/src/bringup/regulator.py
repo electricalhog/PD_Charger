@@ -205,7 +205,10 @@ _CONTROL = {"regulator_mode": "mode", "target_voltage_mv": "target_mv", "regulat
             # Period-mean currents and the CCM current limit (2026-10-21)
             "regulator_ccm_ilim_ma": "ccm_ilim_ma", "regulator_ccm_ilim_src": "ccm_ilim_src",
             "regulator_ccm_peak_ma": "ccm_peak_ma", "regulator_ccm_limiting": "ccm_limiting",
-            "regulator_ccm_limit_entries": "ccm_limit_entries", "adc_monitor_adc2_aborts": "adc2_aborts"}
+            "regulator_ccm_limit_entries": "ccm_limit_entries", "adc_monitor_adc2_aborts": "adc2_aborts",
+            # Forced CCM kind (2026-11-03): 0 none, 1 buck, 2 boost, 3 band
+            "regulator_ccm_kind": "ccm_kind", "regulator_ccm_boost": "ccm_boost",
+            "regulator_ccm_band": "ccm_band"}
 # Signed 32-bit telemetry: filtered currents and powers (POWER_FILTER_SHIFT).
 _CONTROL_I = {"regulator_i_out_filt_ma": "i_out_filt_ma", "regulator_i_in_filt_ma": "i_in_filt_ma",
               "regulator_p_in_mw": "p_in_mw", "regulator_p_out_mw": "p_out_mw", "regulator_il_avg_ma": "il_avg_ma",
