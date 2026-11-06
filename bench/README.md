@@ -36,8 +36,8 @@ This replaced the original plan (the sink's receptacle feeding the load) on 2026
   - The shield's power path is unused, so the sink's VBUS sense (PA0) reads 0 V.
 - **Electronic load:** the QT Py RP2040 on the 20 V buck converter; see "The electronic load".
 - **Scope:**
-  - CH1: the 25 Ω resistor (the probe connection is unreliable).
-  - CH2 = TP3: SW1, the Q1/Q2 node.
+  - CH1 = TP3: SW1, the Q1/Q2 node (moved from CH2 by 2026-11-03; CH1 was on the 25 Ω before).
+  - CH2: CC1 (since 2026-11-03, for BMC decoding).
   - CH3 = TP4: SW2, the Q3/Q4 node.
   - CH4 = TP2: VOUTa, the regulated node ahead of R6 and the output switch.
 

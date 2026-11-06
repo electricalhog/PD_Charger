@@ -85,6 +85,11 @@ extern "C" {
  *  (adc_monitor_init).  0: one scan per HRTIM ADC trigger 1, like ADC1. */
 #define ADC2_FREE_RUN_MEAN              1u
 #define ADC2_DMA_BUFFER_LENGTH          (ADC_SYNC_SCAN_LENGTH * ADC2_DMA_SCANS)
+/** 1: IS_MON (PB0) is also ADC3_IN12; ADC3 converts it free-running with
+ *  256x oversampling, like ADC2's ID_MON, and i_in_ma is that period mean.
+ *  The ADC1 sample (one per period in the quiet phase) misses the input
+ *  pulse in buck DCM: 31 mA for about 0.4 A at 15 V / 8.9 W (2026-11-04). */
+#define IS_MON_ADC3_MEAN                1u
 /** VD_MON samples the trimmed mean may use. */
 #define ADC1_AVG_SCANS                  20u
 

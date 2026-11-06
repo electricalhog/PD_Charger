@@ -153,6 +153,35 @@ void adc_monitor_init(void)
     LL_ADC_SetOverSamplingScope(ADC2, LL_ADC_OVS_GRP_REGULAR_CONTINUED);
     LL_ADC_ConfigOverSamplingRatioShift(ADC2, LL_ADC_OVS_RATIO_256, LL_ADC_OVS_SHIFT_RIGHT_8);
 #endif
+#if IS_MON_ADC3_MEAN
+    /* ADC3 on IS_MON (ADC3_IN12, the same pin as ADC1_IN15), not in
+     * final.ioc: clock, regulator, calibration and start written here.
+     * Same clock and conversion as ADC2 (PCLK/4, 6.5 + 12.5 cycles), so each
+     * oversampled result spreads 256 phases over the period (adc_monitor.h).
+     * Read without DMA: DR holds the newest 256-sample mean. */
+    __HAL_RCC_ADC345_CLK_ENABLE();
+    LL_ADC_SetCommonClock(__LL_ADC_COMMON_INSTANCE(ADC3), LL_ADC_CLOCK_SYNC_PCLK_DIV4);
+    LL_ADC_DisableDeepPowerDown(ADC3);
+    LL_ADC_EnableInternalRegulator(ADC3);
+    for (volatile uint32_t d = 0u; d < 2000u; d++) { }   /* t_ADCVREG_STUP 20 us */
+    LL_ADC_StartCalibration(ADC3, LL_ADC_SINGLE_ENDED);
+    while (LL_ADC_IsCalibrationOnGoing(ADC3) != 0u) { }
+    for (volatile uint32_t d = 0u; d < 100u; d++) { }    /* 4 ADC clocks after ADCAL */
+    LL_ADC_SetResolution(ADC3, LL_ADC_RESOLUTION_12B);
+    LL_ADC_REG_SetTriggerSource(ADC3, LL_ADC_REG_TRIG_SOFTWARE);
+    LL_ADC_REG_SetContinuousMode(ADC3, LL_ADC_REG_CONV_CONTINUOUS);
+    LL_ADC_REG_SetOverrun(ADC3, LL_ADC_REG_OVR_DATA_OVERWRITTEN);
+    LL_ADC_REG_SetSequencerLength(ADC3, LL_ADC_REG_SEQ_SCAN_DISABLE);
+    LL_ADC_REG_SetSequencerRanks(ADC3, LL_ADC_REG_RANK_1, LL_ADC_CHANNEL_12);
+    LL_ADC_SetChannelSamplingTime(ADC3, LL_ADC_CHANNEL_12, ADC_SYNC_I_SAMPLING);
+    LL_ADC_SetChannelSingleDiff(ADC3, LL_ADC_CHANNEL_12, LL_ADC_SINGLE_ENDED);
+    LL_ADC_SetOverSamplingScope(ADC3, LL_ADC_OVS_GRP_REGULAR_CONTINUED);
+    LL_ADC_ConfigOverSamplingRatioShift(ADC3, LL_ADC_OVS_RATIO_256, LL_ADC_OVS_SHIFT_RIGHT_8);
+    LL_ADC_ClearFlag_ADRDY(ADC3);
+    LL_ADC_Enable(ADC3);
+    while (LL_ADC_IsActiveFlag_ADRDY(ADC3) == 0u) { }
+    LL_ADC_REG_StartConversion(ADC3);
+#endif
 }
 
 uint32_t adc_monitor_latest_scan(void)
@@ -209,8 +238,13 @@ void adc_monitor_update_slow(void)
                                                                             ADC_SYNC_AVG_SCANS), VS_MON_FULL_SCALE_MV);
     adc_measurements.i_out_ma = scale_current_id_ma((uint16_t)ring_mean(adc2_dma_buffer, ADC2_DMA_SCANS, s2, ADC_SYNC_RANK_I,
                                                                         ADC_SYNC_AVG_SCANS));
+#if IS_MON_ADC3_MEAN
+    (void)s1;
+    adc_measurements.i_in_ma  = scale_current_il_ma((uint16_t)LL_ADC_REG_ReadConversionData12(ADC3));
+#else
     adc_measurements.i_in_ma  = scale_current_il_ma((uint16_t)ring_mean(adc1_dma_buffer, ADC1_DMA_SCANS, s1, ADC_SYNC_RANK_I,
                                                                         ADC_SYNC_AVG_SCANS));
+#endif
     adc_measurements.i_inductor_ma = 0u;   /* IL_MON is not converted (adc_monitor_init) */
 }
 
