@@ -105,9 +105,11 @@ typedef struct
     uint32_t t_on_ticks; /**< last update's on-time in HRTIM ticks (184 ps): 1 ns
                               of duty is 9.6 mV at 24 V, 0.2 A into a battery */
     float v_floor_v; /**< no-reverse floor, set by the caller [V]; <= 0: off.  The
-                          duty never goes below the one that balances this V_out,
-                          so L1's average current cannot turn negative (a battery
-                          on VBUS would otherwise drive power back into V_in).  It
+                          law's reference never goes below it while the current
+                          limit is not acting, so with the integrator's offset
+                          L1's average current settles at 0 A or above (a
+                          battery on VBUS would otherwise drive power back into
+                          V_in); while it acts, its positive target does.  It
                           must be the source's open-circuit voltage, not the
                           loaded V_out, or it holds L1 at its present current */
 } BuckCcmState;

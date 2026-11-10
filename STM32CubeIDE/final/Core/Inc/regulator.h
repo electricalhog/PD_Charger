@@ -147,14 +147,15 @@ extern volatile uint16_t regulator_sr_off_ns;
  *    regulator_ccm_ocp_ma        SW_OCP level on regulator_ccm_i_avg_ma
  *    regulator_ccm_ilim_ma       current limit in CCM and DCM, 0 off
  *                                (buck_ccm.h, regulator.c step 5d)
- *    regulator_ccm_ilim_kl       its integral gain [V/(A s)]
+ *    regulator_ccm_ilim_kl       its integral gain in DCM [V/(A s)]
+ *    regulator_ccm_ilim_kl_ccm   the same in CCM
  *    regulator_ccm_ilim_src      CCM's current (limit, SW_OCP, light-load
  *                                exit): 1 ID_MON (default, regulator_id_gain/
  *                                offset applied), 0 IL_MON (regulator_il_ma)
+ *    regulator_ccm_ilim_fast     1: the limit reads ID_MON's newest scan
+ *                                (CCM_ILIM_FAST_DEFAULT), 0: its 8-scan mean
  *    regulator_ccm_peak_ma       peak comparator threshold in CCM, 0 = the
  *                                9 A backstop (CCM_PEAK_MA_DEFAULT)
- *    regulator_id_ccm_corr       1: ID_MON's buck CCM correction at 200 kHz
- *                                (ID_CCM_ADD_*, regulator_config.h)
  *    regulator_ccm_handover      1: L1 handed over at buck CCM entry and exit
  *                                (CCM_HANDOVER_DEFAULT); telemetry: the last
  *                                entry's / exit's valley estimate
@@ -230,7 +231,6 @@ extern volatile int16_t  regulator_id_offset_ma;
  *  offset in step 5a (regulator_i_in_filt_ma, regulator_p_in_mw).       */
 extern volatile int16_t  regulator_is_gain_permille;
 extern volatile int16_t  regulator_is_offset_ma;
-extern volatile uint8_t  regulator_id_ccm_corr;
 extern volatile uint8_t  regulator_ccm_handover;
 extern volatile int16_t  regulator_ccm_entry_dt_ns;
 extern volatile int16_t  regulator_ccm_entry_iv_ma;
@@ -240,7 +240,9 @@ extern volatile int16_t  regulator_ccm_exit_i0_ma;
 extern volatile uint32_t regulator_ccm_handover_timeouts;
 extern volatile uint16_t regulator_ccm_ilim_ma;
 extern volatile float    regulator_ccm_ilim_kl;
+extern volatile float    regulator_ccm_ilim_kl_ccm;
 extern volatile uint8_t  regulator_ccm_ilim_src;
+extern volatile uint8_t  regulator_ccm_ilim_fast;
 extern volatile uint16_t regulator_ccm_peak_ma;
 extern volatile uint8_t  regulator_ccm_limiting;
 extern volatile uint16_t regulator_cl_uvp_mv;
@@ -491,7 +493,7 @@ typedef enum
     REGULATOR_TRACE_OK          = 0u,
     REGULATOR_TRACE_NOT_RUNNING = 1u,  /**< SWITCH_PULSE needs RUNNING                  */
     REGULATOR_TRACE_SWITCH_BUSY = 2u,  /**< switch not closed yet, or already pulsing   */
-    REGULATOR_TRACE_BAD_ARG     = 3u,  /**< trigger > 3, or pulse outside 1..50000 us   */
+    REGULATOR_TRACE_BAD_ARG     = 3u,  /**< trigger > 4, or pulse outside 1..50000 us   */
     REGULATOR_TRACE_NO_SWITCH   = 4u   /**< built without OUTPUT_SWITCH_ENABLED         */
 } RegulatorTraceResult;
 
@@ -516,7 +518,10 @@ typedef struct
     uint16_t i_max_ma;   /**< its ceiling this cycle [mA]                       */
     uint16_t t_on_ns;    /**< charge pulse programmed [ns]                      */
     uint16_t flags;      /**< REGULATOR_TRACE_FLAG_*                            */
-} RegulatorTraceSample;  /* 10 bytes */
+    uint16_t v_cmd_mv;   /**< the reference both loops track: the setpoint, or
+                              the current limit's v_lim under it [mV]           */
+    int16_t  u_mv;       /**< the CCM law's integrator (BuckCcmState.u_v) [mV]  */
+} RegulatorTraceSample;  /* 14 bytes */
 
 typedef struct
 {

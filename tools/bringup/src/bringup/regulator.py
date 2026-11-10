@@ -67,11 +67,12 @@ TRACE_RESULTS = {
     0: ("OK", ""),
     1: ("NOT_RUNNING", "the regulator must be RUNNING for a switch pulse"),
     2: ("SWITCH_BUSY", "the output switch is not closed yet (start still connecting) or a pulse is running"),
-    3: ("BAD_ARG", "trigger 0-3; pulse 1-50000 us (SWITCH_PULSE_MAX_US)"),
+    3: ("BAD_ARG", "trigger 0-4; pulse 1-50000 us (SWITCH_PULSE_MAX_US)"),
     4: ("NO_SWITCH", "firmware built without OUTPUT_SWITCH_ENABLED"),
 }
 TRACE_LEN = 2048
 TRACE_SAMPLE = struct.Struct("<5H")      # v_out_mv, i_cmd_ma, i_max_ma, t_on_ns, flags (regulator.h)
+TRACE_SAMPLE_VU = struct.Struct("<6Hh")  # and v_cmd_mv, u_mv (2026-11-09)
 TRACE_CTL = struct.Struct("<10I")        # state, trigger, post, threshold_mv, write_index, trigger_index, count,
                                          # remaining, pulse_us, pulse_cycles (the last two since TIM4 timing)
 TRACE_FLAGS = {0x04: "skipping", 0x08: "switch_on", 0x10: "rectifier", 0x20: "at_limit", 0x40: "pulse_open",
@@ -118,22 +119,27 @@ def trace_read(cfg: dict) -> dict:
     state, trigger, post, thr, w, trig_i, count, remaining, p_us, p_cyc = words[:10]
     n = min(count, TRACE_LEN)
     first = w if count >= TRACE_LEN else 0
-    rows = []
+    fmt = TRACE_SAMPLE_VU if len(buf) >= TRACE_LEN * TRACE_SAMPLE_VU.size else TRACE_SAMPLE
+    rows, vu = [], []
     for k in range(n):
         idx = (first + k) % TRACE_LEN
-        v, ic, im, ton, fl = TRACE_SAMPLE.unpack_from(buf, idx * TRACE_SAMPLE.size)
+        v, ic, im, ton, fl, *extra = fmt.unpack_from(buf, idx * fmt.size)
         rows.append((idx, v, ic, im, ton, fl))
+        vu.append(extra)
     trig_pos = next((k for k, r in enumerate(rows) if r[0] == trig_i and r[5] & 0x80), None)
     path = out_file(cfg, "regulator_trace", "csv")
     with path.open("w") as f:
         # ccm (2026-10-20): in CCM samples i_cmd_ma holds the current the CCM limit acts on (since 2026-10-21,
         # per cycle; ID_MON's period mean by default).  ilim: the limit set the duty.
+        # v_cmd_mv, u_mv (2026-11-09): the reference both loops track (the limit's v_lim while it acts) and the CCM
+        # law's integrator.
         f.write("t_ms,v_out_mv,i_cmd_ma,i_max_ma,t_on_ns,mode,skipping,switch_on,rectifier,at_limit,pulse_open,trigger,"
-                "ccm,ilim\n")
+                "ccm,ilim" + (",v_cmd_mv,u_mv" if fmt is TRACE_SAMPLE_VU else "") + "\n")
         for k, (_, v, ic, im, ton, fl) in enumerate(rows):
             t_ms = (k - (trig_pos if trig_pos is not None else 0)) * 1000.0 / PID_HZ
             bits = [int(bool(fl & b)) for b in (0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x100, 0x200)]
-            f.write(f"{t_ms:.2f},{v},{ic},{im},{ton},{MODES.get(fl & 3, fl & 3)}," + ",".join(map(str, bits)) + "\n")
+            f.write(f"{t_ms:.2f},{v},{ic},{im},{ton},{MODES.get(fl & 3, fl & 3)}," + ",".join(map(str, bits))
+                    + "".join(f",{x}" for x in vu[k]) + "\n")
     out = {"ok": True, "state": TRACE_STATES.get(state, state),
            "trigger": next((k for k, v in TRACE_TRIGGERS.items() if v == trigger), trigger),
            "post": post, "threshold_mv": thr, "samples": n, "count": count, "remaining": remaining,
@@ -207,6 +213,7 @@ _CONTROL = {"regulator_mode": "mode", "target_voltage_mv": "target_mv", "regulat
             "regulator_ccm_exit_reason": "ccm_exit_reason",
             # Period-mean currents and the CCM current limit (2026-10-21)
             "regulator_ccm_ilim_ma": "ccm_ilim_ma", "regulator_ccm_ilim_src": "ccm_ilim_src",
+            "regulator_ccm_ilim_fast": "ccm_ilim_fast",
             "regulator_ccm_peak_ma": "ccm_peak_ma", "regulator_ccm_limiting": "ccm_limiting",
             "regulator_ccm_limit_entries": "ccm_limit_entries", "adc_monitor_adc2_aborts": "adc2_aborts",
             # Forced CCM kind (2026-11-03): 0 none, 1 buck, 2 boost, 3 band
@@ -230,7 +237,7 @@ _CONTROL_F = {"regulator_i_cmd_ma": "i_cmd_ma", "regulator_i_pk_ma": "i_pk_ma", 
               "pid_kp": "kp_ma_per_mv", "pid_ki": "ki_ma_per_mv_s", "regulator_loop_fc_hz": "loop_fc_hz",
               "regulator_c_int_uf": "c_int_uf", "regulator_c_ext_uf": "c_ext_uf",
               "regulator_ccm_ki": "ccm_ki_per_s", "regulator_ccm_u_mv": "ccm_u_mv",
-              "regulator_ccm_ilim_kl": "ccm_ilim_kl", "regulator_ccm_v_lim_mv": "ccm_v_lim_mv"}
+              "regulator_ccm_ilim_kl": "ccm_ilim_kl", "regulator_ccm_ilim_kl_ccm": "ccm_ilim_kl_ccm", "regulator_ccm_v_lim_mv": "ccm_v_lim_mv"}
 
 
 def _u(data: bytes) -> int:
@@ -298,9 +305,12 @@ def decode(raw: dict) -> dict:
     if ctl:
         s["control"] = ctl
     if "adc_measurements" in raw:
-        v_out, v_in, i_l, i_out, i_in = struct.unpack("<5I", raw["adc_measurements"])
+        a = raw["adc_measurements"]
+        v_out, v_in, i_l, i_out, i_in = struct.unpack("<5I", a[:20])
         s["adc"] = {"v_in_mv": v_in, "v_out_mv": v_out, "i_inductor_ma": i_l, "i_out_ma": i_out, "i_in_ma": i_in,
                     "note": "updated by the PID ISR, so stale unless RUNNING"}
+        if len(a) >= 24:   # ID_MON's newest scan, the limit's input (2026-11-09)
+            s["adc"]["i_out_lim_ma"] = struct.unpack("<I", a[20:24])[0]
     s["diagnosis"] = diagnose(s)
     return s
 

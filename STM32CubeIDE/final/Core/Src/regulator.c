@@ -510,7 +510,6 @@ volatile int16_t  regulator_id_gain_permille = ID_GAIN_PERMILLE_DEFAULT;
 volatile int16_t  regulator_id_offset_ma    = ID_OFFSET_MA_DEFAULT;
 volatile int16_t  regulator_is_gain_permille = IS_GAIN_PERMILLE_DEFAULT;
 volatile int16_t  regulator_is_offset_ma    = IS_OFFSET_MA_DEFAULT;
-volatile uint8_t  regulator_id_ccm_corr     = 1u;
 volatile uint8_t  regulator_ccm_handover    = CCM_HANDOVER_DEFAULT;
 volatile int16_t  regulator_ccm_entry_dt_ns = 0;
 volatile int16_t  regulator_ccm_entry_iv_ma = 0;
@@ -521,7 +520,9 @@ volatile uint32_t regulator_ccm_handover_timeouts = 0u;
 volatile int32_t  regulator_il_ma           = 0;
 volatile uint16_t regulator_ccm_ilim_ma     = CCM_ILIM_MA_DEFAULT;
 volatile float    regulator_ccm_ilim_kl     = CCM_ILIM_KL_DEFAULT;
+volatile float    regulator_ccm_ilim_kl_ccm = CCM_ILIM_KL_CCM_DEFAULT;
 volatile uint8_t  regulator_ccm_ilim_src    = CCM_ILIM_SRC_DEFAULT;
+volatile uint8_t  regulator_ccm_ilim_fast   = CCM_ILIM_FAST_DEFAULT;
 volatile uint16_t regulator_ccm_peak_ma     = CCM_PEAK_MA_DEFAULT;
 volatile uint8_t  regulator_ccm_limiting    = 0u;
 volatile uint16_t regulator_cl_uvp_mv       = 0u;
@@ -847,20 +848,6 @@ static void hrtim_write_boost_ccm_timing(const BoostCcmTiming *t)
 
 /** Bench CCM PWM is running (regulator_bench_ccm_pwm); restored differently. */
 static bool bench_ccm = false;
-
-/** ID_MON's buck CCM correction at 200 kHz [raw mA], by duty (ID_CCM_ADD_*). */
-static int32_t id_ccm_add_ma(uint32_t v_out_mv, uint32_t v_in_mv)
-{
-    static const int16_t add[] = ID_CCM_ADD_MA;
-    const uint32_t n = sizeof(add) / sizeof(add[0]);
-    if (v_in_mv == 0u) { return 0; }
-    const uint32_t d = (v_out_mv * 1000u) / v_in_mv;
-    if (d <= ID_CCM_ADD_D0) { return add[0]; }
-    const uint32_t k = (d - ID_CCM_ADD_D0) / ID_CCM_ADD_STEP;
-    if (k >= n - 1u) { return add[n - 1u]; }
-    const int32_t f = (int32_t)(d - ID_CCM_ADD_D0 - k * ID_CCM_ADD_STEP);
-    return add[k] + ((add[k + 1u] - add[k]) * f) / (int32_t)ID_CCM_ADD_STEP;
-}
 
 /** CCM_EXIT_DCM_ADD_MA at v_out_mv, linear between, held past the ends. */
 static int32_t ccm_exit_dcm_add_ma(uint32_t v_out_mv)
@@ -2285,13 +2272,11 @@ void regulator_pid_tim7_isr(void)
         regulator_il_ma          = il;
         regulator_il_avg_ma     += (il    - regulator_il_avg_ma)     / (1 << POWER_FILTER_SHIFT);
     }
-    /* ID_MON reads low in buck CCM at 200 kHz (ID_CCM_ADD_*, 2026-11-06). */
-    int32_t id_raw_ma = (int32_t)adc_measurements.i_out_ma;
-    if (regulator_id_ccm_corr && regulator_ccm_active && regulator_ccm_kind == CCM_KIND_BUCK &&
-        sw_period_ticks == HRTIM_PERIOD_COUNTS)
-    {
-        id_raw_ma += id_ccm_add_ma(v_out_mv, v_in_mv);
-    }
+    /* The limit's ID_MON: the newest ADC2 scan (ADC_ID_LIMIT_SCANS, adc_monitor.h), whose 0.34 ms lag the CCM
+     * limit into the pack tolerates; the 8-scan mean's 2.3 ms made it oscillate (bench 2026-11-09 section 15).
+     * regulator_ccm_ilim_fast 0 goes back to the 8-scan mean. */
+    const int32_t id_raw_ma = (int32_t)(regulator_ccm_ilim_fast ? adc_measurements.i_out_lim_ma
+                                                                 : adc_measurements.i_out_ma);
     const int32_t i_lim_meas_ma = (regulator_ccm_ilim_src == 1u)
         ? (id_raw_ma * regulator_id_gain_permille) / 1000 + regulator_id_offset_ma
         : regulator_il_ma;
@@ -2306,7 +2291,8 @@ void regulator_pid_tim7_isr(void)
      * CCM's duty clamp, or the DCM command at 0 or its ceiling. --- */
     {
         const BuckCcmGains lim_g = {
-            .ilim_a = (float)regulator_ccm_ilim_ma * 1e-3f, .kl = regulator_ccm_ilim_kl,
+            .ilim_a = (float)regulator_ccm_ilim_ma * 1e-3f,
+            .kl = regulator_ccm_active ? regulator_ccm_ilim_kl_ccm : regulator_ccm_ilim_kl,
             .dt_lim_s = 1.0f / (float)PID_EXECUTION_RATE_HZ,
         };
         const uint8_t was_limiting = ilim_state.limiting;
@@ -2883,6 +2869,11 @@ void regulator_pid_tim7_isr(void)
         regulator_trace[w].i_max_ma = (uint16_t)(im <= 0.0f ? 0.0f : (im >= 65535.0f ? 65535.0f : im));
         regulator_trace[w].t_on_ns  = regulator_on_time_ns;
         regulator_trace[w].flags    = flags;
+        {
+            const float vc = ilim_state.v_cmd_v * 1e3f, u = ccm_state.u_v * 1e3f;
+            regulator_trace[w].v_cmd_mv = (uint16_t)(vc <= 0.0f ? 0.0f : (vc >= 65535.0f ? 65535.0f : vc));
+            regulator_trace[w].u_mv     = (int16_t)(u <= -32767.0f ? -32767.0f : (u >= 32767.0f ? 32767.0f : u));
+        }
         tc->write_index = (w + 1u) % REGULATOR_TRACE_LEN;
         tc->count++;
         if (fire)

@@ -20,6 +20,8 @@ _VARS = {"regulator_battery_ceiling_mv": "ceiling_mv", "regulator_battery_pack_m
          "regulator_battery_keepalive": "keepalive", "regulator_battery_vin_start_mv": "vin_start_mv",
          "regulator_battery_keepalive_stops": "keepalive_stops", "regulator_ccm_ilim_ma": "ilim_ma"}
 ILIM_MAX_MA = 5000   # ID_MON reads to 5.5 A (R6 12 mOhm)
+ABOVE_PACK_MAX_MV = 1500   # into a stiff pack the current is about (ceiling - pack) / 0.17 ohm (bench 2026-11-09)
+SETPOINT_MIN_MV = 5000
 
 
 def _battery_syms(cfg: dict) -> dict:
@@ -52,12 +54,28 @@ def status(cfg: dict) -> dict:
             "diagnosis": s["diagnosis"]}
 
 
-def run(cfg: dict, ceiling_mv: int, ilim_ma: int, seconds: float, interval: float = 0.2) -> dict:
+def measure_pack(cfg: dict, syms: dict) -> int:
+    """Read the pack without running: START with a 5 V ceiling reads it (switch closed, every FET off), stores it in
+    regulator_battery_pack_mv and refuses with PACK_AT_CEILING."""
+    r = regulator.command(cfg, "start", 5.0, mv=SETPOINT_MIN_MV)
+    if r.get("result") != "PACK_AT_CEILING":
+        raise ToolError(f"pack read: START at {SETPOINT_MIN_MV} mV gave {r.get('result')}, expected PACK_AT_CEILING")
+    return _read(cfg, syms)["pack_mv"]
+
+
+def run(cfg: dict, ceiling_mv: int | None, ilim_ma: int, seconds: float, interval: float = 0.2,
+        above_pack_mv: int | None = None) -> dict:
     syms = _battery_syms(cfg)
     if not 0 < ilim_ma <= ILIM_MAX_MA:
         raise ToolError(f"--ilim-ma must be 1..{ILIM_MAX_MA}")
     if regulator.status(cfg)["state"] != "IDLE":
         raise ToolError("regulator not IDLE: stop it (bu regulator stop) or clear the fault first")
+    pack_read_mv = None
+    if above_pack_mv is not None:
+        if not 0 < above_pack_mv <= ABOVE_PACK_MAX_MV:
+            raise ToolError(f"--above-pack-mv must be 1..{ABOVE_PACK_MAX_MV}")
+        pack_read_mv = measure_pack(cfg, syms)
+        ceiling_mv = pack_read_mv + above_pack_mv
     probe.mem_write(cfg, "regulator_ccm_ilim_ma", str(ilim_ma), "u16")
 
     stopped = False
@@ -102,6 +120,7 @@ def run(cfg: dict, ceiling_mv: int, ilim_ma: int, seconds: float, interval: floa
     tail = running[-5:]
     mean = lambda k: round(sum(r[k] for r in tail) / len(tail)) if tail and all(r[k] is not None for r in tail) else None
     return {"ok": bool(running) and rows[-1]["state"] == "RUNNING",   # ran to the end (or Ctrl-C) without a fault
+            "ceiling_mv": ceiling_mv, "above_pack_mv": above_pack_mv, "pack_read_mv": pack_read_mv,
             "battery": _read(cfg, syms), "samples": len(rows), "stopped_early": stopped,
             "ended": rows[-1]["state"] if rows else None, "end_state": end["state"], "end_fault": end["fault_source"],
             "tail_mean": {k: mean(k) for k in ("v_out_mv", "i_out_ma", "v_in_mv", "i_in_ma")},

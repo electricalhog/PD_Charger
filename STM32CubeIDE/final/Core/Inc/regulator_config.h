@@ -949,6 +949,22 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
  *                        800 rang there in the host test, 400 is 2x under).
  *                        Into 25.3 ohm the fold then has a 63 ms time
  *                        constant (0.79 -> 0.5 A settles in about 90 ms)
+ * CCM_ILIM_KL_CCM_DEFAULT regulator_ccm_ilim_kl_ccm, kl while CCM runs
+ *                        (CCM_ILIM_KL_DEFAULT is DCM's, whose loop gain is
+ *                        kl kp / (1 + kp R), about 30x lower into the
+ *                        pack).  In CCM the gain is kl / R with the newest
+ *                        ID_MON scan's 0.34 ms lag: in the host model
+ *                        (test_ilim_lag) 400 holds at 0.17 ohm and
+ *                        oscillates at 0.10; 100 holds down to 0.05 ohm.
+ *                        The bench path is about 0.13 ohm incremental
+ *                        (2026-11-09: +300 mV 2.69 A, +500 mV about 4.2 A).
+ *                        Into 25.3 ohm in CCM the fold is then 4 rad/s
+ * CCM_ILIM_FAST_DEFAULT  regulator_ccm_ilim_fast: 1, the limit reads ID_MON's
+ *                        newest ADC2 scan (about 0.34 ms behind), not the
+ *                        8-scan mean (about 2.3 ms): with the mean the CCM
+ *                        limit into the pack oscillated at a 10 ms period
+ *                        until SW_VIN_RISE (bench 2026-11-09 section 15).
+ *                        The kl note above assumed no measurement lag
  * CCM_ILIM_SRC_DEFAULT   regulator_ccm_ilim_src, CCM's current for the
  *                        limit, SW_OCP and the light-load exit: 1 ID_MON
  *                        (output shunt R6, after regulator_id_gain_permille
@@ -969,17 +985,14 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
  *                        1.2 mA from 0.25 to 1 A.  The 2026-11-06 fit
  *                        (1.059 / -54 mA, against V/R into 25.3 ohm, 5-21 V)
  *                        read 38-48 mA low on the ammeter at 0.15-0.29 A
- * ID_CCM_ADD_*           Buck CCM at 200 kHz reads ID_MON low by up to
- *                        167 mA (2026-11-06: same V_out and resistor in DCM
- *                        and forced CCM, 5-21 V at 24.4 V in; within 20 mA
- *                        of the same with 3.5-7 W more load, and with the
- *                        refresh every 2nd period).  The raw reading gets
- *                        ID_CCM_ADD_MA[] added, by duty V_out / V_in (per
- *                        mille, from ID_CCM_ADD_D0 in ID_CCM_ADD_STEP
- *                        steps, linear between, held past the ends), while
- *                        regulator_id_ccm_corr and buck CCM run at 200 kHz.
- *                        Cause not found (needs a probe on ID_MON, PC1);
- *                        only calibrated at 24.4 V in.
+ *                        No CCM correction: into 25.3 ohm (2026-11-06) buck
+ *                        CCM read up to 167 mA under DCM, and a table by
+ *                        duty added it back; into a 4S pack (2026-11-09
+ *                        section 14) CCM read right on the ammeter without
+ *                        it (2.695 / 2.605 A against 2694 / 2618 mA, D 0.65)
+ *                        and the table put it 158 mA high.  Dan: the pack's
+ *                        low impedance likely smooths switching noise that
+ *                        coupled into the reading (not checked).
  * CCM_HANDOVER_DEFAULT   regulator_ccm_handover: 1 puts L1 on the steady
  *                        ripple in one period at a buck CCM entry and back
  *                        to 0 A at an exit (buck_ccm.h, CCM handover), and
@@ -1076,9 +1089,11 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
 #else
 #define CCM_ILIM_MA_DEFAULT      3000u   /* the PDO current; 0 = off */
 #endif
-#define CCM_ILIM_KL_DEFAULT      400.0f  /* [V/(A s)] */
+#define CCM_ILIM_KL_DEFAULT      400.0f  /* [V/(A s)], DCM */
+#define CCM_ILIM_KL_CCM_DEFAULT  100.0f  /* [V/(A s)], CCM */
 #define CCM_PEAK_MA_DEFAULT      0u      /* 0 = the PEAK_PROTECT backstop */
 #define CCM_ILIM_SRC_DEFAULT     1u      /* ID_MON */
+#define CCM_ILIM_FAST_DEFAULT    1u      /* the newest ADC2 scan (adc_monitor.h ADC_ID_LIMIT_SCANS) */
 #define ID_GAIN_PERMILLE_DEFAULT 991
 #define ID_OFFSET_MA_DEFAULT     4
 /* IS_MON: regulator_is_gain_permille / _offset_ma.  Bench 2026-11-09 section
@@ -1088,9 +1103,6 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
  * checked: section 3 found IS_MON 40 % low at 5 V out.                   */
 #define IS_GAIN_PERMILLE_DEFAULT 855
 #define IS_OFFSET_MA_DEFAULT     10
-#define ID_CCM_ADD_D0            200u
-#define ID_CCM_ADD_STEP          50u
-#define ID_CCM_ADD_MA            { 1, 6, 12, 21, 39, 64, 91, 119, 142, 160, 164, 163, 142, 103 }   /* D 0.20-0.85 */
 #define CCM_HANDOVER_DEFAULT     1u
 #define CCM_HANDOVER_VFW_MV      800u    /* freewheel drop in the valley estimate */
 #define CCM_EXIT_DCM_ADD_MV      { 5000, 7000, 9000, 12000, 15000, 17000, 20000 }

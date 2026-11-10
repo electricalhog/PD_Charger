@@ -134,7 +134,16 @@ void buck_ccm_limit(BuckCcmState *s, const BuckCcmGains *g, float v_ref_v, float
 uint32_t buck_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmTimingCfg *c,
                          float v_out_v, float v_in_v)
 {
-    const float v_cmd = s->v_cmd_v;
+    /* no-reverse floor on the reference, not the duty: the duty that
+     * balances V_floor in the model makes about 0.5 V more on the board
+     * (u0's offset, CCM_U0_*), so a duty floor forced current into a stiff
+     * pack past the limit (bench 2026-11-09 section 11); through the law
+     * the integrator's offset applies.  Not while the current limit acts:
+     * its target is a positive current, and with u held a floor there kept
+     * 3 A in at a 2 A limit (section 15). */
+    float v_cmd = s->v_cmd_v;
+    const bool floored = !s->limiting && (s->v_floor_v > 0.0f) && (v_cmd < s->v_floor_v);
+    if (floored) { v_cmd = s->v_floor_v; }
     const float e = v_cmd - v_out_v;
     /* anti-windup: the voltage integrator holds while the limit sets v_cmd
      * (V_out sits below V_ref by design) */
@@ -150,9 +159,6 @@ uint32_t buck_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmTi
     const float ff_i = g->kff_l * (s->i_out_a - s->i_prev_a) / g->dt_s + g->kff_r * s->i_out_a;
     s->i_prev_a = s->i_out_a;
     float n = v_ff + g->kp * e + d_v + ff_i + u;
-    /* no-reverse floor: D V_in >= V_floor r1 balances L1 at 0 A or above */
-    const bool floored = (s->v_floor_v > 0.0f) && (n < s->v_floor_v * r1);
-    if (floored) { n = s->v_floor_v * r1; }
     float t_on = (float)c->period_ns * n / v_in_v;
     const float max_on = (float)buck_ccm_max_on_ns(c);
     const float min_on = (float)c->min_on_ns;
@@ -266,7 +272,10 @@ float boost_ccm_v_max(const BuckCcmTimingCfg *c, float v_in_v)
 uint32_t boost_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmTimingCfg *c,
                           float v_out_v, float v_in_v)
 {
-    const float v_cmd = s->v_cmd_v;
+    /* no-reverse floor on the reference, not while limiting (see buck_ccm_update) */
+    float v_cmd = s->v_cmd_v;
+    const bool floored = !s->limiting && (s->v_floor_v > 0.0f) && (v_cmd < s->v_floor_v);
+    if (floored) { v_cmd = s->v_floor_v; }
     const float e = v_cmd - v_out_v;
     float u = s->limiting ? s->u_v : (s->u_v + g->ki * e * g->dt_s);
     if (u > g->u_max_v) { u = g->u_max_v; }
@@ -283,9 +292,6 @@ uint32_t boost_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmT
     const float min_on = (float)boost_ccm_min_on_ns(c);
     const float rest = v_cmd + g->kp * e + d_v + ff_i;   /* n = rest + u */
     float n = rest + u;
-    /* no-reverse floor: n balances V_out (see buck_ccm_update) */
-    const bool floored = (s->v_floor_v > 0.0f) && (n < s->v_floor_v);
-    if (floored) { n = s->v_floor_v; }
     float t_on;
     int8_t clamp = floored ? -1 : 0;
     if (n <= vin_r) { t_on = min_on; clamp = -1; }

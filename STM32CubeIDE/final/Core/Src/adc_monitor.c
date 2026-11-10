@@ -238,6 +238,8 @@ void adc_monitor_update_slow(void)
                                                                             ADC_SYNC_AVG_SCANS), VS_MON_FULL_SCALE_MV);
     adc_measurements.i_out_ma = scale_current_id_ma((uint16_t)ring_mean(adc2_dma_buffer, ADC2_DMA_SCANS, s2, ADC_SYNC_RANK_I,
                                                                         ADC_SYNC_AVG_SCANS));
+    adc_measurements.i_out_lim_ma = scale_current_id_ma((uint16_t)ring_mean(adc2_dma_buffer, ADC2_DMA_SCANS, s2,
+                                                                            ADC_SYNC_RANK_I, ADC_ID_LIMIT_SCANS));
 #if IS_MON_ADC3_MEAN
     (void)s1;
     adc_measurements.i_in_ma  = scale_current_il_ma((uint16_t)LL_ADC_REG_ReadConversionData12(ADC3));

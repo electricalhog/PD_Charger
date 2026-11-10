@@ -400,7 +400,10 @@ def build_parser() -> argparse.ArgumentParser:
     ba.add_parser("status", help="ceiling, pack reading, keepalive, current limit, regulator state")
     g = ba.add_parser("run", help="set the current, START at the ceiling (reads the pack first), keep alive and log "
                                   "for SECONDS, then stop; Ctrl-C or SIGTERM stops early")
-    g.add_argument("--ceiling-mv", type=int, required=True, help="highest V_out; below the pack's full voltage")
+    gc = g.add_mutually_exclusive_group(required=True)
+    gc.add_argument("--ceiling-mv", type=int, help="highest V_out; below the pack's full voltage")
+    gc.add_argument("--above-pack-mv", type=int,
+                    help="ceiling = the pack (read by a START at 5 V, which refuses) + this; at most 1500")
     g.add_argument("--ilim-ma", type=int, required=True, help="current into the pack (regulator_ccm_ilim_ma)")
     g.add_argument("--seconds", type=float, required=True)
     g.add_argument("--interval", type=float, default=0.2, help="sample and keepalive period, s (timeout 2 s)")
@@ -587,7 +590,7 @@ def dispatch(cfg: dict, a) -> dict:
         return regulator.command(cfg, name, a.timeout, getattr(a, "force", False), getattr(a, "mv", None))
     if c == "battery":
         if a.op == "run":
-            return battery.run(cfg, a.ceiling_mv, a.ilim_ma, a.seconds, a.interval)
+            return battery.run(cfg, a.ceiling_mv, a.ilim_ma, a.seconds, a.interval, a.above_pack_mv)
         return battery.status(cfg)
     if c == "scope":
         return cmd_scope(cfg, a)

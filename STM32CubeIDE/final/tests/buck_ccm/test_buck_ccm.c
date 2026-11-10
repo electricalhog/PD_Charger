@@ -1057,30 +1057,34 @@ static float floor_sim(bool boost, float v_floor)
     return i_min;
 }
 
-/* The floor against a forward overshoot: L1 at 5 A into the pack with the limit
- * at 2 A, the ceiling 1 V over the pack.  At the pack voltage the floor lets
- * the limit pull the current down; at V_out filtered over 16 PID cycles (the
- * first battery build) it holds L1 near where it is, since V_out = V_pack + I R
- * follows the current (SW_OCP at a 2 A setting, bench 2026-11-09 section 9).
- * Returns the mean I_L over the last 10 ms of 100 ms. */
-static float floor_overshoot_sim(bool boost, bool track_v_out)
+/* The floor against a forward overshoot: L1 at 5 A into the pack, the ceiling
+ * 1 V over the pack.  At the pack voltage the floor lets the limit pull the
+ * current down; at V_out filtered over 16 PID cycles (the first battery
+ * build) it holds L1 near where it is, since V_out = V_pack + I R follows the
+ * current (SW_OCP at a 2 A setting, bench 2026-11-09 section 9).  offset_v is
+ * what the plant makes over the model at a given duty (the board: about
+ * +0.5 V at 15.5 V, section 11), u0_v the integrator at the start (CCM_U0_*:
+ * -0.35 V at 15.5 V).  Returns the mean I_L over the last 10 ms of 100 ms and
+ * the lowest I_L in *i_min. */
+static float floor_overshoot_sim_from(bool boost, bool track_v_out, float ilim_a, float offset_v, float u0_v,
+                                      float i0_a, float above_v, float *i_min)
 {
     const BuckCcmTimingCfg c = boost
         ? (BuckCcmTimingCfg){ .period_ns = 5000u, .pulse_start_ns = 360u, .dt_ns = 20u, .refresh_ns = 300u,
                               .refresh_interval_ns = 5000u, .min_on_ns = 100u, .min_q2_end_ns = 60u }
         : cfg(5000u, 20u);
     const BuckCcmGains g = { .ki = 3142.0f, .kp = 0.1f, .u_min_v = -2.0f, .u_max_v = 2.0f, .dt_s = 50e-6f,
-                             .ilim_a = 2.0f, .kl = 400.0f, .dt_lim_s = 50e-6f };
+                             .ilim_a = ilim_a, .kl = 400.0f, .dt_lim_s = 50e-6f };
     const float v_in = 24.4f, v_pack = boost ? 26.0f : 15.0f, r = 0.24f, l = 50.0f * 4.7e-6f;
     const float r1 = 1.0f - buck_ccm_refresh_share(&c);
     BuckCcmState s = { 0 };
-    float i = 5.0f, v_filt = v_pack + i * r, i_sum = 0.0f;
-    buck_ccm_reset(&s, 0.0f, v_pack + 1.0f, v_filt);
+    float i = i0_a, v_filt = v_pack + i * r, i_sum = 0.0f, i_lo = i;
+    buck_ccm_reset(&s, u0_v, v_pack + above_v, v_filt);
     for (int k = 0; k < 2000; k++)   /* 100 ms */
     {
         const float v_out = v_pack + i * r;
         v_filt += (v_out - v_filt) / 16.0f;
-        buck_ccm_limit(&s, &g, v_pack + 1.0f, v_out, i);
+        buck_ccm_limit(&s, &g, v_pack + above_v, v_out, i);
         s.v_floor_v = track_v_out ? v_filt : v_pack;
         const uint32_t ton = boost ? boost_ccm_update(&s, &g, &c, v_out, v_in)
                                    : buck_ccm_update(&s, &g, &c, v_out, v_in);
@@ -1088,12 +1092,98 @@ static float floor_overshoot_sim(bool boost, bool track_v_out)
         for (int j = 0; j < 50; j++)
         {
             const float vo = v_pack + i * r;
-            const float vl = boost ? v_in * r1 - (1.0f - d) * vo : d * v_in - r1 * vo;
+            const float vl = boost ? v_in * r1 - (1.0f - d) * (vo - offset_v) : d * v_in - r1 * (vo - offset_v);
             i += vl / l * 1e-6f;
+            if (i < i_lo) { i_lo = i; }
         }
         if (k >= 1800) { i_sum += i; }
     }
+    if (i_min) { *i_min = i_lo; }
     return i_sum / 200.0f;
+}
+
+static float floor_overshoot_sim(bool boost, bool track_v_out, float ilim_a, float offset_v, float u0_v,
+                                 float *i_min)
+{
+    return floor_overshoot_sim_from(boost, track_v_out, ilim_a, offset_v, u0_v, 5.0f, 1.0f, i_min);
+}
+
+/* The limit's current through ADC2 as the board converts it (adc_monitor.h): a scan every 560 us whose ID_MON
+ * result is the mean over its last 114 us; the limit reads the mean of the newest `scans` results.  Buck, the
+ * board case of section 15 (from 0 A, ceiling 0.5 V over the pack, plant +0.5 V, u0 -0.627 V, limit 2 A) into
+ * 0.17 ohm.  Returns the mean of I_L over the last 20 ms; *i_pp its peak to peak there, *i_min the lowest. */
+static float ilim_lag_sim(uint32_t scans, float kl, float r, float *i_pp, float *i_min)
+{
+    const BuckCcmTimingCfg c = cfg(5000u, 20u);
+    const BuckCcmGains g = { .ki = 3142.0f, .kp = 0.1f, .u_min_v = -2.0f, .u_max_v = 2.0f, .dt_s = 50e-6f,
+                             .ilim_a = 2.0f, .kl = kl, .dt_lim_s = 50e-6f };
+    const float v_in = 24.4f, v_pack = 15.0f, l = 50.0f * 4.7e-6f, offset_v = 0.5f, above_v = 0.5f;
+    const float r1 = 1.0f - buck_ccm_refresh_share(&c);
+    enum { SCAN_US = 560, ID_US = 114, RING = 32, CYCLES = 4000, TAIL = 400 };
+    float ring[RING] = { 0 }, acc = 0.0f, i = 0.0f, i_lo = 0.0f, i_hi_t = -1e9f, i_lo_t = 1e9f, i_sum = 0.0f;
+    uint32_t head = 0u, t_us = 0u;
+    BuckCcmState s = { 0 };
+    buck_ccm_reset(&s, -0.627f, v_pack + above_v, v_pack);
+    for (int k = 0; k < CYCLES; k++)
+    {
+        float i_meas = 0.0f;
+        for (uint32_t n = 0u; n < scans; n++) { i_meas += ring[(head + RING - 1u - n) % RING]; }
+        i_meas /= (float)scans;
+        const float v_out = v_pack + i * r;
+        buck_ccm_limit(&s, &g, v_pack + above_v, v_out, i_meas);
+        s.v_floor_v = v_pack;
+        const float d = (float)buck_ccm_update(&s, &g, &c, v_out, v_in) / (float)c.period_ns;
+        for (int j = 0; j < 50; j++, t_us++)
+        {
+            const float vo = v_pack + i * r;
+            i += (d * v_in - r1 * (vo - offset_v)) / l * 1e-6f;
+            if (i < i_lo) { i_lo = i; }
+            const uint32_t ph = t_us % SCAN_US;
+            if (ph >= SCAN_US - ID_US) { acc += i; }
+            if (ph == SCAN_US - 1u) { ring[head] = acc / (float)ID_US; head = (head + 1u) % RING; acc = 0.0f; }
+        }
+        if (k >= CYCLES - TAIL)
+        {
+            i_sum += i;
+            if (i > i_hi_t) { i_hi_t = i; }
+            if (i < i_lo_t) { i_lo_t = i; }
+        }
+    }
+    *i_pp = i_hi_t - i_lo_t;
+    *i_min = i_lo;
+    return i_sum / (float)TAIL;
+}
+
+static void test_ilim_lag(void)
+{
+    printf("current limit through ADC2's lag, buck into the pack, limit 2 A, 200 ms:\n");
+    /* The board as it was (kl 400, 8-scan mean, 0.17 ohm): must oscillate, as section 15 did. */
+    {
+        float pp, lo;
+        const float m = ilim_lag_sim(8u, 400.0f, 0.17f, &pp, &lo);
+        printf("  kl 400, 8-scan mean, 0.17 ohm: I_L %.2f A, last 20 ms p-p %.2f A, lowest %.2f A\n", m, pp, lo);
+        CHECK(pp > 1.0f && lo < -0.5f, "the 8-scan mean should reproduce the oscillation (p-p %.2f A, lowest %.2f A)",
+              pp, lo);
+    }
+    /* The fix: the newest scan and CCM_ILIM_KL_CCM_DEFAULT (100).  Steady at 2 A from 0.05 to 0.17 ohm (the
+     * bench path is about 0.13).  Below 0.10 ohm the entry (1 V over the pack with the plant's 0.5 V) still
+     * dips L1 negative for a moment whatever kl is: printed, checked only at 0.13 and 0.17 ohm. */
+    const float rs[] = { 0.05f, 0.10f, 0.13f, 0.17f };
+    for (int j = 0; j < 4; j++)
+    {
+        float pp, lo;
+        const float m = ilim_lag_sim(1u, 100.0f, rs[j], &pp, &lo);
+        printf("  kl 100, newest scan, %.2f ohm: I_L %.2f A, last 20 ms p-p %.2f A, lowest %.2f A\n",
+               (double)rs[j], m, pp, lo);
+        CHECK(fabsf(m - 2.0f) < 0.1f && pp < 0.2f, "kl 100 at %.2f ohm: I_L %.2f A, p-p %.2f A", (double)rs[j], m, pp);
+        if (rs[j] > 0.12f) { CHECK(lo > -0.05f, "kl 100 at %.2f ohm: L1 reversed to %.2f A", (double)rs[j], lo); }
+    }
+    /* kl 400 on the newest scan is the margin's edge: it oscillates at 0.10 ohm. */
+    {
+        float pp, lo;
+        const float m = ilim_lag_sim(1u, 400.0f, 0.10f, &pp, &lo);
+        printf("  kl 400, newest scan, 0.10 ohm: I_L %.2f A, last 20 ms p-p %.2f A\n", m, pp);
+    }
 }
 
 static void test_floor(void)
@@ -1107,13 +1197,50 @@ static void test_floor(void)
     CHECK(boost_off < -1.0f, "boost without the floor should reverse (min %.2f A)", boost_off);
     CHECK(boost_on > -0.05f, "boost floor let L1 reverse to %.2f A", boost_on);
 
-    const float buck_pack = floor_overshoot_sim(false, false), buck_track = floor_overshoot_sim(false, true);
-    const float boost_pack = floor_overshoot_sim(true, false), boost_track = floor_overshoot_sim(true, true);
+    const float buck_pack = floor_overshoot_sim(false, false, 2.0f, 0.0f, 0.0f, NULL);
+    const float buck_track = floor_overshoot_sim(false, true, 2.0f, 0.0f, 0.0f, NULL);
+    const float boost_pack = floor_overshoot_sim(true, false, 2.0f, 0.0f, 0.0f, NULL);
+    const float boost_track = floor_overshoot_sim(true, true, 2.0f, 0.0f, 0.0f, NULL);
     printf("no-reverse floor, L1 from 5 A, limit 2 A: I_L after 100 ms buck %.2f A (floor at the pack) "
            "%.2f A (at V_out), boost %.2f A / %.2f A\n", buck_pack, buck_track, boost_pack, boost_track);
     CHECK(fabsf(buck_pack - 2.0f) < 0.1f, "buck floor at the pack: the limit should hold 2 A (%.2f A)", buck_pack);
     CHECK(fabsf(boost_pack - 2.0f) < 0.1f, "boost floor at the pack: the limit should hold 2 A (%.2f A)", boost_pack);
-    CHECK(buck_track > 4.0f, "the floor at V_out should hold the overshoot (%.2f A): model no longer shows it", buck_track);
+
+    /* The plant makes 0.5 V over the model (the board), u0 -0.35 V; and the
+     * other way, no offset with the same u0 (u0 0.35 V on the unsafe side).
+     * Limit 1 A: the floor must not set the current.  The floor is off while
+     * the limit acts (section 15), so the limit's undershoot on the way down
+     * from 5 A is not caught: L1 dips to -0.07..-0.21 A for part of a
+     * millisecond in this averaged model; steady state is 1 A.  Bound on the
+     * dip: -0.25 A. */
+    for (int b = 0; b < 2; b++)
+    {
+        for (int k = 0; k < 2; k++)
+        {
+            const float off = k ? 0.0f : 0.5f;
+            float lo;
+            const float i_end = floor_overshoot_sim(b != 0, false, 1.0f, off, -0.35f, &lo);
+            printf("  %s, plant %+.1f V over the model, u0 -0.35 V, limit 1 A: I_L %.2f A, lowest %.2f A\n",
+                   b ? "boost" : "buck", off, i_end, lo);
+            CHECK(fabsf(i_end - 1.0f) < 0.1f, "%s offset %.1f V: the limit should hold 1 A (%.2f A)",
+                  b ? "boost" : "buck", off, i_end);
+            CHECK(lo > -0.25f, "%s offset %.1f V: L1 reversed to %.2f A", b ? "boost" : "buck", off, lo);
+        }
+    }
+
+    /* The board (2026-11-09 section 15): from 0 A, ceiling 0.5 V over the
+     * pack, plant 0.5 V over the model, u0 -0.627 V.  Under the limit the
+     * integrator runs and winds u up; once the limit acts u holds, and a
+     * floor at the pack then kept V_out at pack + 0.5 V, 3 A at a 2 A limit. */
+    for (int b = 0; b < 2; b++)
+    {
+        float lo;
+        const float i_end = floor_overshoot_sim_from(b != 0, false, 2.0f, 0.5f, -0.627f, 0.0f, 0.5f, &lo);
+        printf("  %s, from 0 A, ceiling 0.5 V over the pack, plant +0.5 V, u0 -0.627 V, limit 2 A: I_L %.2f A, "
+               "lowest %.2f A\n", b ? "boost" : "buck", i_end, lo);
+        CHECK(fabsf(i_end - 2.0f) < 0.1f, "%s from 0 A: the limit should hold 2 A (%.2f A)", b ? "boost" : "buck", i_end);
+        CHECK(lo > -0.05f, "%s from 0 A: L1 reversed to %.2f A", b ? "boost" : "buck", lo);
+    }
 }
 
 int main(int argc, char **argv)
@@ -1145,6 +1272,7 @@ int main(int argc, char **argv)
     test_boost();
     test_band();
     test_floor();
+    test_ilim_lag();
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("buck_ccm: all checks passed\n");
     return 0;

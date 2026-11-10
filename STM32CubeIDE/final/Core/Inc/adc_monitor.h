@@ -76,6 +76,13 @@ extern "C" {
 #define ADC_SYNC_SCAN_NS                (871u * (1u + ADC_SYNC_DOUBLE_V) + 447u)
 /** Scans averaged for V_in, I_out and I_in (adc_monitor_update_slow). */
 #define ADC_SYNC_AVG_SCANS              8u
+/** Scans in i_out_lim_ma, the current limit's input.  ADC2's scan is
+ *  256 x (37 + 37 + 19) clocks, 560 us, of which ID_MON is the last 114 us:
+ *  the 8-scan mean spans 4.5 ms and lags about 2.3 ms, one scan about
+ *  0.34 ms.  Into the pack the CCM limit's crossover is about kl / 0.17 ohm,
+ *  2400 rad/s, and with the 8-scan mean it oscillated at a 10 ms period
+ *  until SW_VIN_RISE (bench 2026-11-09 section 15). */
+#define ADC_ID_LIMIT_SCANS              1u
 
 #define ADC1_SCAN_LENGTH                ADC_SYNC_SCAN_LENGTH
 #define ADC1_DMA_SCANS                  64u
@@ -121,6 +128,7 @@ typedef struct
     uint32_t i_inductor_ma;  /**< 0: IL_MON is not converted since 2026-10-22 [mA]   */
     uint32_t i_out_ma;       /**< ID_MON, mean of ADC_SYNC_AVG_SCANS synchronized [mA] */
     uint32_t i_in_ma;        /**< IS_MON, the same [mA]                               */
+    uint32_t i_out_lim_ma;   /**< ID_MON, mean of ADC_ID_LIMIT_SCANS (the limit)  [mA] */
 } AdcMeasurements;
 
 /* =========================================================================

@@ -1,0 +1,1 @@
+[{"t": 0.68, "state": "FAULT", "fault": ["SW_OCP"], "mode": "BUCK", "ccm": 0, "lim": 1, "target_mv": 16250, "commanded_mv": 16250, "v_out_mv": 16195, "v_in_mv": 24331, "i_out_ma": 5607, "i_in_ma": 3425, "switch": 0, "dis": 0}]

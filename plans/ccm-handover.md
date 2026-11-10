@@ -66,7 +66,7 @@ The numbers below are model estimates; the DCM ceiling uses an approximate windo
 Details are in `bench/results/2026-11-06/ccm_transitions/README.md`.
 
 **Code** (`regulator.c` step 5a/5b/6c, `buck_ccm.c`, `regulator_config.h`):
-- **ID_MON:** DCM gain/offset 1059 / −54, plus a buck CCM add-table by duty at 200 kHz (`ID_CCM_ADD_MA`).
+- **ID_MON:** DCM gain/offset 1059 / −54, plus a buck CCM add-table by duty at 200 kHz (`ID_CCM_ADD_MA`; removed 2026-11-09: into a pack it read 158 mA high, bench 2026-11-09 section 14).
   - CCM and DCM are now within ±13 mA of V/R at 5–21 V.
   - With the QT Py adding 3.5–7 W, CCM is within 19 mA of DCM.
   - The cause of the CCM deficit is not found; it needs a probe on ID_MON (PC1).
