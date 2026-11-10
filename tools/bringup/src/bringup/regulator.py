@@ -208,7 +208,10 @@ _CONTROL = {"regulator_mode": "mode", "target_voltage_mv": "target_mv", "regulat
             "regulator_ccm_limit_entries": "ccm_limit_entries", "adc_monitor_adc2_aborts": "adc2_aborts",
             # Forced CCM kind (2026-11-03): 0 none, 1 buck, 2 boost, 3 band
             "regulator_ccm_kind": "ccm_kind", "regulator_ccm_boost": "ccm_boost",
-            "regulator_ccm_band": "ccm_band"}
+            "regulator_ccm_band": "ccm_band",
+            # Starts refused with V_in below VIN_START_MIN_MV (2026-11-09)
+            "regulator_start_low_vin_count": "start_low_vin_count",
+            "regulator_start_low_vin_mv": "start_low_vin_mv"}
 # Signed 32-bit telemetry: filtered currents and powers (POWER_FILTER_SHIFT).
 _CONTROL_I = {"regulator_i_out_filt_ma": "i_out_filt_ma", "regulator_i_in_filt_ma": "i_in_filt_ma",
               "regulator_p_in_mw": "p_in_mw", "regulator_p_out_mw": "p_out_mw", "regulator_il_avg_ma": "il_avg_ma",

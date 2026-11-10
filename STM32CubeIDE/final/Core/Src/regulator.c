@@ -333,6 +333,8 @@ volatile bool regulator_integrator_reset_requested = false;
 
 RegulatorFaultSource regulator_last_fault_source    = REGULATOR_FAULT_NONE;
 volatile uint32_t    regulator_fault_tick_ms         = 0u;
+volatile uint32_t    regulator_start_low_vin_count   = 0u;
+volatile uint32_t    regulator_start_low_vin_mv      = 0u;
 RegulatorDebugMailbox regulator_debug                = {0};
 volatile bool        regulator_bench_pwm_active      = false;
 
@@ -482,13 +484,22 @@ volatile int32_t  regulator_il_avg_ma       = 0;
 volatile int16_t  regulator_il_gain_permille = 1000;
 volatile int16_t  regulator_il_offset_ma    = 0;
 volatile int16_t  regulator_id_gain_permille = ID_GAIN_PERMILLE_DEFAULT;
-volatile int16_t  regulator_id_offset_ma    = 0;
+volatile int16_t  regulator_id_offset_ma    = ID_OFFSET_MA_DEFAULT;
+volatile uint8_t  regulator_id_ccm_corr     = 1u;
+volatile uint8_t  regulator_ccm_handover    = CCM_HANDOVER_DEFAULT;
+volatile int16_t  regulator_ccm_entry_dt_ns = 0;
+volatile int16_t  regulator_ccm_entry_iv_ma = 0;
+volatile int16_t  regulator_ccm_exit_dt_ns  = 0;
+volatile int16_t  regulator_ccm_exit_iv_ma  = 0;
+volatile int16_t  regulator_ccm_exit_i0_ma  = 0;
+volatile uint32_t regulator_ccm_handover_timeouts = 0u;
 volatile int32_t  regulator_il_ma           = 0;
 volatile uint16_t regulator_ccm_ilim_ma     = CCM_ILIM_MA_DEFAULT;
 volatile float    regulator_ccm_ilim_kl     = CCM_ILIM_KL_DEFAULT;
 volatile uint8_t  regulator_ccm_ilim_src    = CCM_ILIM_SRC_DEFAULT;
 volatile uint16_t regulator_ccm_peak_ma     = CCM_PEAK_MA_DEFAULT;
 volatile uint8_t  regulator_ccm_limiting    = 0u;
+volatile uint16_t regulator_cl_uvp_mv       = 0u;
 volatile float    regulator_ccm_v_lim_mv    = 0.0f;
 volatile int32_t  regulator_ccm_i_lim_meas_ma = 0;
 volatile int32_t  regulator_ccm_i_avg_ma    = 0;
@@ -499,6 +510,18 @@ volatile uint32_t regulator_ccm_exit_log_index = 0u;
 static uint8_t ccm_mode_settle = 0u;
 
 static BuckCcmState ccm_state;
+/* CCM handover (buck_ccm.h): the entry's steady edges, written one period
+ * after its first; whether this cycle's exit takes the last-period step. */
+static BuckCcmTiming ccm_entry_steady;
+static bool ccm_entry_pending = false;
+static bool ccm_exit_handover = false;
+/* DCM's I_cmd minus the measured current at the last entry, and the
+ * setpoint then (CCM_EXIT_DCM_ADD_*); negative: none. */
+static int32_t  ccm_dcm_add_ma = -1;
+static uint32_t ccm_dcm_add_sp_mv = 0u;
+/* The current limit (step 5d): only its limit fields are used, in CCM and
+ * DCM alike; CCM's law takes v_cmd and limiting from it each cycle. */
+static BuckCcmState ilim_state;
 static uint16_t ccm_dwell     = 0u;   /* PID cycles since entry (saturating)  */
 static uint16_t ccm_hold      = 0u;   /* PID cycles before re-entry is allowed */
 static uint16_t ccm_ocp_count = 0u;
@@ -800,6 +823,68 @@ static void hrtim_write_boost_ccm_timing(const BoostCcmTiming *t)
 /** Bench CCM PWM is running (regulator_bench_ccm_pwm); restored differently. */
 static bool bench_ccm = false;
 
+/** ID_MON's buck CCM correction at 200 kHz [raw mA], by duty (ID_CCM_ADD_*). */
+static int32_t id_ccm_add_ma(uint32_t v_out_mv, uint32_t v_in_mv)
+{
+    static const int16_t add[] = ID_CCM_ADD_MA;
+    const uint32_t n = sizeof(add) / sizeof(add[0]);
+    if (v_in_mv == 0u) { return 0; }
+    const uint32_t d = (v_out_mv * 1000u) / v_in_mv;
+    if (d <= ID_CCM_ADD_D0) { return add[0]; }
+    const uint32_t k = (d - ID_CCM_ADD_D0) / ID_CCM_ADD_STEP;
+    if (k >= n - 1u) { return add[n - 1u]; }
+    const int32_t f = (int32_t)(d - ID_CCM_ADD_D0 - k * ID_CCM_ADD_STEP);
+    return add[k] + ((add[k + 1u] - add[k]) * f) / (int32_t)ID_CCM_ADD_STEP;
+}
+
+/** CCM_EXIT_DCM_ADD_MA at v_out_mv, linear between, held past the ends. */
+static int32_t ccm_exit_dcm_add_ma(uint32_t v_out_mv)
+{
+    static const int32_t mv[] = CCM_EXIT_DCM_ADD_MV, ma[] = CCM_EXIT_DCM_ADD_MA;
+    const uint32_t n = sizeof(mv) / sizeof(mv[0]);
+    if ((int32_t)v_out_mv <= mv[0]) { return ma[0]; }
+    for (uint32_t k = 1u; k < n; k++)
+    {
+        if ((int32_t)v_out_mv <= mv[k])
+        {
+            return ma[k - 1u] + ((ma[k] - ma[k - 1u]) * ((int32_t)v_out_mv - mv[k - 1u])) / (mv[k] - mv[k - 1u]);
+        }
+    }
+    return ma[n - 1u];
+}
+
+/** CCM handover: with Timers A-D's update held, the edges written so far
+ *  are released, and once Timer A has rolled over and taken them (its UPD
+ *  flag) the update is held again for the next set, so the first set runs
+ *  exactly one period.  At most two periods; false (and counted) if Timer A
+ *  did not update. */
+/** Wait (at most two periods) for Timer A's next update. */
+static void hrtim_wait_timer_a_update(void)
+{
+    HRTIM_Timerx_TypeDef *ta = &HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A];
+    ta->TIMxICR = HRTIM_TIMICR_UPDC;
+    const uint32_t t0 = DWT->CYCCNT, lim = (2u * sw_period_ns * (SYSCLK_HZ / 1000000u)) / 1000u;
+    while ((ta->TIMxISR & HRTIM_TIMISR_UPD) == 0u)
+    {
+        if ((DWT->CYCCNT - t0) > lim) { regulator_ccm_handover_timeouts++; break; }
+    }
+}
+
+static bool hrtim_release_one_period(void)
+{
+    HRTIM_Timerx_TypeDef *ta = &HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A];
+    ta->TIMxICR = HRTIM_TIMICR_UPDC;
+    HRTIM1->sCommonRegs.CR1 &= ~HRTIM_TIMER_ABCD_UDIS;
+    const uint32_t t0 = DWT->CYCCNT, lim = (2u * sw_period_ns * (SYSCLK_HZ / 1000000u)) / 1000u;
+    bool ok = true;
+    while ((ta->TIMxISR & HRTIM_TIMISR_UPD) == 0u)
+    {
+        if ((DWT->CYCCNT - t0) > lim) { ok = false; regulator_ccm_handover_timeouts++; break; }
+    }
+    HRTIM1->sCommonRegs.CR1 |= HRTIM_TIMER_ABCD_UDIS;
+    return ok;
+}
+
 static void ccm_leave(RegulatorCcmExit why)
 {
     if (regulator_ccm_active)
@@ -1078,8 +1163,23 @@ void regulator_start(void)
      * selection a valid V_in reading.                                     */
     (void)adc_monitor_update(VOUT_MEDIAN_SAMPLES);
 
-    /* --- Determine operating mode based on V_in vs setpoint (§5.1) --- */
+    /* --- No input: stay IDLE (2026-11-09) ---
+     * VS_GOOD passed above, but on 2026-11-09 a start 136 ms after boot
+     * (the G474 runs from the ST-LINK before the bench supply is up) read
+     * V_in 33 mV, ran the soft-start into nothing and latched SW_UVP; the
+     * sink then re-attached 254 times against the latched fault.  Here the
+     * input path is dropped and the start refused, so the next VBUSOn (the
+     * next attach or Hard Reset) tries again.                             */
     uint32_t v_in_mv = (uint32_t)adc_measurements.v_in_mv;
+    if (v_in_mv < VIN_START_MIN_MV)
+    {
+        power_path_disable();
+        regulator_start_low_vin_count++;
+        regulator_start_low_vin_mv = v_in_mv;
+        return;
+    }
+
+    /* --- Determine operating mode based on V_in vs setpoint (§5.1) --- */
     regulator_vin_filt_mv  = v_in_mv;
     regulator_commanded_mv = voltage_mv;
     regulator_ovp_ref_mv   = voltage_mv;
@@ -1122,6 +1222,7 @@ void regulator_start(void)
     ccm_dwell = 0u;
     ccm_ocp_count = 0u;
     buck_ccm_reset(&ccm_state, 0.0f, (float)voltage_mv * 1e-3f, 0.0f);
+    buck_ccm_reset(&ilim_state, 0.0f, (float)voltage_mv * 1e-3f, 0.0f);
     regulator_ccm_limiting = 0u;
     regulator_i_out_filt_ma = 0;
     regulator_i_in_filt_ma  = 0;
@@ -2057,11 +2158,39 @@ void regulator_pid_tim7_isr(void)
         regulator_il_ma          = il;
         regulator_il_avg_ma     += (il    - regulator_il_avg_ma)     / (1 << POWER_FILTER_SHIFT);
     }
+    /* ID_MON reads low in buck CCM at 200 kHz (ID_CCM_ADD_*, 2026-11-06). */
+    int32_t id_raw_ma = (int32_t)adc_measurements.i_out_ma;
+    if (regulator_id_ccm_corr && regulator_ccm_active && regulator_ccm_kind == CCM_KIND_BUCK &&
+        sw_period_ticks == HRTIM_PERIOD_COUNTS)
+    {
+        id_raw_ma += id_ccm_add_ma(v_out_mv, v_in_mv);
+    }
     const int32_t i_lim_meas_ma = (regulator_ccm_ilim_src == 1u)
-        ? ((int32_t)adc_measurements.i_out_ma * regulator_id_gain_permille) / 1000 + regulator_id_offset_ma
+        ? (id_raw_ma * regulator_id_gain_permille) / 1000 + regulator_id_offset_ma
         : regulator_il_ma;
     regulator_ccm_i_lim_meas_ma = i_lim_meas_ma;
     regulator_ccm_i_avg_ma += (i_lim_meas_ma - regulator_ccm_i_avg_ma) / (1 << POWER_FILTER_SHIFT);
+
+    /* --- 5d. Current limit (regulator_ccm_ilim_ma, buck_ccm_limit) on
+     * CCM's current, in CCM and DCM alike (2026-11-06): v_lim lowers the
+     * reference of whichever loop runs, so a CCM entry or exit keeps the
+     * limit, and a PPS fold need not force CCM (a fast drop in V_out needs
+     * DCM).  Its anti-windup clamp is last cycle's, from the loop that ran:
+     * CCM's duty clamp, or the DCM command at 0 or its ceiling. --- */
+    {
+        const BuckCcmGains lim_g = {
+            .ilim_a = (float)regulator_ccm_ilim_ma * 1e-3f, .kl = regulator_ccm_ilim_kl,
+            .dt_lim_s = 1.0f / (float)PID_EXECUTION_RATE_HZ,
+        };
+        const uint8_t was_limiting = ilim_state.limiting;
+        buck_ccm_limit(&ilim_state, &lim_g, (float)effective_setpoint_mv * 1e-3f, (float)v_out_mv * 1e-3f,
+                       (float)i_lim_meas_ma * 1e-3f);
+        regulator_ccm_limiting = ilim_state.limiting;
+        regulator_ccm_v_lim_mv = ilim_state.limiting ? ilim_state.v_lim_v * 1e3f : 0.0f;
+        if (ilim_state.limiting && !was_limiting) { regulator_ccm_limit_entries++; }
+    }
+    /* The reference both loops track: the setpoint, or v_lim below it. */
+    const float v_cmd_mv = ilim_state.v_cmd_v * 1e3f;
 
     /* The skip band (step 7b). */
     uint32_t skip_above_mv = (effective_setpoint_mv * regulator_skip_above_permille) / 1000u;
@@ -2084,6 +2213,7 @@ void regulator_pid_tim7_isr(void)
     const bool ccm_bb_fallback = (ccm_k == CCM_KIND_BOOST || ccm_k == CCM_KIND_BAND) &&
                                  (regulator_mode == REGULATOR_MODE_BUCK_BOOST);
     bool ccm_enter_now = false, ccm_exit_now = false;
+    ccm_exit_handover = false;
     if (!output_switch_on)                       { ccm_switch_cycles = 0u; }
     else if (ccm_switch_cycles < CCM_SWITCH_SETTLE) { ccm_switch_cycles++; }
     /* V_in x the longest CCM duty: the most the buck can make in CCM. */
@@ -2119,6 +2249,8 @@ void regulator_pid_tim7_isr(void)
         }
         if (why != REGULATOR_CCM_EXIT_NONE)
         {
+            ccm_exit_handover = regulator_ccm_handover && regulator_ccm_kind == CCM_KIND_BUCK &&
+                                why != REGULATOR_CCM_EXIT_BAD_CONFIG;
             ccm_leave(why);
             ccm_exit_now = true;
             ccm_exit_request = REGULATOR_CCM_EXIT_NONE;
@@ -2127,8 +2259,18 @@ void regulator_pid_tim7_isr(void)
              * filtered), at least 30 % of its ceiling: too low sags the
              * output, too high is clipped by pulse skipping. */
             float i0 = (float)regulator_ccm_i_avg_ma;
-            if (i0 < 0.3f * i_max_ma) { i0 = 0.3f * i_max_ma; }
+            if (regulator_ccm_handover)
+            {
+                /* the measured load (CCM-corrected) plus DCM's offset over it */
+                const uint32_t dsp = (effective_setpoint_mv > ccm_dcm_add_sp_mv)
+                                   ? effective_setpoint_mv - ccm_dcm_add_sp_mv : ccm_dcm_add_sp_mv - effective_setpoint_mv;
+                i0 += (float)((ccm_dcm_add_ma >= 0 && dsp <= CCM_EXIT_DCM_LEARN_MV) ? ccm_dcm_add_ma
+                                                                                    : ccm_exit_dcm_add_ma(v_out_mv));
+            }
+            else if (i0 < 0.3f * i_max_ma) { i0 = 0.3f * i_max_ma; }
+            if (i0 < 0.0f)            { i0 = 0.0f; }
             if (i0 > i_max_ma)        { i0 = i_max_ma; }
+            regulator_ccm_exit_i0_ma = (int16_t)i0;
             pid_state.integrator     = i0;
             pid_state.previous_error = 0.0f;
         }
@@ -2164,6 +2306,12 @@ void regulator_pid_tim7_isr(void)
             ccm_over_count = 0u;
             ccm_clamp_cycles = 0u;
             ccm_vin0_mv   = v_in_mv;
+            /* DCM's command over the measured current, for the exit's restart */
+            {
+                const int32_t add = (int32_t)regulator_i_cmd_ma - regulator_ccm_i_avg_ma;
+                ccm_dcm_add_ma    = (add < 0) ? 0 : ((add > 400) ? 400 : add);
+                ccm_dcm_add_sp_mv = effective_setpoint_mv;
+            }
             /* Bumpless: the first duty reproduces the measured V_out
              * (the feedforward is built on V_ref), plus the integrator this
              * band last ran with, scaled to V_ref (CCM_U0_*). */
@@ -2180,14 +2328,14 @@ void regulator_pid_tim7_isr(void)
                 const float u_def = (ccm_want == CCM_KIND_BAND) ? (float)CCM_BAND_U0_PERMILLE * 1e-3f * v_ref_v
                                                                 : (float)CCM_BOOST_U0_MV * 1e-3f;
                 const float u_base = learned ? ul->u_v * v_ref_v / ul->v_ref_v : u_def;
-                u0 = u_base + ((float)v_out_mv - (float)effective_setpoint_mv) * 1e-3f;
+                u0 = u_base + ((float)v_out_mv - v_cmd_mv) * 1e-3f;
             }
             else
             {
                 const float u_base = learned
                                    ? ul->u_v * v_ref_v / ul->v_ref_v
                                    : -((float)CCM_U0_PERMILLE * 1e-3f * v_ref_v + (float)CCM_U0_MV * 1e-3f);
-                u0 = u_base + ((float)v_out_mv - (float)effective_setpoint_mv) * 1e-3f
+                u0 = u_base + ((float)v_out_mv - v_cmd_mv) * 1e-3f
                               * (1.0f - buck_ccm_refresh_share(&ccm_cfg));
             }
             buck_ccm_reset(&ccm_state, u0, (float)effective_setpoint_mv * 1e-3f, (float)v_out_mv * 1e-3f);
@@ -2219,8 +2367,8 @@ void regulator_pid_tim7_isr(void)
     {
         pid_config.output_min = 0.0f;
         pid_config.output_max = i_max_ma;
-        i_cmd_ma = pid_update(&pid_state, &pid_config,
-                              (float)effective_setpoint_mv, (float)v_out_mv);
+        i_cmd_ma = pid_update(&pid_state, &pid_config, v_cmd_mv, (float)v_out_mv);
+        ilim_state.clamp = (i_cmd_ma >= i_max_ma) ? 1 : ((i_cmd_ma <= 0.0f) ? -1 : 0);
     }
 
     /* --- 6. Modulator: I_cmd -> peak current -> on-time (Timer A/B CMP2) ---
@@ -2297,12 +2445,11 @@ void regulator_pid_tim7_isr(void)
             .ki = regulator_ccm_ki, .kp = CCM_KP_DEFAULT,
             .u_min_v = (float)CCM_U_MIN_MV * 1e-3f, .u_max_v = (float)CCM_U_MAX_MV * 1e-3f,
             .dt_s = 1.0f / (float)PID_EXECUTION_RATE_HZ,
-            .ilim_a = (float)regulator_ccm_ilim_ma * 1e-3f, .kl = regulator_ccm_ilim_kl,
-            .dt_lim_s = 1.0f / (float)PID_EXECUTION_RATE_HZ,
         };
-        const uint8_t was_limiting = ccm_state.limiting;
-        buck_ccm_limit(&ccm_state, &g, (float)effective_setpoint_mv * 1e-3f, (float)v_out_mv * 1e-3f,
-                       (float)i_lim_meas_ma * 1e-3f);
+        /* the limit's reference (step 5d) */
+        ccm_state.v_cmd_v  = ilim_state.v_cmd_v;
+        ccm_state.v_lim_v  = ilim_state.v_lim_v;
+        ccm_state.limiting = ilim_state.limiting;
         if (regulator_ccm_kind == CCM_KIND_BOOST || regulator_ccm_kind == CCM_KIND_BAND)
         {
             (void)boost_ccm_update(&ccm_state, &g, &ccm_cfg, (float)v_out_mv * 1e-3f, (float)v_in_mv * 1e-3f);
@@ -2316,13 +2463,31 @@ void regulator_pid_tim7_isr(void)
             (void)buck_ccm_update(&ccm_state, &g, &ccm_cfg, (float)v_out_mv * 1e-3f, (float)v_in_mv * 1e-3f);
             BuckCcmTiming t;
             buck_ccm_timing_ticks(&ccm_cfg, ccm_state.t_on_ticks, &t);   /* 184 ps steps */
-            hrtim_write_ccm_timing(&t);
+            if (ccm_enter_now && regulator_ccm_handover)
+            {
+                /* Handover (buck_ccm.h): the first period moves L1 from DCM's
+                 * 0 A to the steady valley; step 6's release then writes t. */
+                const float l_h  = (float)INDUCTOR_VALUE_NH * 1e-9f;
+                const float iv_a = buck_ccm_boundary_a(&ccm_cfg, &t, (float)regulator_ccm_i_avg_ma * 1e-3f,
+                                                       (float)v_out_mv * 1e-3f, (float)CCM_HANDOVER_VFW_MV * 1e-3f, l_h);
+                const int32_t d  = buck_ccm_handover_ticks(iv_a, (float)v_in_mv * 1e-3f, l_h);
+                const int32_t t1 = (int32_t)ccm_state.t_on_ticks + d;
+                BuckCcmTiming tp;
+                buck_ccm_timing_ticks(&ccm_cfg, (t1 > 0) ? (uint32_t)t1 : 0u, &tp);   /* clamped to [min, max] on */
+                hrtim_write_ccm_timing(&tp);
+                ccm_entry_steady = t;
+                ccm_entry_pending = true;
+                regulator_ccm_entry_iv_ma = (int16_t)(iv_a * 1e3f);
+                regulator_ccm_entry_dt_ns = (int16_t)((int32_t)tp.t_on_ns - (int32_t)t.t_on_ns);
+            }
+            else
+            {
+                hrtim_write_ccm_timing(&t);
+            }
             regulator_on_time_ns = (uint16_t)t.t_on_ns;
         }
         regulator_ccm_u_mv   = ccm_state.u_v * 1e3f;
-        regulator_ccm_limiting = ccm_state.limiting;
-        regulator_ccm_v_lim_mv = ccm_state.limiting ? ccm_state.v_lim_v * 1e3f : 0.0f;
-        if (ccm_state.limiting && !was_limiting) { regulator_ccm_limit_entries++; }
+        ilim_state.clamp     = ccm_state.clamp;
         /* Learned once settled at a fixed setpoint, not limiting. */
         if (ccm_dwell >= CCM_ENTRY_GRACE && !ccm_state.limiting && ccm_state.clamp == 0 &&
             effective_setpoint_mv == target_voltage_mv)
@@ -2341,6 +2506,24 @@ void regulator_pid_tim7_isr(void)
     }
     else
     {
+    if (ccm_exit_now && ccm_exit_handover)
+    {
+        /* Handover (buck_ccm.h): one more CCM period whose on-time takes L1
+         * from the valley to 0 A at the boundary, where DCM's first pulse
+         * starts. */
+        const float l_h  = (float)INDUCTOR_VALUE_NH * 1e-9f;
+        BuckCcmTiming tl;
+        buck_ccm_timing_ticks(&ccm_cfg, ccm_state.t_on_ticks, &tl);
+        const float iv_a = buck_ccm_boundary_a(&ccm_cfg, &tl, (float)regulator_ccm_i_avg_ma * 1e-3f,
+                                               (float)v_out_mv * 1e-3f, (float)CCM_HANDOVER_VFW_MV * 1e-3f, l_h);
+        const int32_t t1 = (int32_t)ccm_state.t_on_ticks + buck_ccm_handover_ticks(-iv_a, (float)v_in_mv * 1e-3f, l_h);
+        BuckCcmTiming tx;
+        buck_ccm_timing_ticks(&ccm_cfg, (t1 > 0) ? (uint32_t)t1 : 0u, &tx);
+        hrtim_write_ccm_timing(&tx);
+        (void)hrtim_release_one_period();
+        regulator_ccm_exit_iv_ma = (int16_t)(iv_a * 1e3f);
+        regulator_ccm_exit_dt_ns = (int16_t)((int32_t)tx.t_on_ns - (int32_t)tl.t_on_ns);
+    }
     if (ccm_exit_now)
     {
         /* Back to the mode's DCM legs (Timer A CMP3, Timer B period and
@@ -2396,7 +2579,8 @@ void regulator_pid_tim7_isr(void)
         HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_D].CMP4xR = sr_off;
     }
     }   /* DCM */
-    HRTIM1->sCommonRegs.CR1 &= ~HRTIM_TIMER_ABCD_UDIS;
+    /* (an entry's handover releases its own, below) */
+    if (!ccm_entry_pending) { HRTIM1->sCommonRegs.CR1 &= ~HRTIM_TIMER_ABCD_UDIS; }
 
     /* CCM drives both legs; on leaving, buck's phase 2 follows the
      * rectifier switch again.  The registers above land at the next
@@ -2407,10 +2591,25 @@ void regulator_pid_tim7_isr(void)
         HRTIM1->sCommonRegs.OENR = HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2 | HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2;
         buck_phase2_on = true;
     }
+    if (ccm_entry_pending)
+    {
+        /* The handover's first period is in the preload (update still
+         * held): one period of it, then the steady edges. */
+        (void)hrtim_release_one_period();
+        hrtim_write_ccm_timing(&ccm_entry_steady);
+        HRTIM1->sCommonRegs.CR1 &= ~HRTIM_TIMER_ABCD_UDIS;
+        ccm_entry_pending = false;
+    }
     if (ccm_exit_now && regulator_mode == REGULATOR_MODE_BUCK)
     {
         buck_phase2_on = (regulator_sr_enable != 0u);
-        if (!buck_phase2_on) { HRTIM1->sCommonRegs.ODISR = HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2; }
+        if (!buck_phase2_on)
+        {
+            /* Handover: Q3 carries the last CCM period to 0 A, so its
+             * output goes off once DCM's edges have taken over. */
+            if (ccm_exit_handover) { hrtim_wait_timer_a_update(); }
+            HRTIM1->sCommonRegs.ODISR = HRTIM_OUTPUT_TB1 | HRTIM_OUTPUT_TB2;
+        }
     }
 
     /* The peak-current comparator (COMP1 -> EEV4) is a protection backstop
@@ -2543,7 +2742,7 @@ void regulator_pid_tim7_isr(void)
         if (trace_at_limit)              { flags |= REGULATOR_TRACE_FLAG_AT_LIMIT; }
         if (switch_pulse_active)         { flags |= REGULATOR_TRACE_FLAG_PULSE_OPEN; }
         if (regulator_ccm_active)        { flags |= REGULATOR_TRACE_FLAG_CCM; }
-        if (regulator_ccm_active && ccm_state.limiting) { flags |= REGULATOR_TRACE_FLAG_ILIM; }
+        if (ilim_state.limiting)         { flags |= REGULATOR_TRACE_FLAG_ILIM; }
         if (fire)                        { flags |= REGULATOR_TRACE_FLAG_TRIGGER; }
         const uint32_t w = tc->write_index;
         regulator_trace[w].v_out_mv = (uint16_t)(v_out_mv > 65535u ? 65535u : v_out_mv);
@@ -3358,6 +3557,13 @@ static bool software_safety_checks_pass(uint32_t v_out_mv,
         if (!softstart_active)
         {
             uint32_t uvp_threshold = (v_setpoint_mv * UVP_RELATIVE_PCT) / 100u;
+            /* The current limit folds V_out on purpose (PPS Current Limit):
+             * then the PD layer's floor, if lower. */
+            const uint32_t cl_floor = regulator_cl_uvp_mv;
+            if (regulator_ccm_limiting && cl_floor != 0u && cl_floor < uvp_threshold)
+            {
+                uvp_threshold = cl_floor;
+            }
             if (v_out_mv < uvp_threshold)
             {
                 record_fault_snapshot(v_out_mv, v_in_mv, v_setpoint_mv);

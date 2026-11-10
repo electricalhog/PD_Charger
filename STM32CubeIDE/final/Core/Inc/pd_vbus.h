@@ -38,10 +38,15 @@ uint32_t pd_vbus_get_mv(void);
 /**
  * pd_vbus_wait_in_range — Block (osDelay) until VBUS is within
  * PD_VBUS_TOLERANCE_PCT of target_mv with the output switch closed, or
- * timeout_ms passes.  Task context only (PE task, from SetupNewPower).
+ * timeout_ms passes; in a PPS contract, or once the regulator is in Current
+ * Limit.  Task context only (PE task, from SetupNewPower).
  * @return elapsed ms on success, or UINT32_MAX on timeout / regulator fault.
  */
 uint32_t pd_vbus_wait_in_range(uint32_t target_mv, uint32_t timeout_ms);
+
+/** True while a PPS contract runs the regulator in forced CCM with its
+ *  Current Limit (BSP_USBPD_PWR_VBUSSetVoltage_APDO). */
+bool pd_vbus_pps_active(void);
 
 /**
  * pd_vbus_poll — Default task, every 10 ms.  Tracks when the output switch

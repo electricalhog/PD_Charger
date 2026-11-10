@@ -43,6 +43,7 @@
 #include "pd_bench_config.h"
 #include "pd_policy.h"
 #include "regulator.h"
+#include "adc_monitor.h"
 /* USER CODE END Includes */
 
 /** @addtogroup STM32_USBPD_APPLICATION
@@ -205,6 +206,11 @@ USBPD_StatusTypeDef USBPD_DPM_UserInit(void)
     DPM_Settings[USBPD_PORT_0].PE_SupportedSOP = USBPD_SUPPORTED_SOP_SOP | USBPD_SUPPORTED_SOP_SOP1 | USBPD_SUPPORTED_SOP_SOP2;
   }
 #endif /* USBPDCORE_EPR */
+#if defined(USBPDCORE_PPS)
+  /* Get_PPS_Status is answered from USBPD_CORE_PPS_STATUS (GetDataInfo). */
+  DPM_Settings[USBPD_PORT_0].PE_PD3_Support.d.Is_GetPPSStatus_Supported =
+      PD_SRC_APDO_PPS_ENABLE ? USBPD_TRUE : USBPD_FALSE;
+#endif /* USBPDCORE_PPS */
 #if defined(_VCONN_SUPPORT)
   /* Registers the VDM callbacks with the PE (ST's VCONN-only pattern). */
   if (USBPD_OK != USBPD_VDM_UserInit(USBPD_PORT_0))
@@ -554,6 +560,7 @@ void USBPD_DPM_GetDataInfo(uint8_t PortNum, USBPD_CORE_DataInfoType_TypeDef Data
       pd_policy_get_spr_pdos((uint8_t *)pdos, &spr_bytes, false);
       for (uint32_t i = 0u; i < spr_bytes / 4u; i++)
       {
+        if ((pdos[i] & USBPD_PDO_TYPE_Msk) != USBPD_PDO_TYPE_FIXED) { continue; }   /* the PPS APDO */
         uint32_t w = (((pdos[i] >> 10) & 0x3FFu) * 50u) * ((pdos[i] & 0x3FFu) * 10u) / 1000000u;
         if (w > spr_w) { spr_w = w; }
       }
@@ -572,6 +579,25 @@ void USBPD_DPM_GetDataInfo(uint8_t PortNum, USBPD_CORE_DataInfoType_TypeDef Data
       memcpy(Ptr, &scedb, sizeof(scedb));
       break;
     }
+#if defined(USBPDCORE_PPS)
+  case USBPD_CORE_PPS_STATUS :
+    {
+      /* PPS_Status (Is_GetPPSStatus_Supported): V_out (VD_MON, before the
+       * output switch), the output current (ID_MON, filtered), OMF while the
+       * CCM current limit sets the duty.  No temperature: PTF not supported. */
+      USBPD_PPSSDB_TypeDef ppssdb;
+      int32_t ma = regulator_i_out_filt_ma;
+      uint32_t i50 = (ma > 0) ? (uint32_t)ma / 50u : 0u;
+      ppssdb.fields.OutputVoltageIn20mVunits = (uint16_t)(adc_measurements.v_out_mv / 20u);
+      ppssdb.fields.OutputCurrentIn50mAunits = (uint8_t)((i50 < 0xFEu) ? i50 : 0xFEu);
+      ppssdb.fields.RealTimeFlags = USBPD_PPS_REALTIMEFLAGS_PTF_NOT_SUPPORTED |
+                                    (regulator_ccm_limiting ? USBPD_PPS_REALTIMEFLAGS_OMF_ENABLED
+                                                            : USBPD_PPS_REALTIMEFLAGS_OMF_DISABLED);
+      *Size = 4u;
+      memcpy(Ptr, &ppssdb.d32, 4u);
+      break;
+    }
+#endif /* USBPDCORE_PPS */
   case USBPD_CORE_REVISION:
     {
       *Size = sizeof(USBPD_RevisionDO_TypeDef);
@@ -679,7 +705,9 @@ USBPD_StatusTypeDef USBPD_DPM_EvaluateRequest(uint8_t PortNum, USBPD_CORE_PDO_Ty
   {
     return USBPD_REJECT;
   }
-  *PtrPowerObject = USBPD_CORE_PDO_TYPE_FIXED;
+  /* APDO: the PE then runs the source's tPPSTimeout (Hard Reset when the
+   * sink stops re-requesting). */
+  *PtrPowerObject = contract.pps ? USBPD_CORE_PDO_TYPE_APDO : USBPD_CORE_PDO_TYPE_FIXED;
   DPM_Ports[PortNum].DPM_RequestedVoltage    = contract.voltage_mv;
   DPM_Ports[PortNum].DPM_RequestedCurrent    = contract.operating_ma;
   DPM_Ports[PortNum].DPM_RDOPositionPrevious = DPM_Ports[PortNum].DPM_RDOPosition;

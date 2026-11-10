@@ -70,6 +70,63 @@
 #endif
 
 /* =========================================================================
+ * SECTION 1b: SPR PPS (plans/pps.md)
+ * =========================================================================*/
+
+/**
+ * PD_SRC_APDO_PPS_ENABLE — Offer one SPR PPS APDO after the fixed PDOs
+ * (CMake -DPD_BENCH_PPS=ON).  Its range is the Prog range of the highest
+ * fixed PDO up to 20 V (USB PD R3.2 Table 2.2: 9V Prog 5-11 V, 15V Prog
+ * 5-16 V, 20V Prog 5-21 V), at PD_SRC_MAX_CURRENT_MA.
+ * In a PPS contract the RDO operating current is the regulator's current
+ * limit (Current Limit mode, regulator_ccm_ilim_ma), in CCM and DCM; the
+ * CCM setting is left as it is (auto: a fast drop in V_out needs DCM).
+ * pd_vbus.c sets it up and restores the fixed-contract limit after.
+ */
+#if defined(PD_BENCH_PPS) && (PD_BENCH_PPS)
+#define PD_SRC_APDO_PPS_ENABLE      1u
+#else
+#define PD_SRC_APDO_PPS_ENABLE      0u
+#endif
+#define PD_PPS_MIN_MV               5000u
+#define PD_PPS_MAX_MV                                                    \
+    (PD_SRC_PDO_20V_ENABLE ? 21000u :                                    \
+     PD_SRC_PDO_15V_ENABLE ? 16000u : 11000u)
+#define PD_PPS_MAX_MA               PD_SRC_MAX_CURRENT_MA
+
+/**
+ * PD_PPS_CL_MIN_MA — iPpsCLMin: a PPS request for less is accepted with
+ * this limit (the spec's "Should reject" is not taken: the bench sink asks
+ * for what its test needs).  pd_pps_cl_min_ma (pd_policy.c) is the runtime
+ * copy; a bench run may lower it over SWD to fold the 25.3 ohm resistor,
+ * which draws 1 A only at 25.3 V, above the PPS range.
+ */
+#define PD_PPS_CL_MIN_MA            1000u
+
+/**
+ * PD_PPS_SHUTDOWN_PERMILLE / _MS — vPpsShutdown: V_out under this fraction
+ * of the APDO minimum for _MS while in Current Limit ends the contract with
+ * a Hard Reset (spec: 0.85-0.95 x the minimum, "May").  The regulator's
+ * relative UVP (50 % of the setpoint) is replaced in CL by
+ * PD_PPS_UVP_PERMILLE of the minimum, below this, so the Hard Reset comes
+ * first.
+ */
+#define PD_PPS_SHUTDOWN_PERMILLE    900u
+#define PD_PPS_SHUTDOWN_MS          10u
+#define PD_PPS_UVP_PERMILLE         700u
+
+/**
+ * PD_PPS_LARGE_BUDGET_MS / PD_PPS_SMALL_BUDGET_MS — PS_RDY for a PPS step
+ * is due tPpsSrcTransLarge (275 ms) or, for steps up to vPpsSmallStep
+ * (500 mV), tPpsSrcTransSmall (25 ms) after the Accept's GoodCRC, once V_out
+ * is within vPpsNew (5 %) or the supply is in CL.  These are the waits in
+ * SetProfile; what the PE spends before it is measured on CC1.
+ */
+#define PD_PPS_LARGE_BUDGET_MS      240u
+#define PD_PPS_SMALL_BUDGET_MS      22u
+#define PD_PPS_SMALL_STEP_MV        500u
+
+/* =========================================================================
  * SECTION 2: EPR
  * =========================================================================*/
 
@@ -302,6 +359,18 @@ _Static_assert(PD_RAMP_TO_5V_MS(PD_EPR_MAX_MV) <= PD_EPR_TRANSITION_BUDGET_MS,
 _Static_assert(PD_EPR_MAX_MV * OVP_RELATIVE_PCT / 100u <= OVP_ABSOLUTE_MV,
                "highest EPR PDO with its relative OVP must stay at or under OVP_ABSOLUTE_MV");
 _Static_assert(PD_EPR_MAX_MV <= SETPOINT_MAX_MV, "EPR PDO above SETPOINT_MAX_MV");
+_Static_assert(!PD_SRC_APDO_PPS_ENABLE || PD_SRC_PDO_9V_ENABLE,
+               "the PPS APDO needs at least the 9 V fixed PDO (Table 2.2)");
+_Static_assert(!PD_SRC_APDO_PPS_ENABLE ||
+               PD_RAMP_FROM_5V_MS(PD_PPS_MAX_MV) <= PD_PPS_LARGE_BUDGET_MS,
+               "the PPS maximum cannot be reached from 5 V within tPpsSrcTransLarge");
+_Static_assert(!PD_SRC_APDO_PPS_ENABLE ||
+               PD_PPS_SMALL_STEP_MV / PD_SLEW_UP_MV_PER_MS + 10u <= PD_PPS_SMALL_BUDGET_MS,
+               "a 500 mV PPS step plus the 10 ms in-range filter misses tPpsSrcTransSmall");
+_Static_assert(!PD_SRC_APDO_PPS_ENABLE || PD_PPS_MAX_MV <= SETPOINT_MAX_MV,
+               "PPS maximum above SETPOINT_MAX_MV");
+_Static_assert(PD_PPS_MIN_MV >= SETPOINT_MIN_MV, "PPS minimum under SETPOINT_MIN_MV");
+_Static_assert(PD_PPS_CL_MIN_MA <= PD_PPS_MAX_MA, "iPpsCLMin above the APDO current");
 _Static_assert(PD_SPR_MAX_MV <= SETPOINT_MAX_MV, "PDO above SETPOINT_MAX_MV");
 
 #endif /* PD_BENCH_CONFIG_H */

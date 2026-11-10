@@ -37,6 +37,7 @@
 #include "pd_bench_config.h"
 #include "pd_policy.h"
 #include "pd_vbus.h"
+#include "regulator.h"
 /* USER CODE END Include */
 
 /** @addtogroup STM32_USBPD_APPLICATION
@@ -147,9 +148,27 @@ USBPD_StatusTypeDef USBPD_PWR_IF_SetProfile(uint8_t PortNum)
   /* DPM_RequestedVoltage was set by USBPD_DPM_EvaluateRequest from the PDO
    * the RDO points to (SPR or, in EPR mode, EPR). */
   uint32_t _mv = DPM_Ports[PortNum].DPM_RequestedVoltage;
-  if (BSP_ERROR_NONE != BSP_USBPD_PWR_VBUSSetVoltage_Fixed(PortNum, _mv,
-                                                           DPM_Ports[PortNum].DPM_RequestedCurrent,
-                                                           DPM_Ports[PortNum].DPM_RequestedCurrent))
+  const bool _pps = pd_policy_pps_position() != 0u &&
+                    DPM_Ports[PortNum].DPM_RDOPosition == pd_policy_pps_position();
+#if PD_OWNS_VBUS
+  /* PPS: the step size picks tPpsSrcTransSmall or _Large: the larger of the
+   * steps from the setpoint before this request and from V_out, which a
+   * Current Limit fold leaves below it (a request that only raises the
+   * limit is a 0 mV step from the setpoint; bench 2026-11-06). */
+  const uint32_t _prev_mv = regulator_commanded_mv;
+  const uint32_t _prev_out_mv = pd_vbus_get_mv();
+#endif /* PD_OWNS_VBUS */
+  if (_pps)
+  {
+    if (BSP_ERROR_NONE != BSP_USBPD_PWR_VBUSSetVoltage_APDO(PortNum, _mv,
+                              pd_policy_pps_cl_ma(DPM_Ports[PortNum].DPM_RequestedCurrent), 0))
+    {
+      return USBPD_ERROR;
+    }
+  }
+  else if (BSP_ERROR_NONE != BSP_USBPD_PWR_VBUSSetVoltage_Fixed(PortNum, _mv,
+                                                                DPM_Ports[PortNum].DPM_RequestedCurrent,
+                                                                DPM_Ports[PortNum].DPM_RequestedCurrent))
   {
     return USBPD_ERROR;
   }
@@ -168,6 +187,16 @@ USBPD_StatusTypeDef USBPD_PWR_IF_SetProfile(uint8_t PortNum)
     _budget_ms = PD_EPR_TRANSITION_BUDGET_MS;
   }
 #endif /* USBPDCORE_EPR */
+  if (_pps)
+  {
+    uint32_t _step = (_mv > _prev_mv) ? (_mv - _prev_mv) : (_prev_mv - _mv);
+    const uint32_t _step_out = (_mv > _prev_out_mv) ? (_mv - _prev_out_mv) : (_prev_out_mv - _mv);
+    if (_step_out > _step)
+    {
+      _step = _step_out;
+    }
+    _budget_ms = (_step <= PD_PPS_SMALL_STEP_MV) ? PD_PPS_SMALL_BUDGET_MS : PD_PPS_LARGE_BUDGET_MS;
+  }
   uint32_t _elapsed = pd_vbus_wait_in_range(_mv, _budget_ms);
   if (_elapsed == UINT32_MAX)
   {

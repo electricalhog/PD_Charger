@@ -21,10 +21,10 @@ from . import probe
 from .config import ToolError, paths
 
 MAGIC = 0x54534450          # "PDST"
-VERSION = 1
+VERSION = 2
 SPR_MAX, EPR_MAX, EVENTS = 7, 6, 32
 
-# Field order of PdStatus (pd_policy.h), version 1.
+# Field order of PdStatus (pd_policy.h), version 2.
 _FIELDS = (
     ["magic", "version", "lib_epr", "epr_offered", "spr_pdo_count", "epr_pdo_count"]
     + [f"spr_pdo{i}" for i in range(SPR_MAX)] + [f"epr_pdo{i}" for i in range(EPR_MAX)]
@@ -32,15 +32,17 @@ _FIELDS = (
        "last_rdo_result", "contract_mv", "contract_ma", "contract_position", "transition_ms",
        "transition_timeouts", "vbus_on_failures", "fault_hard_resets", "epr_mode",
        "epr_enter_requests", "epr_enter_succeeded", "epr_enter_failed", "epr_exits",
-       "epr_enter_mode_replies", "ev_count"]
+       "epr_enter_mode_replies", "pps_position", "contract_pps", "pps_cl_ma", "pps_shutdown_resets",
+       "ev_count"]
     + [f"ev_tick{i}" for i in range(EVENTS)] + [f"ev_code{i}" for i in range(EVENTS)]
 )
 SIZE = 4 * len(_FIELDS)
 
-RDO_RESULTS = {0: "ACCEPT", 1: "BAD_POSITION", 2: "EPR_PDO_OUTSIDE_EPR_MODE", 3: "NOT_FIXED", 4: "OVER_CURRENT"}
+RDO_RESULTS = {0: "ACCEPT", 1: "BAD_POSITION", 2: "EPR_PDO_OUTSIDE_EPR_MODE", 3: "NOT_FIXED", 4: "OVER_CURRENT",
+               5: "PPS_VOLTAGE", 6: "PPS_IN_EPR_MODE"}
 PD_EVENTS = {0x200: "FAULT_HARD_RESET", 0x201: "TRANSITION_TIMEOUT", 0x202: "VBUS_ON_FAILED",
              0x203: "SETUP_POWER", 0x204: "SETUP_POWER_ERR", 0x205: "POWER_NOT_READY",
-             0x206: "HIGH_V_CAP_HARD_RESET", 0x207: "VBUS_LOST_HARD_RESET"}
+             0x206: "HIGH_V_CAP_HARD_RESET", 0x207: "VBUS_LOST_HARD_RESET", 0x208: "PPS_SHUTDOWN_HARD_RESET"}
 PD_EV_DPM_WHAT_TO_DO = 0x210  # | USBPD_CORE_ActionType_TypeDef
 DPM_ACTIONS = {1: "ENTER_USB", 2: "DATA_RESET", 3: "ENTER_MODE", 4: "CHECK_PDO"}
 REG_STATES = {0: "INIT", 1: "IDLE", 2: "RUNNING", 3: "FAULT"}
@@ -61,6 +63,9 @@ def _names(cfg: dict) -> tuple[dict[int, str], dict[int, str]]:
 
 def decode_pdo(pdo: int, position: int) -> dict:
     kind = (pdo >> 30) & 3
+    if kind == 3 and (pdo >> 28) & 3 == 0:
+        return {"position": position, "raw": f"{pdo:#010x}", "type": "PPS", "min_mv": ((pdo >> 8) & 0xFF) * 100,
+                "max_mv": ((pdo >> 17) & 0xFF) * 100, "ma": (pdo & 0x7F) * 50, "power_limited": bool(pdo >> 27 & 1)}
     if kind != 0:
         return {"position": position, "raw": f"{pdo:#010x}", "type": ["FIXED", "BATTERY", "VARIABLE", "APDO"][kind]}
     d = {"position": position, "raw": f"{pdo:#010x}", "type": "FIXED",
@@ -71,7 +76,11 @@ def decode_pdo(pdo: int, position: int) -> dict:
     return d
 
 
-def decode_rdo(rdo: int) -> dict:
+def decode_rdo(rdo: int, pps_position: int = 0) -> dict:
+    if pps_position and (rdo >> 28) & 0xF == pps_position:
+        return {"raw": f"{rdo:#010x}", "position": pps_position, "type": "PPS",
+                "capability_mismatch": bool(rdo >> 26 & 1), "epr_mode_capable": bool(rdo >> 22 & 1),
+                "mv": ((rdo >> 9) & 0xFFF) * 20, "operating_ma": (rdo & 0x7F) * 50}
     return {"raw": f"{rdo:#010x}", "position": (rdo >> 28) & 0xF, "capability_mismatch": bool(rdo >> 26 & 1),
             "epr_mode_capable": bool(rdo >> 22 & 1), "operating_ma": ((rdo >> 10) & 0x3FF) * 10,
             "max_ma": (rdo & 0x3FF) * 10}
@@ -109,8 +118,12 @@ def decode(words: list[int], now_ms: int, notify: dict[int, str], cad: dict[int,
         "counters": {k: w[k] for k in ("attach_count", "detach_count", "hard_reset_count", "contract_count",
                                        "transition_timeouts", "vbus_on_failures", "fault_hard_resets")},
         "contract": {"mv": w["contract_mv"], "ma": w["contract_ma"], "position": w["contract_position"],
-                     "last_transition_ms": w["transition_ms"]} if w["contract_mv"] else None,
-        "last_rdo": {**decode_rdo(w["last_rdo"]), "result": RDO_RESULTS.get(w["last_rdo_result"], w["last_rdo_result"])}
+                     "last_transition_ms": w["transition_ms"],
+                     **({"pps": True, "cl_ma": w["pps_cl_ma"]} if w["contract_pps"] else {})}
+                    if w["contract_mv"] else None,
+        "pps": {"position": w["pps_position"], "shutdown_hard_resets": w["pps_shutdown_resets"]}
+               if w["pps_position"] else None,
+        "last_rdo": {**decode_rdo(w["last_rdo"], w["pps_position"]), "result": RDO_RESULTS.get(w["last_rdo_result"], w["last_rdo_result"])}
                     if w["last_rdo"] else None,
         "epr": {"in_epr_mode": bool(w["epr_mode"]), "enter_acknowledged": w["epr_enter_requests"],
                 "enter_succeeded": w["epr_enter_succeeded"], "enter_failed": w["epr_enter_failed"],
@@ -156,7 +169,8 @@ def status(cfg: dict) -> dict:
     if size != SIZE:
         raise ToolError(f"pd_status is {size} bytes, this tool expects {SIZE}: firmware and tool disagree")
     regions = [(addr, SIZE)]
-    names = [n for n in ("uwTick", "regulator_state", "adc_measurements", "pd_bench_dry_run") if n in syms]
+    names = [n for n in ("uwTick", "regulator_state", "adc_measurements", "pd_bench_dry_run",
+                         "regulator_ccm_limiting", "regulator_ccm_active") if n in syms]
     regions += [syms[n] for n in names]
     # VCONN switch enables (pd_bench_config.h): PA7 -> CC1, PB5 -> CC2 (GPIOx_ODR).
     regions += [(GPIOA_ODR, 4), (GPIOB_ODR, 4)]
@@ -171,6 +185,10 @@ def status(cfg: dict) -> dict:
         out["regulator_state"] = REG_STATES.get(extra["regulator_state"][0], extra["regulator_state"][0])
     if "adc_measurements" in extra:
         out["v_out_mv"] = int.from_bytes(extra["adc_measurements"][:4], "little")
+    if out.get("contract") and out["contract"].get("pps"):
+        for k, n in (("cl_mode", "regulator_ccm_limiting"), ("ccm", "regulator_ccm_active")):
+            if n in extra:
+                out["contract"][k] = bool(extra[n][0])
     if "pd_bench_dry_run" in extra:
         out["dry_run"] = bool(int.from_bytes(extra["pd_bench_dry_run"][:4], "little"))
     out["vconn_switch"] = {"cc1_pa7": odr_a >> 7 & 1, "cc2_pb5": odr_b >> 5 & 1}

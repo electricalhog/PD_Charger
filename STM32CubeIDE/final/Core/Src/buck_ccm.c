@@ -18,6 +18,33 @@ float buck_ccm_refresh_share(const BuckCcmTimingCfg *c)
     return (c->refresh_interval_ns != 0u) ? ((float)c->refresh_ns / (float)c->refresh_interval_ns) : 0.0f;
 }
 
+float buck_ccm_boundary_a(const BuckCcmTimingCfg *c, const BuckCcmTiming *t, float i_load_a, float v_out_v,
+                          float v_fw_v, float l_h)
+{
+    const float tick = 1e-6f / (float)BUCK_CCM_TICKS_PER_US;
+    const float T = (float)c->period_ns * 1e-9f;
+    float t_ref = (float)t->b_cmp3 * tick;
+    if (c->refresh_interval_ns > c->period_ns)
+    {
+        t_ref *= (float)c->period_ns / (float)c->refresh_interval_ns;
+    }
+    const float a = (float)t->a_cmp4 * tick - t_ref;      /* fall before Q1 */
+    const float on = (float)(t->a_cmp2 - t->a_cmp4) * tick;
+    const float b = T - (float)t->a_cmp2 * tick;          /* fall after Q1 */
+    const float v_f = v_out_v + v_fw_v;
+    const float d1 = v_f * a / l_h, d2 = v_f * b / l_h, rise = d1 + d2;
+    /* mean - boundary, segment by segment (the flat part adds nothing) */
+    const float rel = (-0.5f * d1 * a + (0.5f * rise - d1) * on + 0.5f * d2 * b) / T;
+    return i_load_a - rel;
+}
+
+int32_t buck_ccm_handover_ticks(float di_a, float v_in_v, float l_h)
+{
+    if (v_in_v < 1.0f) { v_in_v = 1.0f; }
+    const float ticks = di_a * l_h / v_in_v * 1e6f * (float)BUCK_CCM_TICKS_PER_US;
+    return (int32_t)((ticks >= 0.0f) ? (ticks + 0.5f) : (ticks - 0.5f));
+}
+
 bool buck_ccm_cfg_valid(const BuckCcmTimingCfg *c)
 {
     if (c->period_ns == 0u || c->dt_ns < 10u || c->refresh_ns == 0u)                  { return false; }

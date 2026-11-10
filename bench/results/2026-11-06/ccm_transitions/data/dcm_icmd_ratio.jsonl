@@ -1,0 +1,7 @@
+{"mv": 5000, "v": 5022.8, "icmd": 362, "iid": 193.1, "ton": 445.4, "ratio": 1.877, "ratio_vr": 1.834, "state": "RUNNING"}
+{"mv": 7000, "v": 6891.9, "icmd": 430, "iid": 271.9, "ton": 599, "ratio": 1.581, "ratio_vr": 1.553, "state": "RUNNING"}
+{"mv": 9000, "v": 8955.1, "icmd": 506, "iid": 356.2, "ton": 768.8, "ratio": 1.42, "ratio_vr": 1.421, "state": "RUNNING"}
+{"mv": 12000, "v": 12046.6, "icmd": 590, "iid": 483.2, "ton": 1061.9, "ratio": 1.221, "ratio_vr": 1.244, "state": "RUNNING"}
+{"mv": 15000, "v": 15011.1, "icmd": 677, "iid": 594.1, "ton": 1454.1, "ratio": 1.14, "ratio_vr": 1.142, "state": "RUNNING"}
+{"mv": 17000, "v": 17089.4, "icmd": 741, "iid": 670.1, "ton": 1820.9, "ratio": 1.105, "ratio_vr": 1.102, "state": "RUNNING"}
+{"mv": 20000, "v": 20010.9, "icmd": 884, "iid": 802.4, "ton": 2812.1, "ratio": 1.101, "ratio_vr": 1.118, "state": "RUNNING"}

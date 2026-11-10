@@ -30,6 +30,9 @@ pub struct Contract {
     pub mv: u32,
     pub ma: u32,
     pub epr_request: bool,
+    /// A PPS (APDO) contract: `mv` is the programmed voltage, `ma` the
+    /// operating current, which the source holds as its Current Limit.
+    pub pps: bool,
 }
 
 pub struct State {
@@ -41,6 +44,8 @@ pub struct State {
     /// What `req` asked for; applied to every negotiation, kept across attaches.
     pub target_mv: u32,
     pub target_ma: u32,
+    /// `pps` rather than `req`: request the SPR PPS APDO at target_mv.
+    pub target_pps: bool,
     pub contracts: u32,
     pub hard_resets: u32,
     pub epr_failures: u32,
@@ -75,6 +80,7 @@ pub static STATE: Mutex<CriticalSectionRawMutex, RefCell<State>> = Mutex::new(Re
     caps: None,
     target_mv: DEFAULT_TARGET_MV,
     target_ma: DEFAULT_TARGET_MA,
+    target_pps: false,
     contracts: 0,
     hard_resets: 0,
     epr_failures: 0,

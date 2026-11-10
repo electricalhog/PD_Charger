@@ -144,19 +144,33 @@ extern volatile uint16_t regulator_sr_off_ns;
  *    regulator_ccm_deadtime_ns   Q1/Q2 and Q3/Q4 dead time, clamped
  *    regulator_ccm_ki            integral gain [1/s]
  *    regulator_ccm_ocp_ma        SW_OCP level on regulator_ccm_i_avg_ma
- *    regulator_ccm_ilim_ma       current limit in CCM, 0 off (buck_ccm.h)
+ *    regulator_ccm_ilim_ma       current limit in CCM and DCM, 0 off
+ *                                (buck_ccm.h, regulator.c step 5d)
  *    regulator_ccm_ilim_kl       its integral gain [V/(A s)]
  *    regulator_ccm_ilim_src      CCM's current (limit, SW_OCP, light-load
  *                                exit): 1 ID_MON (default, regulator_id_gain/
  *                                offset applied), 0 IL_MON (regulator_il_ma)
  *    regulator_ccm_peak_ma       peak comparator threshold in CCM, 0 = the
  *                                9 A backstop (CCM_PEAK_MA_DEFAULT)
+ *    regulator_id_ccm_corr       1: ID_MON's buck CCM correction at 200 kHz
+ *                                (ID_CCM_ADD_*, regulator_config.h)
+ *    regulator_ccm_handover      1: L1 handed over at buck CCM entry and exit
+ *                                (CCM_HANDOVER_DEFAULT); telemetry: the last
+ *                                entry's / exit's valley estimate
+ *                                regulator_ccm_entry_iv_ma / _exit_iv_ma, the
+ *                                on-time change _entry_dt_ns / _exit_dt_ns,
+ *                                the exit's DCM restart _exit_i0_ma, and
+ *                                regulator_ccm_handover_timeouts
+ *    regulator_cl_uvp_mv         UVP floor while the current limit sets the
+ *                                reference, 0 = the relative UVP; set by the PD
+ *                                layer in a PPS contract (pd_vbus.c)
  *  Telemetry:
  *    regulator_fsw_khz           switching frequency in use
  *    regulator_ccm_active        1 while the buck runs forced CCM
  *    regulator_ccm_u_mv          the duty law's integrator [mV]
  *    regulator_ccm_entries / _exits, regulator_ccm_exit_reason (RegulatorCcmExit)
- *    regulator_ccm_limiting      1 while the current limit sets the duty
+ *    regulator_ccm_limiting      1 while the current limit sets the
+ *                                reference (CCM or DCM)
  *    regulator_ccm_v_lim_mv      its voltage reference while it does
  *    regulator_ccm_i_lim_meas_ma CCM's current this cycle, and
  *    regulator_ccm_i_avg_ma      filtered (POWER_FILTER_SHIFT)
@@ -211,11 +225,20 @@ extern volatile int16_t  regulator_il_gain_permille;
 extern volatile int16_t  regulator_il_offset_ma;
 extern volatile int16_t  regulator_id_gain_permille;
 extern volatile int16_t  regulator_id_offset_ma;
+extern volatile uint8_t  regulator_id_ccm_corr;
+extern volatile uint8_t  regulator_ccm_handover;
+extern volatile int16_t  regulator_ccm_entry_dt_ns;
+extern volatile int16_t  regulator_ccm_entry_iv_ma;
+extern volatile int16_t  regulator_ccm_exit_dt_ns;
+extern volatile int16_t  regulator_ccm_exit_iv_ma;
+extern volatile int16_t  regulator_ccm_exit_i0_ma;
+extern volatile uint32_t regulator_ccm_handover_timeouts;
 extern volatile uint16_t regulator_ccm_ilim_ma;
 extern volatile float    regulator_ccm_ilim_kl;
 extern volatile uint8_t  regulator_ccm_ilim_src;
 extern volatile uint16_t regulator_ccm_peak_ma;
 extern volatile uint8_t  regulator_ccm_limiting;
+extern volatile uint16_t regulator_cl_uvp_mv;
 extern volatile float    regulator_ccm_v_lim_mv;
 extern volatile int32_t  regulator_ccm_i_lim_meas_ma;
 extern volatile int32_t  regulator_ccm_i_avg_ma;
@@ -256,6 +279,14 @@ extern RegulatorFaultSource regulator_last_fault_source;
  * Used to enforce the ADM1270 cool-down before re-enabling the input.
  */
 extern volatile uint32_t regulator_fault_tick_ms;
+
+/**
+ * regulator_start_low_vin_count / regulator_start_low_vin_mv — starts refused
+ * because V_in read below VIN_START_MIN_MV with the input path on, and the
+ * V_in of the latest one.  The regulator stays IDLE (no fault).
+ */
+extern volatile uint32_t regulator_start_low_vin_count;
+extern volatile uint32_t regulator_start_low_vin_mv;
 
 /**
  * regulator_pid_output_dac_counts — peak-current comparator threshold in DAC
@@ -324,7 +355,9 @@ void regulator_init(void);
  *   4. Start TIM6 (slope compensation) and TIM7 (PID).
  *   5. Begin soft-start ramp (§11.2).
  *
- * Returns without action if preconditions are not met.
+ * Returns without action if preconditions are not met.  With the input path
+ * up but V_in below VIN_START_MIN_MV it drops the input path again and
+ * stays IDLE (regulator_start_low_vin_count), so a later call can start.
  */
 void regulator_start(void);
 

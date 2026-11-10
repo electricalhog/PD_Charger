@@ -30,7 +30,9 @@ typedef enum
     PD_RDO_BAD_POSITION        = 1u, /**< no PDO at that object position        */
     PD_RDO_EPR_OUTSIDE_EPR     = 2u, /**< position >= 8 while not in EPR mode    */
     PD_RDO_NOT_FIXED           = 3u, /**< only fixed PDOs are offered            */
-    PD_RDO_OVER_CURRENT        = 4u  /**< operating/max current above the PDO    */
+    PD_RDO_OVER_CURRENT        = 4u, /**< operating/max current above the PDO    */
+    PD_RDO_PPS_VOLTAGE         = 5u, /**< PPS voltage outside the APDO range     */
+    PD_RDO_PPS_IN_EPR          = 6u  /**< PPS request in EPR mode (R3.2 2.8.2)   */
 } PdRdoResult;
 
 /** Contract derived from an accepted RDO. */
@@ -39,12 +41,14 @@ typedef struct
     uint32_t pdo;          /**< the PDO the RDO points to          */
     uint32_t position;     /**< object position, 1..13             */
     uint32_t voltage_mv;
-    uint32_t operating_ma;
-    uint32_t max_ma;
+    uint32_t operating_ma; /**< PPS: the RDO operating current         */
+    uint32_t max_ma;       /**< PPS: the Current Limit (operating
+                                current, at least pd_pps_cl_min_ma)   */
+    bool     pps;          /**< the RDO is a PPS (APDO) request      */
 } PdContract;
 
 #define PD_STATUS_MAGIC      0x54534450u   /* "PDST" little-endian */
-#define PD_STATUS_VERSION    1u
+#define PD_STATUS_VERSION    2u
 #define PD_STATUS_EVENTS     32u
 
 /**
@@ -82,6 +86,10 @@ typedef struct
     uint32_t epr_enter_failed;
     uint32_t epr_exits;
     uint32_t epr_enter_mode_replies; /**< DPM asked to accept an EPR entry          */
+    uint32_t pps_position;         /**< object position of the PPS APDO, 0 = none (v2)   */
+    uint32_t contract_pps;         /**< 1 while the contract is PPS                      */
+    uint32_t pps_cl_ma;            /**< Current Limit of the PPS contract                */
+    uint32_t pps_shutdown_resets;  /**< Hard Resets at vPpsShutdown                      */
     uint32_t ev_count;             /**< total events; ring index = ev_count % EVENTS     */
     uint32_t ev_tick[PD_STATUS_EVENTS];  /**< HAL tick (ms) of each event                */
     uint32_t ev_code[PD_STATUS_EVENTS];  /**< USBPD_NotifyEventValue_TypeDef, or
@@ -89,6 +97,9 @@ typedef struct
 } PdStatus;
 
 extern volatile PdStatus pd_status;
+
+/** iPpsCLMin in use [mA]: PD_PPS_CL_MIN_MA, lowered over SWD for bench folds. */
+extern volatile uint32_t pd_pps_cl_min_ma;
 
 /** Event codes logged in addition to USBPD notifications. */
 #define PD_EV_CAD_BASE        0x100u  /* 0x100 | USBPD_CAD_EVENT */
@@ -100,6 +111,7 @@ extern volatile PdStatus pd_status;
 #define PD_EV_POWER_NOT_READY 0x205u  /* IsPowerReady answered DISABLE */
 #define PD_EV_HIGH_V_CAP      0x206u  /* Hard Reset: contract above PD_BENCH_HIGH_V_MV too long */
 #define PD_EV_VBUS_LOST       0x207u  /* Hard Reset: V_out off the setpoint by PD_VBUS_LOST_PCT */
+#define PD_EV_PPS_SHUTDOWN    0x208u  /* Hard Reset: V_out under vPpsShutdown in Current Limit */
 #define PD_EV_DPM_WHAT_TO_DO  0x210u  /* 0x210 | IDAction: PE asked the DPM (RequestDPMWhatToDo) */
 
 /** Build the PDO tables; call once before the PD stack runs. */
@@ -121,8 +133,14 @@ PdRdoResult pd_policy_evaluate_rdo(uint32_t rdo, bool epr_mode, PdContract *cont
 /** True if the stage may enter EPR now (EPR enabled, regulator not faulted). */
 bool pd_policy_epr_entry_allowed(void);
 
-/** Highest voltage any PDO offers [mV]. */
+/** Highest voltage any PDO or the PPS APDO offers [mV]. */
 uint32_t pd_policy_max_offered_mv(void);
+
+/** Object position of the PPS APDO, 0 if none is offered. */
+uint32_t pd_policy_pps_position(void);
+
+/** Current Limit for a PPS operating current: at least pd_pps_cl_min_ma. */
+uint32_t pd_policy_pps_cl_ma(uint32_t operating_ma);
 
 /** Append one event to the pd_status ring. */
 void pd_status_event(uint32_t code);

@@ -59,6 +59,45 @@ __attribute__((used)) volatile uint32_t pd_bench_high_v_resets;
 static uint32_t          vbus_lost_since_tick;
 static bool              vbus_lost_active;
 __attribute__((used)) volatile uint32_t pd_vbus_lost_resets;
+/* PPS contract (plans/pps.md): the current limit it replaced, and the
+ * vPpsShutdown timer. */
+static volatile bool     pps_active;
+static uint16_t          pps_saved_ilim_ma;
+static uint32_t          pps_low_since_tick;
+static bool              pps_low_active;
+
+/* PPS: the contract's Current Limit, and the UVP floor the fold needs.  The
+ * CCM setting stays (auto by default): the limit acts in CCM and DCM alike,
+ * and a fast drop in V_out needs DCM (regulator.c step 5d).  Entered from
+ * SetVoltage_APDO (PE task). */
+static void pps_enter(uint32_t cl_ma)
+{
+    if (!pps_active)
+    {
+        pps_saved_ilim_ma    = regulator_ccm_ilim_ma;
+        pps_active           = true;
+    }
+    regulator_ccm_ilim_ma = (uint16_t)cl_ma;
+    regulator_cl_uvp_mv   = (uint16_t)(PD_PPS_MIN_MV * PD_PPS_UVP_PERMILLE / 1000u);
+    pd_status.contract_pps = 1u;
+    pd_status.pps_cl_ma    = cl_ma;
+}
+
+/* Back to the fixed-contract settings: a fixed request, VBUS off (detach,
+ * Hard Reset). */
+static void pps_leave(void)
+{
+    if (!pps_active)
+    {
+        return;
+    }
+    pps_active            = false;
+    pps_low_active        = false;
+    regulator_cl_uvp_mv   = 0u;
+    regulator_ccm_ilim_ma = pps_saved_ilim_ma;
+    pd_status.contract_pps = 0u;
+    pd_status.pps_cl_ma    = 0u;
+}
 
 static bool output_switch_closed(void)
 {
@@ -106,8 +145,11 @@ uint32_t pd_vbus_wait_in_range(uint32_t target_mv, uint32_t timeout_ms)
         /* The ramp must be done, not just passing through the window: a
          * 28 V ramp into 25 ohm reached 27.3 V, got PS_RDY, then sagged
          * (2026-10-15). */
+        /* PPS: or in Current Limit, where V_out is wherever the load
+         * folds it (R3.2 7.1.4.2.1). */
         bool ok = output_switch_closed() && regulator_commanded_mv == target_mv &&
-                  v + tol_mv >= target_mv && v <= target_mv + tol_mv;
+                  ((v + tol_mv >= target_mv && v <= target_mv + tol_mv) ||
+                   (pps_active && regulator_ccm_limiting));
         in_range = ok ? in_range + 1u : 0u;
         if (in_range >= 5u)              /* 5 consecutive 2 ms samples */
         {
@@ -160,8 +202,11 @@ void pd_vbus_poll(void)
         const uint32_t set = regulator_commanded_mv;
         const uint32_t v   = adc_measurements.v_out_mv;
         const uint32_t tol = set * PD_VBUS_LOST_PCT / 100u;
+        /* PPS in Current Limit: the fold is the contract, vPpsShutdown below
+         * is the floor. */
+        const bool cl = pps_active && regulator_ccm_limiting;
         bool lost = DPM_Params[USBPD_PORT_0].PE_Power == USBPD_POWER_EXPLICITCONTRACT &&
-                    regulator_get_state() == REGULATOR_STATE_RUNNING && closed &&
+                    regulator_get_state() == REGULATOR_STATE_RUNNING && closed && !cl &&
                     v + tol < set;   /* low side only: above is OVP's (and a
                                         down-slew without reverse flow lags) */
         if (!lost)
@@ -178,6 +223,26 @@ void pd_vbus_poll(void)
             vbus_lost_active = false;
             pd_vbus_lost_resets++;
             pd_status_event(PD_EV_VBUS_LOST);
+            (void)USBPD_DPM_RequestHardReset(USBPD_PORT_0);
+        }
+
+        bool low = DPM_Params[USBPD_PORT_0].PE_Power == USBPD_POWER_EXPLICITCONTRACT &&
+                   regulator_get_state() == REGULATOR_STATE_RUNNING && closed && cl &&
+                   v < PD_PPS_MIN_MV * PD_PPS_SHUTDOWN_PERMILLE / 1000u;
+        if (!low)
+        {
+            pps_low_active = false;
+        }
+        else if (!pps_low_active)
+        {
+            pps_low_active     = true;
+            pps_low_since_tick = HAL_GetTick();
+        }
+        else if ((HAL_GetTick() - pps_low_since_tick) >= PD_PPS_SHUTDOWN_MS)
+        {
+            pps_low_active = false;
+            pd_status.pps_shutdown_resets++;
+            pd_status_event(PD_EV_PPS_SHUTDOWN);
             (void)USBPD_DPM_RequestHardReset(USBPD_PORT_0);
         }
     }
@@ -277,6 +342,7 @@ int32_t BSP_USBPD_PWR_VBUSOff(uint32_t Instance)
         return BSP_ERROR_NONE;
     }
     pd_interface_notify_disconnect();   /* target 0, regulator_stop(): switch open, OUTPUT_DIS on */
+    pps_leave();
     vbus_off_tick = HAL_GetTick();
     vbus_seen_on  = false;
     return BSP_ERROR_NONE;
@@ -308,8 +374,38 @@ int32_t BSP_USBPD_PWR_VBUSSetVoltage_Fixed(uint32_t Instance,
         dry_vbus_mv = VbusTargetInmv;
         return BSP_ERROR_NONE;
     }
+    pps_leave();
     pd_interface_notify_voltage_contract(VbusTargetInmv);
     return BSP_ERROR_NONE;
+}
+
+/* PPS: OperatingCurrent is the Current Limit (pd_policy_pps_cl_ma). */
+int32_t BSP_USBPD_PWR_VBUSSetVoltage_APDO(uint32_t Instance,
+                                          uint32_t VbusTargetInmv,
+                                          uint32_t OperatingCurrent,
+                                          int32_t Delta)
+{
+    (void)Delta;
+    if (Instance >= USBPD_PWR_INSTANCES_NBR) { return BSP_ERROR_WRONG_PARAM; }
+    if (pd_policy_pps_position() == 0u ||
+        VbusTargetInmv < PD_PPS_MIN_MV || VbusTargetInmv > PD_PPS_MAX_MV ||
+        OperatingCurrent == 0u || OperatingCurrent > PD_PPS_MAX_MA)
+    {
+        return BSP_ERROR_WRONG_PARAM;
+    }
+    if (DRY_RUN)
+    {
+        dry_vbus_mv = VbusTargetInmv;
+        return BSP_ERROR_NONE;
+    }
+    pps_enter(OperatingCurrent);
+    pd_interface_notify_voltage_contract(VbusTargetInmv);
+    return BSP_ERROR_NONE;
+}
+
+bool pd_vbus_pps_active(void)
+{
+    return pps_active;
 }
 
 int32_t BSP_USBPD_PWR_VBUSGetVoltage(uint32_t Instance, uint32_t *pVoltage)

@@ -173,14 +173,16 @@ fn handle(text: &str) {
     match words.next() {
         Some("status") | Some("?") => with_state(|s| {
             emit!(
-                "STATUS attached={} epr_mode={} target_mv={} target_ma={} contract_pos={} contract_mv={} contract_ma={} contracts={} hard_resets={} epr_failures={} vbus_mv={} vbus_sat={} tcpp_ok={} tcpp_fault={} tcpp_flags=0x{:02x} tcpp_ack=0x{:02x} hold={}",
+                "STATUS attached={} epr_mode={} target_mv={} target_ma={} target_pps={} contract_pos={} contract_mv={} contract_ma={} contract_pps={} contracts={} hard_resets={} epr_failures={} vbus_mv={} vbus_sat={} tcpp_ok={} tcpp_fault={} tcpp_flags=0x{:02x} tcpp_ack=0x{:02x} hold={}",
                 s.attached.unwrap_or("none"),
                 s.epr_mode as u8,
                 s.target_mv,
                 s.target_ma,
+                s.target_pps as u8,
                 s.contract.map_or(0, |c| c.position),
                 s.contract.map_or(0, |c| c.mv),
                 s.contract.map_or(0, |c| c.ma),
+                s.contract.map_or(0, |c| c.pps as u8),
                 s.contracts,
                 s.hard_resets,
                 s.epr_failures,
@@ -204,9 +206,10 @@ fn handle(text: &str) {
             });
             emit!("END");
         }
-        Some("req") => {
+        Some(cmd @ ("req" | "pps")) => {
+            let pps = cmd == "pps";
             let Some(mv) = parse(words.next()) else {
-                emit!("ERR usage: req <mV> [mA]");
+                emit!("ERR usage: {} <mV> [mA]", cmd);
                 return;
             };
             let ma = parse(words.next()).unwrap_or_else(|| with_state(|s| s.target_ma));
@@ -217,6 +220,7 @@ fn handle(text: &str) {
             let attached = with_state(|s| {
                 s.target_mv = mv;
                 s.target_ma = ma;
+                s.target_pps = pps;
                 s.attached.is_some()
             });
             if attached { send(Cmd::Request) } else { emit!("OK target stored for the next attach") }
@@ -257,7 +261,7 @@ fn handle(text: &str) {
             }
         }
         Some("version") => emit!("VERSION pd-sink-g431 {}", VERSION),
-        Some("help") => emit!("OK commands: status caps req <mV> [mA] epr <W> eprexit getcaps tcpp [<ctrl hex>] rd off|cc1|cc2|both version"),
+        Some("help") => emit!("OK commands: status caps req <mV> [mA] pps <mV> [mA] epr <W> eprexit getcaps tcpp [<ctrl hex>] rd off|cc1|cc2|both version"),
         _ => emit!("ERR unknown command (help)"),
     }
 }

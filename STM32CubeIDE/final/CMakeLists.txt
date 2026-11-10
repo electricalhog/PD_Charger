@@ -76,6 +76,9 @@ option(PD_BENCH_15V "Offer the 15 V PDO" OFF)
 option(PD_BENCH_20V "Offer the 20 V PDO (needs PD_BENCH_15V)" OFF)
 # Bench: a non-standard 24 V fixed PDO, in the buck-boost band at 24 V in.
 option(PD_BENCH_24V "Offer a 24 V fixed PDO (bench only, not in the spec)" OFF)
+# Bench: one SPR PPS APDO (5 V to 11/16/21 V, Current Limit in CCM and DCM),
+# see PD_SRC_APDO_PPS_ENABLE in Core/Inc/pd_bench_config.h and plans/pps.md.
+option(PD_BENCH_PPS "Offer an SPR PPS APDO" OFF)
 # Bench: offer a 28 V fixed EPR PDO (position 8).  Needs VCONN for the
 # e-marker check; see PD_EPR_PDO_28V_ENABLE in Core/Inc/pd_bench_config.h.
 option(PD_BENCH_EPR_28V "Offer the 28 V EPR PDO (bench, needs PD_VCONN)" OFF)
@@ -127,6 +130,12 @@ if(PD_BENCH_20V)
 endif()
 if(PD_BENCH_24V)
     target_compile_definitions(stm32cubemx INTERFACE PD_BENCH_24V=1)
+endif()
+if(PD_BENCH_PPS)
+    if(NOT PD_VBUS_PATH_CHARGER)
+        message(FATAL_ERROR "PD_BENCH_PPS needs PD_VBUS_PATH_CHARGER")
+    endif()
+    target_compile_definitions(stm32cubemx INTERFACE PD_BENCH_PPS=1)
 endif()
 if(PD_BENCH_EPR_28V)
     if(NOT PD_VCONN)

@@ -17,7 +17,7 @@ from .config import ToolError
 from .serialmon import list_ports
 
 TERMINAL = ("OK", "ERR", "END", "STATUS", "VERSION")
-ACTUATING = {"req", "epr", "eprexit", "getcaps"}
+ACTUATING = {"req", "pps", "epr", "eprexit", "getcaps"}
 
 
 def parse_line(line: str) -> dict:

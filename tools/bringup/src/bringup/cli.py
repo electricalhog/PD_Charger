@@ -335,7 +335,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # bench USB-PD sink (bench/pd-sink-g431)
     g = sub.add_parser("sink", help="send one command to the NUCLEO-G431RB PD sink over its VCP "
-                                    "(status, caps, req MV [MA], epr W, eprexit, getcaps, version)")
+                                    "(status, caps, req MV [MA], pps MV [MA], epr W, eprexit, getcaps, version)")
     g.add_argument("words", nargs="+", help="the sink command, e.g. `req 9000 400`")
     g.add_argument("--timeout", type=float, default=2.0)
     g.add_argument("--until", default=None, help="after the reply, wait for this EVT (e.g. contract)")

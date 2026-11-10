@@ -26,6 +26,10 @@ static uint32_t spr_pdo[PD_POLICY_MAX_SPR_PDO];
 static uint32_t spr_count;
 static uint32_t epr_pdo[PD_POLICY_MAX_EPR_PDO];
 static uint32_t epr_count;
+static uint32_t pps_position;   /* 0: no PPS APDO */
+
+/* iPpsCLMin, written over SWD for bench folds below 1 A (pd_bench_config.h). */
+volatile uint32_t pd_pps_cl_min_ma = PD_PPS_CL_MIN_MA;
 
 /* PDO 1 bits that only exist from PD 3.0 on (cleared for a PD 2.0 partner). */
 #if defined(USBPDCORE_EPR)
@@ -39,6 +43,40 @@ static uint32_t epr_count;
 #define RDO_CAPABILITY_MISMATCH(rdo) (((rdo) >> 26) & 0x1u)
 #define RDO_OPERATING_10MA(rdo)     (((rdo) >> 10) & 0x3FFu)
 #define RDO_MAX_OPERATING_10MA(rdo) ((rdo) & 0x3FFu)
+/* PPS RDO fields (Table 6.25) */
+#define RDO_PPS_20MV(rdo)           (((rdo) >> 9) & 0xFFFu)
+#define RDO_PPS_50MA(rdo)           ((rdo) & 0x7Fu)
+
+static bool is_pps_apdo(uint32_t pdo)
+{
+    return (pdo & USBPD_PDO_TYPE_Msk) == USBPD_PDO_TYPE_APDO &&
+           ((pdo & USBPD_PDO_SRC_APDO_PPS_Msk) >> USBPD_PDO_SRC_APDO_PPS_Pos) == USBPD_PDO_SRC_APDO_PPS;
+}
+
+static uint32_t pps_apdo(uint32_t min_mv, uint32_t max_mv, uint32_t ma)
+{
+    return USBPD_PDO_TYPE_APDO
+         | (USBPD_PDO_SRC_APDO_PPS << USBPD_PDO_SRC_APDO_PPS_Pos)
+         | USBPD_PDO_SRC_APDO_PPS_PWR_LIMITED_CLEAR
+         | (((max_mv / 100u) << USBPD_PDO_SRC_APDO_MAX_VOLTAGE_Pos) & USBPD_PDO_SRC_APDO_MAX_VOLTAGE_Msk)
+         | (((min_mv / 100u) << USBPD_PDO_SRC_APDO_MIN_VOLTAGE_Pos) & USBPD_PDO_SRC_APDO_MIN_VOLTAGE_Msk)
+         | ((ma / 50u) & USBPD_PDO_SRC_APDO_MAX_CURRENT_Msk);
+}
+
+static uint32_t apdo_max_mv(uint32_t pdo)
+{
+    return ((pdo & USBPD_PDO_SRC_APDO_MAX_VOLTAGE_Msk) >> USBPD_PDO_SRC_APDO_MAX_VOLTAGE_Pos) * 100u;
+}
+
+static uint32_t apdo_min_mv(uint32_t pdo)
+{
+    return ((pdo & USBPD_PDO_SRC_APDO_MIN_VOLTAGE_Msk) >> USBPD_PDO_SRC_APDO_MIN_VOLTAGE_Pos) * 100u;
+}
+
+static uint32_t apdo_max_ma(uint32_t pdo)
+{
+    return (pdo & USBPD_PDO_SRC_APDO_MAX_CURRENT_Msk) * 50u;
+}
 
 static uint32_t fixed_pdo(uint32_t mv, uint32_t ma)
 {
@@ -47,8 +85,10 @@ static uint32_t fixed_pdo(uint32_t mv, uint32_t ma)
          | ((ma / 10u) & USBPD_PDO_SRC_FIXED_MAX_CURRENT_Msk);
 }
 
+/* Voltage of a fixed PDO, the maximum of a PPS APDO. */
 static uint32_t pdo_mv(uint32_t pdo)
 {
+    if (is_pps_apdo(pdo)) { return apdo_max_mv(pdo); }
     return ((pdo & USBPD_PDO_SRC_FIXED_VOLTAGE_Msk) >> USBPD_PDO_SRC_FIXED_VOLTAGE_Pos) * 50u;
 }
 
@@ -85,6 +125,13 @@ void pd_policy_init(void)
     if (PD_SRC_PDO_15V_ENABLE) { spr_pdo[spr_count++] = fixed_pdo(15000u, PD_SRC_MAX_CURRENT_MA); }
     if (PD_SRC_PDO_20V_ENABLE) { spr_pdo[spr_count++] = fixed_pdo(20000u, PD_SRC_MAX_CURRENT_MA); }
     if (PD_SRC_PDO_24V_ENABLE) { spr_pdo[spr_count++] = fixed_pdo(24000u, PD_SRC_MAX_CURRENT_MA); }
+    /* APDOs follow the fixed PDOs (R3.2 6.4.1). */
+    pps_position = 0u;
+    if (PD_SRC_APDO_PPS_ENABLE)
+    {
+        spr_pdo[spr_count++] = pps_apdo(PD_PPS_MIN_MV, PD_PPS_MAX_MV, PD_PPS_MAX_MA);
+        pps_position = spr_count;
+    }
 
 #if defined(USBPDCORE_EPR)
     if (PD_EPR_ENABLE && PD_EPR_PDO_28V_ENABLE)
@@ -108,6 +155,7 @@ void pd_policy_init(void)
     pd_status.lib_epr       = 1u;
     pd_status.epr_offered   = PD_EPR_ENABLE ? 1u : 0u;
 #endif
+    pd_status.pps_position  = pps_position;
     pd_status.spr_pdo_count = spr_count;
     pd_status.epr_pdo_count = epr_count;
     for (uint32_t i = 0u; i < spr_count; i++) { pd_status.spr_pdo[i] = spr_pdo[i]; }
@@ -164,6 +212,34 @@ PdRdoResult pd_policy_evaluate_rdo(uint32_t rdo, bool epr_mode, PdContract *cont
     {
         result = PD_RDO_EPR_OUTSIDE_EPR;
     }
+    else if (is_pps_apdo(pdo))
+    {
+        /* PPS RDO: voltage in 20 mV units, operating current in 50 mA. */
+        uint32_t mv = RDO_PPS_20MV(rdo) * 20u;
+        uint32_t ma = RDO_PPS_50MA(rdo) * 50u;
+        if (epr_mode)
+        {
+            result = PD_RDO_PPS_IN_EPR;
+        }
+        else if (mv < apdo_min_mv(pdo) || mv > apdo_max_mv(pdo))
+        {
+            result = PD_RDO_PPS_VOLTAGE;
+        }
+        else if (ma > apdo_max_ma(pdo))
+        {
+            result = PD_RDO_OVER_CURRENT;
+        }
+        else
+        {
+            contract->pdo          = pdo;
+            contract->position     = position;
+            contract->voltage_mv   = mv;
+            contract->operating_ma = ma;
+            contract->max_ma       = pd_policy_pps_cl_ma(ma);
+            contract->pps          = true;
+            result = PD_RDO_ACCEPT;
+        }
+    }
     else if ((pdo & USBPD_PDO_TYPE_Msk) != USBPD_PDO_TYPE_FIXED)
     {
         result = PD_RDO_NOT_FIXED;
@@ -180,6 +256,7 @@ PdRdoResult pd_policy_evaluate_rdo(uint32_t rdo, bool epr_mode, PdContract *cont
         contract->voltage_mv   = pdo_mv(pdo);
         contract->operating_ma = RDO_OPERATING_10MA(rdo) * 10u;
         contract->max_ma       = RDO_MAX_OPERATING_10MA(rdo) * 10u;
+        contract->pps          = false;
         result = PD_RDO_ACCEPT;
     }
 
@@ -205,6 +282,17 @@ uint32_t pd_policy_max_offered_mv(void)
         if (pdo_mv(epr_pdo[i]) > max_mv) { max_mv = pdo_mv(epr_pdo[i]); }
     }
     return max_mv;
+}
+
+uint32_t pd_policy_pps_position(void)
+{
+    return pps_position;
+}
+
+uint32_t pd_policy_pps_cl_ma(uint32_t operating_ma)
+{
+    uint32_t cl_min = pd_pps_cl_min_ma;
+    return (operating_ma > cl_min) ? operating_ma : cl_min;
 }
 
 void pd_status_event(uint32_t code)

@@ -936,11 +936,12 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
  *                        under the 9 A comparator).  Until 2026-10-21 it
  *                        was 3.3 A on a single IL_MON conversion per PID
  *                        cycle, which read nothing usable in CCM
- * CCM_ILIM_MA_DEFAULT    regulator_ccm_ilim_ma, the current limit in CCM
- *                        (0: off), on CCM's current (CCM_ILIM_SRC_DEFAULT).
- *                        buck_ccm.h: the duty is built on
- *                        min(V_ref, v_lim), v_lim += kl (I_lim - I) dt,
- *                        the voltage integrator held while it limits
+ * CCM_ILIM_MA_DEFAULT    regulator_ccm_ilim_ma, the current limit (0: off),
+ *                        on CCM's current (CCM_ILIM_SRC_DEFAULT), in CCM
+ *                        and, since 2026-11-06, DCM (regulator.c step 5d).
+ *                        buck_ccm.h: the loop tracks min(V_ref, v_lim),
+ *                        v_lim += kl (I_lim - I) dt; in CCM the voltage
+ *                        integrator is held while it limits
  * CCM_ILIM_KL_DEFAULT    regulator_ccm_ilim_kl [V/(A s)]: the loop gain is
  *                        kl / the load's incremental resistance, so it is
  *                        set for a battery behind the output switch (45
@@ -960,7 +961,44 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
  *                        (1.22 x the clipped-triangle mean - 0.33 A).  ID_MON
  *                        reads to 5.5 A (ADC_ID_FULL_SCALE_MA), and sees the
  *                        output, not L1 (the board ceramics are before it)
- * ID_GAIN_PERMILLE_DEFAULT  regulator_id_gain_permille: 1 / 1.050
+ * ID_GAIN_PERMILLE_DEFAULT  regulator_id_gain_permille and
+ * ID_OFFSET_MA_DEFAULT      regulator_id_offset_ma: I = raw x gain + offset.
+ *                        Bench 2026-11-06 (bench/results/2026-11-06/
+ *                        ccm_transitions), DCM at 200 kHz into 25.3 ohm,
+ *                        5-21 V, 24 points: raw = 0.944 I + 51 mA, so
+ *                        1.059 and -54 mA (residuals within 15 mA; 952 / 0,
+ *                        from forced CCM at 400 kHz on 2026-10-21, left
+ *                        -41..+28 mA)
+ * ID_CCM_ADD_*           Buck CCM at 200 kHz reads ID_MON low by up to
+ *                        167 mA (2026-11-06: same V_out and resistor in DCM
+ *                        and forced CCM, 5-21 V at 24.4 V in; within 20 mA
+ *                        of the same with 3.5-7 W more load, and with the
+ *                        refresh every 2nd period).  The raw reading gets
+ *                        ID_CCM_ADD_MA[] added, by duty V_out / V_in (per
+ *                        mille, from ID_CCM_ADD_D0 in ID_CCM_ADD_STEP
+ *                        steps, linear between, held past the ends), while
+ *                        regulator_id_ccm_corr and buck CCM run at 200 kHz.
+ *                        Cause not found (needs a probe on ID_MON, PC1);
+ *                        only calibrated at 24.4 V in.
+ * CCM_HANDOVER_DEFAULT   regulator_ccm_handover: 1 puts L1 on the steady
+ *                        ripple in one period at a buck CCM entry and back
+ *                        to 0 A at an exit (buck_ccm.h, CCM handover), and
+ *                        the exit's DCM restart at the measured load
+ *                        (no 30 % floor) plus what DCM's command runs
+ *                        above it (CCM_EXIT_DCM_ADD_*); 0 as before
+ *                        2026-11-06
+ * CCM_HANDOVER_VFW_MV    The freewheel drop (Q2, Q3) in the handover's
+ *                        valley estimate: 0.8 V puts it within 0.05 A of
+ *                        the valleys measured at 9 / 15 / 20 V (bench
+ *                        2026-11-06, 25.3 ohm; 0 V left it 0.09-0.20 A
+ *                        shallow; SW1 sits at -0.6..-0.9 V while Q2 is on)
+ * CCM_EXIT_DCM_ADD_*     Steady DCM's I_cmd runs above the load (its model
+ *                        has no diode drops): 169 mA at 5 V to 71-83 mA at
+ *                        15-20 V (bench 2026-11-06, 25.3 ohm, 24.4 V in).
+ *                        A handover exit restarts DCM at CCM's current
+ *                        plus this, learned at the entry (I_cmd - the
+ *                        measured current) when the setpoint has not moved
+ *                        since, else this table by V_out
  * CCM_PEAK_MA_DEFAULT    regulator_ccm_peak_ma: the peak comparator's
  *                        threshold (COMP1 -> EEV4 ends Q1) while in CCM;
  *                        0 keeps the 9 A backstop.  A per-period bound is
@@ -1037,7 +1075,16 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
 #define CCM_ILIM_KL_DEFAULT      400.0f  /* [V/(A s)] */
 #define CCM_PEAK_MA_DEFAULT      0u      /* 0 = the PEAK_PROTECT backstop */
 #define CCM_ILIM_SRC_DEFAULT     1u      /* ID_MON */
-#define ID_GAIN_PERMILLE_DEFAULT 952
+#define ID_GAIN_PERMILLE_DEFAULT 1059
+#define ID_OFFSET_MA_DEFAULT     (-54)
+#define ID_CCM_ADD_D0            200u
+#define ID_CCM_ADD_STEP          50u
+#define ID_CCM_ADD_MA            { 1, 6, 12, 21, 39, 64, 91, 119, 142, 160, 164, 163, 142, 103 }   /* D 0.20-0.85 */
+#define CCM_HANDOVER_DEFAULT     1u
+#define CCM_HANDOVER_VFW_MV      800u    /* freewheel drop in the valley estimate */
+#define CCM_EXIT_DCM_ADD_MV      { 5000, 7000, 9000, 12000, 15000, 17000, 20000 }
+#define CCM_EXIT_DCM_ADD_MA      {  169,  158,  150,   107,    83,    71,    82 }
+#define CCM_EXIT_DCM_LEARN_MV    500u    /* the entry's value holds while the setpoint is within this */
 #define CCM_MODE_SETTLE          4u      /* PID cycles in DCM before a mode change after CCM */
 #define CCM_DUTY_ENTER_PCT       100u    /* CCM only while V_ref <= this % of V_in x D_max */
 /* Boost forced CCM (buck_ccm.h, plans/regulation-strategy.md 3.5): 200 kHz,
@@ -1353,6 +1400,17 @@ _Static_assert(PULSE_SKIP_ABOVE_MV * 100u < SETPOINT_MIN_MV * (OVP_RELATIVE_PCT 
  * Range  : [20, 90]
  */
 #define UVP_RELATIVE_PCT 50u
+
+/**
+ * VIN_START_MIN_MV — Least V_in (VS_MON, input path on) regulator_start()
+ * accepts; below it the start is refused and the regulator stays IDLE.
+ * Units  : millivolts
+ * Value  : 9000, the brown-out level in plans/regulation-strategy.md 3.7.
+ *          The stage has only run from the 24 V supply.
+ * Purpose: 2026-11-09, the G474 booted before the bench supply and a start
+ *          at V_in 33 mV latched SW_UVP, which only clear-fault released.
+ */
+#define VIN_START_MIN_MV 9000u
 
 /**
  * MODE_HYSTERESIS_MV — Hysteresis band around V_in ≈ V_out for mode selection.

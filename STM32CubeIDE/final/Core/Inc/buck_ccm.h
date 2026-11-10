@@ -127,6 +127,28 @@ void buck_ccm_timing_ticks(const BuckCcmTimingCfg *c, uint32_t t_on_ticks, BuckC
 /** Refresh share r: the fraction of time L1 sees 0 V during the refresh. */
 float buck_ccm_refresh_share(const BuckCcmTimingCfg *c);
 
+/* CCM handover (plans/ccm-handover.md, 2026-11-06).  The period starts in
+ * Q2's freewheel with Q4's refresh, so in steady buck CCM L1 is at its
+ * valley at the period boundary; DCM leaves it at 0 A there.  One period
+ * whose on-time differs by dt moves the boundary current by V_in dt / L
+ * (the rest of the period's volt-seconds are unchanged), so the entry's
+ * first period takes dt = I_v L / V_in (0 -> I_v) and the exit's last one
+ * dt = -I_v L / V_in (I_v -> 0). */
+
+/** L1's current at the period boundary for a mean of i_load_a, from the
+ *  programmed edges: flat while Q4 refreshes (to b_cmp3, averaged over the
+ *  refresh interval), down at -(v_out + v_fw) until Q1 turns on (a_cmp4),
+ *  up during the on-time, down again to the period end.  v_fw is the
+ *  freewheel path's drop (Q2 and Q3).  The rise is taken as the sum of the
+ *  two falls (steady state), so only the fall voltage and the edge times
+ *  enter, not the losses that lengthen the on-time.  Negative at light
+ *  load [A]. */
+float buck_ccm_boundary_a(const BuckCcmTimingCfg *c, const BuckCcmTiming *t, float i_load_a, float v_out_v,
+                          float v_fw_v, float l_h);
+/** The one-period on-time change [HRTIM ticks, signed] that moves L1's
+ *  boundary current by di_a: di L / v_in. */
+int32_t buck_ccm_handover_ticks(float di_a, float v_in_v, float l_h);
+
 /** Integrator value for a bumpless entry from DCM at load current i_load_a:
  *  the series-resistance drop plus the dead-time drop (body diodes at vsd_v). */
 float buck_ccm_u_initial(const BuckCcmTimingCfg *c, float i_load_a, float r_series_ohm, float vsd_v);

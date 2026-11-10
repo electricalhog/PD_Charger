@@ -14,7 +14,7 @@ use uom::si::electric_potential::millivolt;
 use uom::si::power::{milliwatt, watt};
 use usbpd::protocol_layer::message::data::epr_mode::DataEnterFailed;
 use usbpd::protocol_layer::message::data::request::{
-    EprRequestDataObject, FixedVariableSupply, PowerSource,
+    EprRequestDataObject, FixedVariableSupply, PowerSource, Pps,
 };
 use usbpd::protocol_layer::message::data::source_capabilities::{Augmented, PowerDataObject, SourceCapabilities};
 use usbpd::sink::device_policy_manager::{DevicePolicyManager, Event};
@@ -206,12 +206,39 @@ fn build_request(
     caps: &SourceCapabilities,
     target_mv: u32,
     target_ma: u32,
+    target_pps: bool,
     epr_mode: bool,
 ) -> Option<(PowerSource, Contract)> {
     let source_epr_capable = matches!(
         caps.pdos().first(),
         Some(PowerDataObject::FixedSupply(f)) if f.epr_mode_capable()
     );
+    if target_pps {
+        // SPR PPS only, and not in EPR mode (USB PD R3.2 2.8.2).
+        if epr_mode {
+            return None;
+        }
+        for (i, pdo) in caps.pdos().iter().enumerate() {
+            let PowerDataObject::Augmented(Augmented::Spr(p)) = pdo else { continue };
+            let (min_mv, max_mv) = (p.min_voltage().get::<millivolt>(), p.max_voltage().get::<millivolt>());
+            if !(min_mv..=max_mv).contains(&target_mv) {
+                continue;
+            }
+            let position = (i + 1) as u8;
+            let max_ma = p.max_current().get::<milliampere>();
+            let ma = target_ma.min(max_ma) / 50 * 50;
+            let rdo = Pps(0)
+                .with_object_position(position)
+                .with_no_usb_suspend(true)
+                .with_epr_mode_capable(source_epr_capable)
+                .with_capability_mismatch(target_ma > max_ma)
+                .with_raw_output_voltage((target_mv / 20) as u16)
+                .with_raw_operating_current((ma / 50) as u16);
+            let contract = Contract { position, mv: target_mv / 20 * 20, ma, epr_request: false, pps: true };
+            return Some((PowerSource::Pps(rdo), contract));
+        }
+        return None;
+    }
     for (i, pdo) in caps.pdos().iter().enumerate() {
         let position = (i + 1) as u8;
         if pdo.is_zero_padding() || (position >= 8 && !epr_mode) {
@@ -231,7 +258,7 @@ fn build_request(
             .with_capability_mismatch(target_ma > max_ma)
             .with_raw_operating_current(raw)
             .with_raw_max_operating_current(raw);
-        let contract = Contract { position, mv: target_mv, ma, epr_request: epr_mode };
+        let contract = Contract { position, mv: target_mv, ma, epr_request: epr_mode, pps: false };
         let source = if epr_mode {
             PowerSource::EprRequest(EprRequestDataObject { rdo: rdo.0, pdo: *pdo })
         } else {
@@ -293,22 +320,25 @@ impl DevicePolicyManager for Device {
         // held off until the contract that follows.  No waiting here: the
         // Request must go out within tSenderResponse.
         let epr = self.note_caps(caps);
-        let (target_mv, target_ma) = with_state(|s| {
+        // Also the PE's SinkPPSPeriodic re-request (every 5 s in a PPS
+        // contract): the same target, so the same RDO.
+        let (target_mv, target_ma, target_pps) = with_state(|s| {
             s.hold = true;
-            (s.target_mv, s.target_ma)
+            (s.target_mv, s.target_ma, s.target_pps)
         });
-        let chosen = build_request(caps, target_mv, target_ma, epr).or_else(|| {
-            emit!("EVT warn target_mv={} not offered, requesting 5000", target_mv);
-            build_request(caps, 5000, target_ma, epr)
+        let chosen = build_request(caps, target_mv, target_ma, target_pps, epr).or_else(|| {
+            emit!("EVT warn target_mv={} pps={} not offered, requesting 5000", target_mv, target_pps as u8);
+            build_request(caps, 5000, target_ma, false, epr)
         });
         match chosen {
             Some((source, contract)) => {
                 emit!(
-                    "EVT request pos={} mv={} ma={} epr_request={}",
+                    "EVT request pos={} mv={} ma={} epr_request={} pps={}",
                     contract.position,
                     contract.mv,
                     contract.ma,
-                    contract.epr_request as u8
+                    contract.epr_request as u8,
+                    contract.pps as u8
                 );
                 self.pending = Some(contract);
                 source
@@ -334,6 +364,7 @@ impl DevicePolicyManager for Device {
             mv: 0,
             ma: 0,
             epr_request: false,
+            pps: false,
         });
         with_state(|s| {
             s.contract = Some(contract);
@@ -341,11 +372,12 @@ impl DevicePolicyManager for Device {
             s.hold = false;
         });
         emit!(
-            "EVT contract pos={} mv={} ma={} epr_mode={}",
+            "EVT contract pos={} mv={} ma={} epr_mode={} pps={}",
             contract.position,
             contract.mv,
             contract.ma,
-            with_state(|s| s.epr_mode) as u8
+            with_state(|s| s.epr_mode) as u8,
+            contract.pps as u8
         );
     }
 
@@ -386,17 +418,18 @@ impl DevicePolicyManager for Device {
             with_state(|s| s.hold = true);
             match cmd {
                 Cmd::Request => {
-                    let (mv, ma, epr) = with_state(|s| (s.target_mv, s.target_ma, s.epr_mode));
-                    match build_request(caps, mv, ma, epr) {
+                    let (mv, ma, pps, epr) = with_state(|s| (s.target_mv, s.target_ma, s.target_pps, s.epr_mode));
+                    match build_request(caps, mv, ma, pps, epr) {
                         Some((source, contract)) => {
-                            emit!("EVT request pos={} mv={} ma={} epr_request={}",
-                                  contract.position, contract.mv, contract.ma, contract.epr_request as u8);
+                            emit!("EVT request pos={} mv={} ma={} epr_request={} pps={}",
+                                  contract.position, contract.mv, contract.ma, contract.epr_request as u8,
+                                  contract.pps as u8);
                             self.pending = Some(contract);
                             return Event::RequestPower(source);
                         }
                         None => {
                             with_state(|s| s.hold = false);
-                            emit!("EVT error target_mv={} not in current capabilities", mv);
+                            emit!("EVT error target_mv={} pps={} not in current capabilities", mv, pps as u8);
                         }
                     }
                 }

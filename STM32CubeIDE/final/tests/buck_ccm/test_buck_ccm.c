@@ -948,6 +948,75 @@ static void test_band(void)
     boost_sim_cfg = NULL;
 }
 
+/* CCM handover (buck_ccm.h, 2026-11-06), switch-level with a stiff V_out at
+ * 200 kHz: L1 per period from the programmed edges (0 V while Q4 refreshes,
+ * V_in - V_out while Q1 is on, -V_out otherwise).  Entry: from DCM's 0 A, one
+ * period at t_on + buck_ccm_handover_ticks(I_v) must land on the steady
+ * valley; exit: from the valley, one period at t_on + ticks(-I_v) must end
+ * at 0 A.  Both within 5 % of the ripple. */
+static float handover_period(const BuckCcmTimingCfg *c, uint32_t t_on_ticks, float i0, float v_in, float v_out,
+                             float v_fw, float *mean)
+{
+    const float L = 4.7e-6f, tick = 1e-6f / (float)BUCK_CCM_TICKS_PER_US;
+    BuckCcmTiming t;
+    buck_ccm_timing_ticks(c, t_on_ticks, &t);
+    const float T = (float)c->period_ns * 1e-9f, t_ref = (float)t.b_cmp3 * tick;
+    const float t1 = (float)t.a_cmp4 * tick, t2 = (float)t.a_cmp2 * tick;
+    /* segments: [0, t_ref) flat, [t_ref, t1) -V_out, [t1, t2) V_in - V_out, [t2, T) -V_out */
+    const float seg_t[4] = { t_ref, t1 - t_ref, t2 - t1, T - t2 };
+    const float seg_v[4] = { 0.0f, -(v_out + v_fw), v_in - v_out, -(v_out + v_fw) };
+    float i = i0, area = 0.0f;
+    for (int k = 0; k < 4; k++)
+    {
+        const float i1 = i + seg_v[k] * seg_t[k] / L;
+        area += 0.5f * (i + i1) * seg_t[k];
+        i = i1;
+    }
+    if (mean) { *mean = area / T; }
+    return i;
+}
+
+static void test_handover(void)
+{
+    printf("CCM handover (200 kHz, stiff V_out, 24.4 V in):\n");
+    const BuckCcmTimingCfg c = { .period_ns = 5000u, .pulse_start_ns = 360u, .dt_ns = 20u, .refresh_ns = 300u,
+                                 .refresh_interval_ns = 5000u, .min_on_ns = 100u, .min_q2_end_ns = 60u };
+    const float L = 4.7e-6f, v_in = 24.4f, tick = 1e-6f / (float)BUCK_CCM_TICKS_PER_US;
+    const float vs[] = { 5.0f, 9.0f, 15.0f, 20.0f };
+    for (int j = 0; j < 8; j++)
+    {
+        for (int q = 0; q < 2; q++)
+        {
+            /* the second half with a 0.8 V freewheel drop (CCM_HANDOVER_VFW_MV) */
+            const float v = vs[j % 4], vfw = (j < 4) ? 0.0f : 0.8f, i_load = q ? 2.0f : v / 25.3f;
+            /* steady on-time: volt-second balance over the period */
+            BuckCcmTiming t0;
+            buck_ccm_timing(&c, 1000u, &t0);
+            const float T = 5e-6f, t_ref = (float)t0.b_cmp3 * tick;
+            const uint32_t ton = buck_ccm_ticks((uint32_t)(1e9f * (v + vfw) * (T - t_ref) / (v_in + vfw) + 0.5f));
+            float m0;
+            (void)handover_period(&c, ton, 0.0f, v_in, v, vfw, &m0);
+            const float iv_true = i_load - m0;                /* steady valley for this mean */
+            float ms;
+            const float drift = handover_period(&c, ton, iv_true, v_in, v, vfw, &ms) - iv_true;
+            BuckCcmTiming tt;
+            buck_ccm_timing_ticks(&c, ton, &tt);
+            const float di = (v_in - v) * (float)tt.t_on_ns * 1e-9f / L;
+            const float iv = buck_ccm_boundary_a(&c, &tt, i_load, v, vfw, L);
+            const int32_t de = buck_ccm_handover_ticks(iv, v_in, L), dx = buck_ccm_handover_ticks(-iv, v_in, L);
+            const float i_entry = handover_period(&c, (uint32_t)((int32_t)ton + de), 0.0f, v_in, v, vfw, NULL);
+            const float i_exit  = handover_period(&c, (uint32_t)((int32_t)ton + dx), iv_true, v_in, v, vfw, NULL);
+            printf("  %4.1f V %4.2f A fw %.1f V: ripple %.2f A, valley %+.3f A (model %+.3f), entry dt %+5.0f ns -> %+.3f A "
+                   "(none: 0 A, off %+.3f), exit dt %+5.0f ns -> %+.3f A\n",
+                   v, i_load, vfw, di, iv_true, iv, (float)de * tick * 1e9f, i_entry, -iv_true,
+                   (float)dx * tick * 1e9f, i_exit);
+            CHECK(fabsf(drift) < 0.01f * di, "handover %.0f V: steady drift %.3f A", v, drift);
+            CHECK(fabsf(i_entry - iv_true) < 0.05f * di, "handover entry %.0f V %.2f A: %.3f vs %.3f", v, i_load, i_entry, iv_true);
+            CHECK(fabsf(i_exit) < 0.05f * di, "handover exit %.0f V %.2f A: %.3f", v, i_load, i_exit);
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     (void)argc; (void)argv;
@@ -973,6 +1042,7 @@ int main(int argc, char **argv)
     test_unclip();
     test_limit();
     test_entry();
+    test_handover();
     test_boost();
     test_band();
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
