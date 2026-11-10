@@ -1017,6 +1017,105 @@ static void test_handover(void)
     }
 }
 
+/* No-reverse floor (BuckCcmState.v_floor_v, the battery-load build): a pack on
+ * VBUS behind a small series resistance with the reference 2 V under it.  The
+ * duty law alone drives L1's average current negative (power back into V_in);
+ * with the floor at the pack voltage it stays at 0 A or above.  Averaged
+ * plant, 1 us steps: buck L di/dt = n - r1 V_out, boost L di/dt =
+ * vin_r (1 - V_out / n), with V_out = V_pack + I R.  L is 50 x L1: the
+ * averaged plant updated once per 50 us PID cycle is not stable at 4.7 uH and
+ * 0.1 ohm, and this checks the sign of the current, not its dynamics. */
+static float floor_sim(bool boost, float v_floor)
+{
+    const BuckCcmTimingCfg c = boost
+        ? (BuckCcmTimingCfg){ .period_ns = 5000u, .pulse_start_ns = 360u, .dt_ns = 20u, .refresh_ns = 300u,
+                              .refresh_interval_ns = 5000u, .min_on_ns = 100u, .min_q2_end_ns = 60u }
+        : cfg(5000u, 20u);
+    const BuckCcmGains g = { .ki = 3142.0f, .kp = 0.1f, .u_min_v = -2.0f, .u_max_v = 2.0f, .dt_s = 50e-6f,
+                             .dt_lim_s = 50e-6f };
+    const float v_in = 24.4f, v_pack = boost ? 26.0f : 15.0f, r = 0.1f, l = 50.0f * 4.7e-6f;
+    const float r1 = 1.0f - buck_ccm_refresh_share(&c);
+    BuckCcmState s = { 0 };
+    buck_ccm_reset(&s, 0.0f, v_pack - 2.0f, v_pack);
+    float i = 0.0f, i_min = 0.0f;
+    for (int k = 0; k < 2000; k++)   /* 100 ms */
+    {
+        const float v_out = v_pack + i * r;
+        buck_ccm_limit(&s, &g, v_pack - 2.0f, v_out, i);
+        s.v_floor_v = v_floor;
+        const uint32_t ton = boost ? boost_ccm_update(&s, &g, &c, v_out, v_in)
+                                   : buck_ccm_update(&s, &g, &c, v_out, v_in);
+        const float d = (float)ton / (float)c.period_ns;
+        for (int j = 0; j < 50; j++)
+        {
+            const float vo = v_pack + i * r;
+            const float vl = boost ? v_in * r1 - (1.0f - d) * vo : d * v_in - r1 * vo;
+            i += vl / l * 1e-6f;
+            if (i < i_min) { i_min = i; }
+        }
+    }
+    return i_min;
+}
+
+/* The floor against a forward overshoot: L1 at 5 A into the pack with the limit
+ * at 2 A, the ceiling 1 V over the pack.  At the pack voltage the floor lets
+ * the limit pull the current down; at V_out filtered over 16 PID cycles (the
+ * first battery build) it holds L1 near where it is, since V_out = V_pack + I R
+ * follows the current (SW_OCP at a 2 A setting, bench 2026-11-09 section 9).
+ * Returns the mean I_L over the last 10 ms of 100 ms. */
+static float floor_overshoot_sim(bool boost, bool track_v_out)
+{
+    const BuckCcmTimingCfg c = boost
+        ? (BuckCcmTimingCfg){ .period_ns = 5000u, .pulse_start_ns = 360u, .dt_ns = 20u, .refresh_ns = 300u,
+                              .refresh_interval_ns = 5000u, .min_on_ns = 100u, .min_q2_end_ns = 60u }
+        : cfg(5000u, 20u);
+    const BuckCcmGains g = { .ki = 3142.0f, .kp = 0.1f, .u_min_v = -2.0f, .u_max_v = 2.0f, .dt_s = 50e-6f,
+                             .ilim_a = 2.0f, .kl = 400.0f, .dt_lim_s = 50e-6f };
+    const float v_in = 24.4f, v_pack = boost ? 26.0f : 15.0f, r = 0.24f, l = 50.0f * 4.7e-6f;
+    const float r1 = 1.0f - buck_ccm_refresh_share(&c);
+    BuckCcmState s = { 0 };
+    float i = 5.0f, v_filt = v_pack + i * r, i_sum = 0.0f;
+    buck_ccm_reset(&s, 0.0f, v_pack + 1.0f, v_filt);
+    for (int k = 0; k < 2000; k++)   /* 100 ms */
+    {
+        const float v_out = v_pack + i * r;
+        v_filt += (v_out - v_filt) / 16.0f;
+        buck_ccm_limit(&s, &g, v_pack + 1.0f, v_out, i);
+        s.v_floor_v = track_v_out ? v_filt : v_pack;
+        const uint32_t ton = boost ? boost_ccm_update(&s, &g, &c, v_out, v_in)
+                                   : buck_ccm_update(&s, &g, &c, v_out, v_in);
+        const float d = (float)ton / (float)c.period_ns;
+        for (int j = 0; j < 50; j++)
+        {
+            const float vo = v_pack + i * r;
+            const float vl = boost ? v_in * r1 - (1.0f - d) * vo : d * v_in - r1 * vo;
+            i += vl / l * 1e-6f;
+        }
+        if (k >= 1800) { i_sum += i; }
+    }
+    return i_sum / 200.0f;
+}
+
+static void test_floor(void)
+{
+    const float buck_off = floor_sim(false, 0.0f), buck_on = floor_sim(false, 15.0f);
+    const float boost_off = floor_sim(true, 0.0f), boost_on = floor_sim(true, 26.0f);
+    printf("no-reverse floor, reference 2 V under the pack: min I_L buck %.2f A (off) %.2f A (on), "
+           "boost %.2f A (off) %.2f A (on)\n", buck_off, buck_on, boost_off, boost_on);
+    CHECK(buck_off < -1.0f, "buck without the floor should reverse (min %.2f A)", buck_off);
+    CHECK(buck_on > -0.05f, "buck floor let L1 reverse to %.2f A", buck_on);
+    CHECK(boost_off < -1.0f, "boost without the floor should reverse (min %.2f A)", boost_off);
+    CHECK(boost_on > -0.05f, "boost floor let L1 reverse to %.2f A", boost_on);
+
+    const float buck_pack = floor_overshoot_sim(false, false), buck_track = floor_overshoot_sim(false, true);
+    const float boost_pack = floor_overshoot_sim(true, false), boost_track = floor_overshoot_sim(true, true);
+    printf("no-reverse floor, L1 from 5 A, limit 2 A: I_L after 100 ms buck %.2f A (floor at the pack) "
+           "%.2f A (at V_out), boost %.2f A / %.2f A\n", buck_pack, buck_track, boost_pack, boost_track);
+    CHECK(fabsf(buck_pack - 2.0f) < 0.1f, "buck floor at the pack: the limit should hold 2 A (%.2f A)", buck_pack);
+    CHECK(fabsf(boost_pack - 2.0f) < 0.1f, "boost floor at the pack: the limit should hold 2 A (%.2f A)", boost_pack);
+    CHECK(buck_track > 4.0f, "the floor at V_out should hold the overshoot (%.2f A): model no longer shows it", buck_track);
+}
+
 int main(int argc, char **argv)
 {
     (void)argc; (void)argv;
@@ -1045,6 +1144,7 @@ int main(int argc, char **argv)
     test_handover();
     test_boost();
     test_band();
+    test_floor();
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("buck_ccm: all checks passed\n");
     return 0;

@@ -104,6 +104,12 @@ typedef struct
     float i_prev_a;  /**< its value at the last update [A]                          */
     uint32_t t_on_ticks; /**< last update's on-time in HRTIM ticks (184 ps): 1 ns
                               of duty is 9.6 mV at 24 V, 0.2 A into a battery */
+    float v_floor_v; /**< no-reverse floor, set by the caller [V]; <= 0: off.  The
+                          duty never goes below the one that balances this V_out,
+                          so L1's average current cannot turn negative (a battery
+                          on VBUS would otherwise drive power back into V_in).  It
+                          must be the source's open-circuit voltage, not the
+                          loaded V_out, or it holds L1 at its present current */
 } BuckCcmState;
 
 static inline uint32_t buck_ccm_ticks(uint32_t ns)

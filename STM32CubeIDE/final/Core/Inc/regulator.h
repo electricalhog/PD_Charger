@@ -86,7 +86,8 @@ typedef enum
     REGULATOR_FAULT_SW_UVP         = 0x08u, /**< Software undervoltage protection */
     REGULATOR_FAULT_SW_VIN_RANGE   = 0x10u, /**< V_in out of range for mode */
     REGULATOR_FAULT_SW_BACKSTOP    = 0x20u, /**< Too many consecutive backstop events */
-    REGULATOR_FAULT_SW_OCP         = 0x40u  /**< Buck CCM: regulator_ccm_i_avg_ma over regulator_ccm_ocp_ma */
+    REGULATOR_FAULT_SW_OCP         = 0x40u, /**< Buck CCM: regulator_ccm_i_avg_ma over regulator_ccm_ocp_ma */
+    REGULATOR_FAULT_SW_VIN_RISE    = 0x80u  /**< Battery load: V_in rose BATTERY_VIN_RISE_MV over its start value */
 } RegulatorFaultSource;
 
 /**
@@ -225,6 +226,10 @@ extern volatile int16_t  regulator_il_gain_permille;
 extern volatile int16_t  regulator_il_offset_ma;
 extern volatile int16_t  regulator_id_gain_permille;
 extern volatile int16_t  regulator_id_offset_ma;
+/** IS_MON calibration (runtime): the input current is raw x gain / 1000 +
+ *  offset in step 5a (regulator_i_in_filt_ma, regulator_p_in_mw).       */
+extern volatile int16_t  regulator_is_gain_permille;
+extern volatile int16_t  regulator_is_offset_ma;
 extern volatile uint8_t  regulator_id_ccm_corr;
 extern volatile uint8_t  regulator_ccm_handover;
 extern volatile int16_t  regulator_ccm_entry_dt_ns;
@@ -287,6 +292,29 @@ extern volatile uint32_t regulator_fault_tick_ms;
  */
 extern volatile uint32_t regulator_start_low_vin_count;
 extern volatile uint32_t regulator_start_low_vin_mv;
+
+/**
+ * regulator_start_tim_fail_count — starts refused because the PID timer
+ * (TIM7) would not start; the regulator is stopped (IDLE).
+ */
+extern volatile uint32_t regulator_start_tim_fail_count;
+
+/**
+ * Battery-load build (BATTERY_LOAD, regulator_config.h):
+ * regulator_battery_ceiling_mv — the highest V_out (START / SET_VOLTAGE arg);
+ *   the target moves to it once the output switch closes.
+ * regulator_battery_pack_mv    — the pack as read by the last START (switch
+ *   closed, every FET off).
+ * regulator_battery_keepalive  — the host changes it at least every
+ *   BATTERY_KEEPALIVE_MS while RUNNING, or the regulator stops.
+ * regulator_battery_vin_start_mv — V_in at the start, the SW_VIN_RISE reference.
+ */
+extern volatile uint32_t regulator_battery_ceiling_mv;
+extern volatile uint32_t regulator_battery_pack_mv;
+extern volatile uint32_t regulator_battery_keepalive;
+extern volatile uint32_t regulator_battery_vin_start_mv;
+/** RUNNING stops for a missed keepalive (battery-load build). */
+extern volatile uint32_t regulator_battery_keepalive_stops;
 
 /**
  * regulator_pid_output_dac_counts — peak-current comparator threshold in DAC
@@ -436,7 +464,8 @@ typedef enum
  *
  * Triggers: NOW at the first sample; SWITCH when SWITCH_PULSE opens the output
  * switch; CEILING when the on-time reaches its window limit (step 6); ERROR
- * when |setpoint - V_out| exceeds the threshold.
+ * when |setpoint - V_out| exceeds the threshold; CCM on the first forced-CCM
+ * cycle (buck, boost or band).
  */
 #define REGULATOR_TRACE_LEN 2048u
 
@@ -445,7 +474,8 @@ typedef enum
     REGULATOR_TRACE_TRIG_NOW     = 0u,
     REGULATOR_TRACE_TRIG_SWITCH  = 1u,
     REGULATOR_TRACE_TRIG_CEILING = 2u,
-    REGULATOR_TRACE_TRIG_ERROR   = 3u
+    REGULATOR_TRACE_TRIG_ERROR   = 3u,
+    REGULATOR_TRACE_TRIG_CCM     = 4u
 } RegulatorTraceTrigger;
 
 typedef enum
@@ -563,8 +593,10 @@ typedef enum
     REGULATOR_SET_OUT_OF_RANGE = 1u, /**< outside SETPOINT_MIN_MV..SETPOINT_MAX_MV */
     REGULATOR_SET_NOT_IDLE     = 2u, /**< START only from IDLE                     */
     REGULATOR_SET_START_FAILED = 3u, /**< START left the regulator not RUNNING    */
-    REGULATOR_SET_PD_OWNS_VBUS = 4u  /**< PD_VBUS_PATH_CHARGER build: only a USB-PD
+    REGULATOR_SET_PD_OWNS_VBUS = 4u, /**< PD_VBUS_PATH_CHARGER build: only a USB-PD
                                           contract sets the output voltage        */
+    REGULATOR_SET_PACK_AT_CEILING = 5u /**< battery load: the pack read at or above
+                                            the ceiling, so START refused          */
 } RegulatorSetResult;
 
 typedef struct

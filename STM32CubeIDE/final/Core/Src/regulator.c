@@ -80,6 +80,18 @@
 #define OUTPUT_EN_WRITE(state) HAL_GPIO_WritePin(PIN_OUTPUT_EN_PORT, PIN_OUTPUT_EN_PIN, (state))
 #endif
 
+/* OUTPUT_DIS discharges VBUS after the output switch.  In the battery-load
+ * build (BATTERY_LOAD, regulator_config.h) a pack sits there and the
+ * discharge would short it, so it is never asserted.                      */
+#if defined(BATTERY_LOAD) && (BATTERY_LOAD)
+#define BATTERY 1u
+#define OUTPUT_DIS_WRITE(state) \
+    ((void)(state), HAL_GPIO_WritePin(PIN_OUTPUT_DIS_PORT, PIN_OUTPUT_DIS_PIN, GPIO_PIN_RESET))
+#else
+#define BATTERY 0u
+#define OUTPUT_DIS_WRITE(state) HAL_GPIO_WritePin(PIN_OUTPUT_DIS_PORT, PIN_OUTPUT_DIS_PIN, (state))
+#endif
+
 /* Outputs of the buck switching leg (Timer A).  Both outputs are always
  * enabled: with SYNC_RECT_ENABLED 0 the low side (TA2, Q2) carries the
  * bootstrap refresh pulse at the start of each period, plus the predictive
@@ -335,6 +347,17 @@ RegulatorFaultSource regulator_last_fault_source    = REGULATOR_FAULT_NONE;
 volatile uint32_t    regulator_fault_tick_ms         = 0u;
 volatile uint32_t    regulator_start_low_vin_count   = 0u;
 volatile uint32_t    regulator_start_low_vin_mv      = 0u;
+volatile uint32_t    regulator_start_tim_fail_count  = 0u;
+volatile uint32_t    regulator_battery_ceiling_mv    = 0u;
+volatile uint32_t    regulator_battery_pack_mv       = 0u;
+volatile uint32_t    regulator_battery_keepalive     = 0u;
+volatile uint32_t    regulator_battery_vin_start_mv  = 0u;
+volatile uint32_t    regulator_battery_keepalive_stops = 0u;
+#if BATTERY
+static uint32_t battery_ka_last         = 0u;   /* keepalive value last seen     */
+static uint32_t battery_ka_cycles       = 0u;   /* PID cycles since it changed   */
+static uint8_t  battery_vin_rise_cycles = 0u;
+#endif
 RegulatorDebugMailbox regulator_debug                = {0};
 volatile bool        regulator_bench_pwm_active      = false;
 
@@ -485,6 +508,8 @@ volatile int16_t  regulator_il_gain_permille = 1000;
 volatile int16_t  regulator_il_offset_ma    = 0;
 volatile int16_t  regulator_id_gain_permille = ID_GAIN_PERMILLE_DEFAULT;
 volatile int16_t  regulator_id_offset_ma    = ID_OFFSET_MA_DEFAULT;
+volatile int16_t  regulator_is_gain_permille = IS_GAIN_PERMILLE_DEFAULT;
+volatile int16_t  regulator_is_offset_ma    = IS_OFFSET_MA_DEFAULT;
 volatile uint8_t  regulator_id_ccm_corr     = 1u;
 volatile uint8_t  regulator_ccm_handover    = CCM_HANDOVER_DEFAULT;
 volatile int16_t  regulator_ccm_entry_dt_ns = 0;
@@ -1094,7 +1119,7 @@ void regulator_init(void)
     /* --- Step 13: Power path GPIO — ensure both paths are disabled at init --- */
     HAL_GPIO_WritePin(PIN_INPUT_EN_PORT,  PIN_INPUT_EN_PIN,  GPIO_PIN_RESET);
     OUTPUT_EN_WRITE(GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(PIN_OUTPUT_DIS_PORT,PIN_OUTPUT_DIS_PIN,GPIO_PIN_SET);
+    OUTPUT_DIS_WRITE(GPIO_PIN_SET);
 
     /* --- Step 14: Enter IDLE ---
      * The input path is off, so VS_GOOD (FLT1) is low here by design; the
@@ -1181,6 +1206,7 @@ void regulator_start(void)
 
     /* --- Determine operating mode based on V_in vs setpoint (§5.1) --- */
     regulator_vin_filt_mv  = v_in_mv;
+    regulator_battery_vin_start_mv = v_in_mv;   /* SW_VIN_RISE reference (battery load) */
     regulator_commanded_mv = voltage_mv;
     regulator_ovp_ref_mv   = voltage_mv;
     /* Start in buck below the buck-boost band, otherwise in buck-boost, and
@@ -1266,8 +1292,13 @@ void regulator_start(void)
     slope_comp_start(0u);   /* peak starts at 0; ramps up with soft-start */
 
     /* --- Start the PID timer (TIM7); the pulse-skip watchdog is armed
-     * after the state is RUNNING (below).                                 */
-    HAL_TIM_Base_Start_IT(&htim7);
+     * after the state is RUNNING (below).  Never RUNNING without it.      */
+    if (HAL_TIM_Base_Start_IT(&htim7) != HAL_OK)
+    {
+        regulator_start_tim_fail_count++;
+        regulator_stop();
+        return;
+    }
 
     regulator_state = REGULATOR_STATE_RUNNING;
 
@@ -1364,6 +1395,13 @@ RegulatorClearResult regulator_clear_fault(void)
      * re-armed by regulator_start() once VS is up.                         */
     HRTIM1->sCommonRegs.ICR = HRTIM_ICR_FLT1C | HRTIM_ICR_FLT2C;
 
+    /* enter_fault() stopped TIM6 and TIM7 by register, which leaves their
+     * HAL handles BUSY, and HAL_TIM_Base_Start_IT() then refuses: on the
+     * bench (2026-11-09) the first start after a clear ran RUNNING with no
+     * PID ISR for 20 s.  Stopping them through HAL makes them READY.       */
+    slope_comp_stop();
+    HAL_TIM_Base_Stop_IT(&htim7);
+
     /* Reset regulator state */
     pid_reset_integrator(&pid_state);
     regulator_integrator_reset_requested = false;
@@ -1385,7 +1423,7 @@ static uint32_t trace_arm(uint32_t arg)
 {
     const uint32_t trigger = arg & 0xFu;
     uint32_t post = (arg >> 4) & 0xFFFu;
-    if (trigger > (uint32_t)REGULATOR_TRACE_TRIG_ERROR)
+    if (trigger > (uint32_t)REGULATOR_TRACE_TRIG_CCM)
     {
         return REGULATOR_TRACE_BAD_ARG;
     }
@@ -1415,6 +1453,9 @@ static uint32_t trace_arm(uint32_t arg)
 static uint32_t switch_pulse(uint32_t us)
 {
 #if OUTPUT_SWITCH_ENABLED
+    /* Battery load: reclosing onto the pack after V_out has moved is a surge
+     * of (V_out - V_pack) / R_series. */
+    if (BATTERY)                                    { return REGULATOR_TRACE_NO_SWITCH; }
     if (regulator_state != REGULATOR_STATE_RUNNING) { return REGULATOR_TRACE_NOT_RUNNING; }
     if (us < 1u || us > SWITCH_PULSE_MAX_US)        { return REGULATOR_TRACE_BAD_ARG; }
     if (!output_switch_on || switch_pulse_active)
@@ -1467,6 +1508,58 @@ void regulator_switch_pulse_tim4_isr(void)
     switch_pulse_active = false;
 #endif
 }
+
+#if BATTERY
+/**
+ * battery_measure_pack — Close the output switch with every FET and the input
+ * path off (IDLE), let the pack charge the converter-side ceramics, read it on
+ * VD_MON, open the switch again.  Task context (HAL_Delay).
+ */
+static uint32_t battery_measure_pack(void)
+{
+    OUTPUT_EN_WRITE(GPIO_PIN_SET);
+    HAL_Delay(BATTERY_MEASURE_MS);
+    const uint32_t raw = adc_monitor_update(VOUT_MEDIAN_SAMPLES);
+    OUTPUT_EN_WRITE(GPIO_PIN_RESET);
+    return (raw * VD_MON_FULL_SCALE_MV) / ADC_FULL_SCALE_COUNTS;
+}
+
+/**
+ * battery_start — START in the battery-load build (regulator_config.h): read
+ * the pack, start at its voltage (at least SETPOINT_MIN_MV) with the switch
+ * open; step 4c closes it once V_out is there and moves the target to the
+ * ceiling.  regulator_ccm_ilim_ma is the current from the first cycle.
+ */
+static uint32_t battery_start(uint32_t ceiling_mv)
+{
+    if (ceiling_mv < SETPOINT_MIN_MV || ceiling_mv > BATTERY_CEILING_MAX_MV) { return REGULATOR_SET_OUT_OF_RANGE; }
+    if (regulator_state != REGULATOR_STATE_IDLE)                           { return REGULATOR_SET_NOT_IDLE; }
+    const uint32_t pack_mv = battery_measure_pack();
+    regulator_battery_pack_mv = pack_mv;
+    if (pack_mv >= ceiling_mv) { return REGULATOR_SET_PACK_AT_CEILING; }
+
+    regulator_battery_ceiling_mv = ceiling_mv;
+    regulator_cl_uvp_mv          = BATTERY_CL_UVP_MV;
+    battery_ka_last              = regulator_battery_keepalive;
+    battery_ka_cycles            = 0u;
+    battery_vin_rise_cycles      = 0u;
+    regulator_set_target_voltage((pack_mv > SETPOINT_MIN_MV) ? pack_mv : SETPOINT_MIN_MV);
+    regulator_start();
+    return (regulator_state == REGULATOR_STATE_RUNNING) ? REGULATOR_SET_OK : REGULATOR_SET_START_FAILED;
+}
+
+/** battery_set_ceiling — SET_VOLTAGE in the battery-load build. */
+static uint32_t battery_set_ceiling(uint32_t mv)
+{
+    if (mv < SETPOINT_MIN_MV || mv > BATTERY_CEILING_MAX_MV) { return REGULATOR_SET_OUT_OF_RANGE; }
+    regulator_battery_ceiling_mv = mv;
+    if (regulator_state == REGULATOR_STATE_RUNNING && output_switch_on)
+    {
+        regulator_set_target_voltage(mv);
+    }
+    return REGULATOR_SET_OK;
+}
+#endif
 
 static void debug_complete(uint32_t cmd, uint32_t result)
 {
@@ -1523,7 +1616,13 @@ static void regulator_debug_poll_isr(void)
     {
         uint32_t mv = regulator_debug.arg;
         uint32_t result = REGULATOR_SET_OUT_OF_RANGE;
-        if (PD_OWNS_VBUS)
+        if (BATTERY)
+        {
+#if BATTERY
+            result = battery_set_ceiling(mv);
+#endif
+        }
+        else if (PD_OWNS_VBUS)
         {
             result = REGULATOR_SET_PD_OWNS_VBUS;
         }
@@ -1578,7 +1677,13 @@ void regulator_debug_poll(void)
         case REGULATOR_DEBUG_CMD_START:
         {
             uint32_t mv = regulator_debug.arg;
-            if (PD_OWNS_VBUS)
+            if (BATTERY)
+            {
+#if BATTERY
+                result = (cmd == REGULATOR_DEBUG_CMD_START) ? battery_start(mv) : battery_set_ceiling(mv);
+#endif
+            }
+            else if (PD_OWNS_VBUS)
             {
                 result = REGULATOR_SET_PD_OWNS_VBUS;
             }
@@ -1943,6 +2048,22 @@ void regulator_pid_tim7_isr(void)
     {
         return;   /* a STOP from the mailbox */
     }
+#if BATTERY
+    /* No PD stack times anything out: the host's keepalive does. */
+    if (regulator_battery_keepalive != battery_ka_last)
+    {
+        battery_ka_last   = regulator_battery_keepalive;
+        battery_ka_cycles = 0u;
+    }
+    else if (++battery_ka_cycles >= BATTERY_KEEPALIVE_MS * (PID_EXECUTION_RATE_HZ / 1000u))
+    {
+        regulator_battery_keepalive_stops++;
+        regulator_stop();   /* switch open, every FET off */
+        return;
+    }
+    /* No rectifier windows: DCM through the body diodes cannot reverse. */
+    regulator_sr_enable = 0u;
+#endif
     if ((ADC1->IER & ADC_IER_AWD1IE) == 0u)
     {
         ADC1->IER |= ADC_IER_AWD1IE;   /* see regulator_start */
@@ -2058,6 +2179,11 @@ void regulator_pid_tim7_isr(void)
     {
         OUTPUT_EN_WRITE(GPIO_PIN_SET);
         output_switch_on = true;
+#if BATTERY
+        /* On the pack now: up to the ceiling, the current limit holding it
+         * at V_pack + I R on the way. */
+        regulator_set_target_voltage(regulator_battery_ceiling_mv);
+#endif
     }
 #endif
 
@@ -2138,7 +2264,8 @@ void regulator_pid_tim7_isr(void)
      * 0.2-0.8 A, and ID_MON 1.05x + 24 mA, so ID_MON is the default. --- */
     {
         const int32_t i_out = (int32_t)adc_measurements.i_out_ma;
-        const int32_t i_in  = (int32_t)adc_measurements.i_in_ma;
+        const int32_t i_in  = ((int32_t)adc_measurements.i_in_ma * regulator_is_gain_permille) / 1000
+                              + regulator_is_offset_ma;
         const int32_t p_out = (int32_t)((v_out_mv * (uint32_t)i_out) / 1000u);   /* < 70000 * 5500 */
         const int32_t p_in  = (int32_t)((v_in_mv * (uint32_t)i_in) / 1000u);     /* < 70000 * 13200 */
         regulator_i_out_filt_ma += (i_out - regulator_i_out_filt_ma) / (1 << POWER_FILTER_SHIFT);
@@ -2450,6 +2577,11 @@ void regulator_pid_tim7_isr(void)
         ccm_state.v_cmd_v  = ilim_state.v_cmd_v;
         ccm_state.v_lim_v  = ilim_state.v_lim_v;
         ccm_state.limiting = ilim_state.limiting;
+        /* Battery load: never a duty that would pull current out of the pack.
+         * The floor is the pack as read at START, not V_out: V_out = V_pack
+         * + I R follows the current, and a floor there held a CCM entry
+         * overshoot until SW_OCP (bench 2026-11-09 section 9). */
+        ccm_state.v_floor_v = BATTERY ? (float)regulator_battery_pack_mv * 1e-3f : 0.0f;
         if (regulator_ccm_kind == CCM_KIND_BOOST || regulator_ccm_kind == CCM_KIND_BAND)
         {
             (void)boost_ccm_update(&ccm_state, &g, &ccm_cfg, (float)v_out_mv * 1e-3f, (float)v_in_mv * 1e-3f);
@@ -2731,6 +2863,7 @@ void regulator_pid_tim7_isr(void)
                 case REGULATOR_TRACE_TRIG_CEILING: fire = trace_at_limit;           break;
                 case REGULATOR_TRACE_TRIG_ERROR:
                     fire = (uint32_t)(err < 0 ? -err : err) > tc->threshold_mv;      break;
+                case REGULATOR_TRACE_TRIG_CCM:     fire = regulator_ccm_active;     break;
                 default: break;
             }
         }
@@ -3391,7 +3524,7 @@ static void power_path_enable(void)
     switch_pulse_cancel();
     OUTPUT_EN_WRITE(GPIO_PIN_RESET);
     output_switch_on = false;
-    HAL_GPIO_WritePin(PIN_OUTPUT_DIS_PORT,PIN_OUTPUT_DIS_PIN,GPIO_PIN_RESET);
+    OUTPUT_DIS_WRITE(GPIO_PIN_RESET);
 }
 
 /**
@@ -3403,7 +3536,7 @@ static void power_path_disable(void)
     output_switch_on = false;
     HAL_GPIO_WritePin(PIN_INPUT_EN_PORT,  PIN_INPUT_EN_PIN,  GPIO_PIN_RESET);
     OUTPUT_EN_WRITE(GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(PIN_OUTPUT_DIS_PORT,PIN_OUTPUT_DIS_PIN,GPIO_PIN_SET); // discharge VBUS
+    OUTPUT_DIS_WRITE(GPIO_PIN_SET);   /* discharge VBUS (never in the battery-load build) */
 }
 
 /**
@@ -3572,6 +3705,23 @@ static bool software_safety_checks_pass(uint32_t v_out_mv,
             }
         }
     }
+
+#if BATTERY
+    /* --- 3b. Power back into the input (battery load) --- */
+    if (v_in_mv > regulator_battery_vin_start_mv + BATTERY_VIN_RISE_MV)
+    {
+        if (++battery_vin_rise_cycles >= BATTERY_VIN_RISE_CYCLES)
+        {
+            record_fault_snapshot(v_out_mv, v_in_mv, v_setpoint_mv);
+            enter_fault(REGULATOR_FAULT_SW_VIN_RISE);
+            return false;
+        }
+    }
+    else
+    {
+        battery_vin_rise_cycles = 0u;
+    }
+#endif
 
     /* --- 4. V_in range check (§10.2) ---
      * Latched only when out of range for VIN_RANGE_PERSIST_CYCLES PID

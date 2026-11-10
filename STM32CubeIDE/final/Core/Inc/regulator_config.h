@@ -487,8 +487,8 @@ _Static_assert(BOOTSTRAP_REFRESH_TICKS <= HRTIM_BLANKING_TICKS_BOOST,
  *          output must feed a switched path (the SRC1M1 VIN), never a bare
  *          load.
  */
-#if defined(PD_VBUS_PATH_CHARGER) && (PD_VBUS_PATH_CHARGER)
-#define OUTPUT_EN_SHARED_WITH_TCPP 0u
+#if (defined(PD_VBUS_PATH_CHARGER) && (PD_VBUS_PATH_CHARGER)) || (defined(BATTERY_LOAD) && (BATTERY_LOAD))
+#define OUTPUT_EN_SHARED_WITH_TCPP 0u   /* battery load: the regulator owns the switch */
 #else
 #define OUTPUT_EN_SHARED_WITH_TCPP 1u
 #endif
@@ -963,12 +963,12 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
  *                        output, not L1 (the board ceramics are before it)
  * ID_GAIN_PERMILLE_DEFAULT  regulator_id_gain_permille and
  * ID_OFFSET_MA_DEFAULT      regulator_id_offset_ma: I = raw x gain + offset.
- *                        Bench 2026-11-06 (bench/results/2026-11-06/
- *                        ccm_transitions), DCM at 200 kHz into 25.3 ohm,
- *                        5-21 V, 24 points: raw = 0.944 I + 51 mA, so
- *                        1.059 and -54 mA (residuals within 15 mA; 952 / 0,
- *                        from forced CCM at 400 kHz on 2026-10-21, left
- *                        -41..+28 mA)
+ *                        Bench 2026-11-09 (bench/results/2026-11-09
+ *                        sections 7-8), DCM at 200 kHz into a 4S pack at
+ *                        15.5 V against an ammeter: 0.991 and +4 mA, within
+ *                        1.2 mA from 0.25 to 1 A.  The 2026-11-06 fit
+ *                        (1.059 / -54 mA, against V/R into 25.3 ohm, 5-21 V)
+ *                        read 38-48 mA low on the ammeter at 0.15-0.29 A
  * ID_CCM_ADD_*           Buck CCM at 200 kHz reads ID_MON low by up to
  *                        167 mA (2026-11-06: same V_out and resistor in DCM
  *                        and forced CCM, 5-21 V at 24.4 V in; within 20 mA
@@ -1071,12 +1071,23 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
 #define CCM_U0_BANDS             4u
 #define CCM_U0_BAND_MV           { 7000u, 12000u, 17500u }   /* 5 / 9 / 15 / 20 V and the PPS between */
 #define CCM_OCP_MA_DEFAULT       5000u   /* on regulator_il_avg_ma (IL_MON, period mean) */
+#if defined(BATTERY_LOAD) && (BATTERY_LOAD)
+#define CCM_ILIM_MA_DEFAULT      500u    /* battery load: what the pack takes until `bu battery` sets it */
+#else
 #define CCM_ILIM_MA_DEFAULT      3000u   /* the PDO current; 0 = off */
+#endif
 #define CCM_ILIM_KL_DEFAULT      400.0f  /* [V/(A s)] */
 #define CCM_PEAK_MA_DEFAULT      0u      /* 0 = the PEAK_PROTECT backstop */
 #define CCM_ILIM_SRC_DEFAULT     1u      /* ID_MON */
-#define ID_GAIN_PERMILLE_DEFAULT 1059
-#define ID_OFFSET_MA_DEFAULT     (-54)
+#define ID_GAIN_PERMILLE_DEFAULT 991
+#define ID_OFFSET_MA_DEFAULT     4
+/* IS_MON: regulator_is_gain_permille / _offset_ma.  Bench 2026-11-09 section
+ * 10, buck DCM at 15.5-16 V out from 24.6 V, 0.35-1.35 A on Dan's input
+ * ammeter: meter = 0.855 x IS_MON + 10 mA (residuals within 1 mA; the 10 mA
+ * includes 7.8 mA drawn with the regulator idle).  Other V_out not
+ * checked: section 3 found IS_MON 40 % low at 5 V out.                   */
+#define IS_GAIN_PERMILLE_DEFAULT 855
+#define IS_OFFSET_MA_DEFAULT     10
 #define ID_CCM_ADD_D0            200u
 #define ID_CCM_ADD_STEP          50u
 #define ID_CCM_ADD_MA            { 1, 6, 12, 21, 39, 64, 91, 119, 142, 160, 164, 163, 142, 103 }   /* D 0.20-0.85 */
@@ -1411,6 +1422,54 @@ _Static_assert(PULSE_SKIP_ABOVE_MV * 100u < SETPOINT_MIN_MV * (OVP_RELATIVE_PCT 
  *          at V_in 33 mV latched SW_UVP, which only clear-fault released.
  */
 #define VIN_START_MIN_MV 9000u
+
+/* =========================================================================
+ * Battery-load build (BATTERY_LOAD, branch claude/lipo-load, plans/lipo-load.md)
+ *
+ * A LiPo (3S/4S/6S) on VBUS behind a series resistor and a fuse, as a power
+ * sink.  The pack is never charged full (managed by the operator), so there
+ * is no charge termination.  OUTPUT_DIS (the VBUS discharge, after the output
+ * switch) would short the pack and is never asserted.  START measures the
+ * pack, starts at its voltage with the switch open, closes the switch once
+ * V_out is there, then ramps to the ceiling with regulator_ccm_ilim_ma as
+ * the current: the shared limiter (step 5d) holds V_out at V_pack + I R.
+ * =========================================================================*/
+
+/**
+ * BATTERY_CEILING_MAX_MV — Highest ceiling (START / SET_VOLTAGE) accepted.
+ * 25000: under a 6S pack's 25.2 V full.  The operator picks the ceiling per
+ * pack; this only stops a typo.
+ */
+#define BATTERY_CEILING_MAX_MV   25000u
+
+/**
+ * BATTERY_MEASURE_MS — Output switch closed with every FET off before the
+ * pack is read on VD_MON: the pack charges the converter-side ceramics
+ * through the series resistor and Q5/Q6 (their gate turns on in about a
+ * millisecond, bench/README.md).
+ */
+#define BATTERY_MEASURE_MS       30u
+
+/**
+ * BATTERY_KEEPALIVE_MS — RUNNING stops (switch open) when
+ * regulator_battery_keepalive has not changed for this long.  `bu battery
+ * run` writes it every ~0.2 s.  There is no PD stack to time a contract out.
+ */
+#define BATTERY_KEEPALIVE_MS     2000u
+
+/**
+ * BATTERY_VIN_RISE_MV / BATTERY_VIN_RISE_CYCLES — SW_VIN_RISE fault when V_in
+ * sits this far above its value at the start for this many PID cycles:
+ * power going back into the input, which the bench supply cannot sink.
+ */
+#define BATTERY_VIN_RISE_MV      2000u
+#define BATTERY_VIN_RISE_CYCLES  3u
+
+/**
+ * BATTERY_CL_UVP_MV — UVP floor while limiting (regulator_cl_uvp_mv): with a
+ * pack V_out cannot fold far, but a resistor-only run folds to I R.
+ */
+#define BATTERY_CL_UVP_MV        3000u
 
 /**
  * MODE_HYSTERESIS_MV — Hysteresis band around V_in ≈ V_out for mode selection.

@@ -51,6 +51,8 @@ FAULT_BITS = {
     0x10: ("SW_VIN_RANGE", "V_in out of range for the selected mode"),
     0x20: ("SW_BACKSTOP", "too many consecutive cycle-by-cycle backstop events"),
     0x40: ("SW_OCP", "buck CCM: CCM's filtered current (regulator_ccm_i_avg_ma, ID_MON by default) over regulator_ccm_ocp_ma for 1 ms"),
+    0x80: ("SW_VIN_RISE", "battery load: V_in rose BATTERY_VIN_RISE_MV over its value at the start (power going back "
+                          "into the input)"),
 }
 CCM_EXITS = {0: "NONE", 1: "DISABLED", 2: "MODE", 3: "SWITCH", 4: "LIGHT_LOAD", 5: "OVER_BAND", 6: "VIN_RISE",
              7: "STOP", 8: "BAD_CONFIG", 9: "DUTY", 10: "RAMP_DOWN"}
@@ -59,7 +61,7 @@ CMD = {"clear-fault": 1, "stop": 2, "bench-pwm-on": 3, "bench-pwm-off": 4, "set-
 ARG_CMDS = ("set-voltage", "start")   # take a millivolt argument in regulator_debug.arg
 RAW_ARG_CMDS = ("trace-arm", "switch-pulse")   # take a packed argument (trace_arg) or microseconds
 BENCH_ARG_CMDS = ("bench-ccm-pwm",)             # packed argument (ccm_pwm_arg), BENCH_RESULTS
-TRACE_TRIGGERS = {"now": 0, "switch": 1, "ceiling": 2, "error": 3}
+TRACE_TRIGGERS = {"now": 0, "switch": 1, "ceiling": 2, "error": 3, "ccm": 4}
 TRACE_STATES = {0: "IDLE", 1: "ARMED", 2: "TRIGGERED", 3: "DONE"}
 TRACE_RESULTS = {
     0: ("OK", ""),
@@ -162,6 +164,7 @@ SET_RESULTS = {
     4: ("PD_OWNS_VBUS", "firmware built with PD_VBUS_PATH_CHARGER: the output is the Type-C VBUS, "
                         "so only a USB-PD contract sets it; rebuild with -DPD_VBUS_PATH_CHARGER=OFF "
                         "for dummy-load runs with the receptacle disconnected"),
+    5: ("PACK_AT_CEILING", "battery load: the pack read at or above the ceiling (regulator_battery_pack_mv)"),
 }
 BENCH_RESULTS = {
     0: ("OK", ""),
@@ -211,7 +214,8 @@ _CONTROL = {"regulator_mode": "mode", "target_voltage_mv": "target_mv", "regulat
             "regulator_ccm_band": "ccm_band",
             # Starts refused with V_in below VIN_START_MIN_MV (2026-11-09)
             "regulator_start_low_vin_count": "start_low_vin_count",
-            "regulator_start_low_vin_mv": "start_low_vin_mv"}
+            "regulator_start_low_vin_mv": "start_low_vin_mv",
+            "regulator_start_tim_fail_count": "start_tim_fail_count"}
 # Signed 32-bit telemetry: filtered currents and powers (POWER_FILTER_SHIFT).
 _CONTROL_I = {"regulator_i_out_filt_ma": "i_out_filt_ma", "regulator_i_in_filt_ma": "i_in_filt_ma",
               "regulator_p_in_mw": "p_in_mw", "regulator_p_out_mw": "p_out_mw", "regulator_il_avg_ma": "il_avg_ma",
@@ -219,7 +223,8 @@ _CONTROL_I = {"regulator_i_out_filt_ma": "i_out_filt_ma", "regulator_i_in_filt_m
               "regulator_ccm_i_avg_ma": "ccm_i_avg_ma"}
 # Signed 16-bit: the runtime current calibrations.
 _CONTROL_I16 = {"regulator_il_gain_permille": "il_gain_permille", "regulator_il_offset_ma": "il_offset_ma",
-                "regulator_id_gain_permille": "id_gain_permille", "regulator_id_offset_ma": "id_offset_ma"}
+                "regulator_id_gain_permille": "id_gain_permille", "regulator_id_offset_ma": "id_offset_ma",
+                "regulator_is_gain_permille": "is_gain_permille", "regulator_is_offset_ma": "is_offset_ma"}
 # Float telemetry of the current-command loop (2026-10-12).
 _CONTROL_F = {"regulator_i_cmd_ma": "i_cmd_ma", "regulator_i_pk_ma": "i_pk_ma", "regulator_i_max_ma": "i_max_ma",
               "pid_kp": "kp_ma_per_mv", "pid_ki": "ki_ma_per_mv_s", "regulator_loop_fc_hz": "loop_fc_hz",

@@ -14,7 +14,7 @@ import traceback
 from pathlib import Path
 
 from . import build as build_mod
-from . import bench, cubemx, load, logic, pd, pd_trace, probe, profile, regulator, serialmon, sink, usercode
+from . import battery, bench, cubemx, load, logic, pd, pd_trace, probe, profile, regulator, serialmon, sink, usercode
 from .config import REPO_ROOT, ToolError, cubemx_exe, gdb_exe, load_config, paths, programmer_exe, rel, run
 from .ioc import Ioc, diff_ioc
 
@@ -383,9 +383,9 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("mv", type=int); g.add_argument("--timeout", type=float, default=5.0)
     g = rg.add_parser("trace-arm", help="arm the 20 kHz regulator trace (V_out, I_cmd, its ceiling, on-time, flags); "
                                         "it freezes POST samples after the trigger")
-    g.add_argument("--trigger", choices=["now", "switch", "ceiling", "error"], default="now",
+    g.add_argument("--trigger", choices=["now", "switch", "ceiling", "error", "ccm"], default="now",
                    help="now; switch (a switch-pulse opens the output switch); ceiling (on-time at its window limit); "
-                        "error (|setpoint - V_out| above --threshold-mv)")
+                        "error (|setpoint - V_out| above --threshold-mv); ccm (the first forced-CCM cycle)")
     g.add_argument("--post", type=int, default=1536, help="samples after the trigger, 50 us each (max 2047)")
     g.add_argument("--threshold-mv", type=int, default=0)
     g.add_argument("--timeout", type=float, default=3.0)
@@ -393,6 +393,17 @@ def build_parser() -> argparse.ArgumentParser:
                                            "present contract, then reconnect it: a load drop then a connect")
     g.add_argument("ms", type=float); g.add_argument("--timeout", type=float, default=3.0)
     rg.add_parser("trace", help="read the regulator trace (oldest first) into a CSV, with a summary")
+
+    # battery load (branch claude/lipo-load: no-USB build)
+    ba = sub.add_parser("battery", help="battery-load build: a LiPo on VBUS as a power sink").add_subparsers(
+        dest="op", required=True)
+    ba.add_parser("status", help="ceiling, pack reading, keepalive, current limit, regulator state")
+    g = ba.add_parser("run", help="set the current, START at the ceiling (reads the pack first), keep alive and log "
+                                  "for SECONDS, then stop; Ctrl-C or SIGTERM stops early")
+    g.add_argument("--ceiling-mv", type=int, required=True, help="highest V_out; below the pack's full voltage")
+    g.add_argument("--ilim-ma", type=int, required=True, help="current into the pack (regulator_ccm_ilim_ma)")
+    g.add_argument("--seconds", type=float, required=True)
+    g.add_argument("--interval", type=float, default=0.2, help="sample and keepalive period, s (timeout 2 s)")
 
     # scope
     sc = sub.add_parser("scope", help="Rigol DS1054Z").add_subparsers(dest="op", required=True)
@@ -459,6 +470,7 @@ EFFECTS = {
     "sym": "read", "layout": "read", "mem read": "read", "mem write": "actuate",
     "profile": "read", "pd status": "read", "pd trace": "read", "sink": "actuate", "load status": "read", "load pins": "read", "load sniff": "read", "load i2c": "read", "load edges": "read", "load glitch": "read", "load i2cpoll": "read", "load sartest": "actuate", "load sarscan": "actuate", "load drivetest": "actuate", "load padtest": "actuate", "load bootsel": "actuate", "load flash": "actuate", "load run": "actuate", "bench status": "read", "bench sweep": "actuate", "regulator status": "read", "regulator clear-fault": "actuate", "regulator stop": "actuate",
     "regulator bench-pwm": "actuate", "regulator bench-ccm-pwm": "actuate", "regulator set-voltage": "actuate", "regulator sweep": "actuate", "regulator snapshot": "actuate", "regulator start": "actuate", "regulator trace-arm": "actuate", "regulator switch-pulse": "actuate", "regulator trace": "read",
+    "battery status": "read", "battery run": "actuate",
     "scope analyze": "read", "scope idn": "read", "scope state": "read", "scope measure": "read",
     "scope delay": "read", "scope screenshot": "read", "scope capture": "actuate",
     "la scan": "read", "la decoders": "read", "la decode": "read", "la edges": "read", "la capture": "read",
@@ -573,6 +585,10 @@ def dispatch(cfg: dict, a) -> dict:
             return regulator.command(cfg, "bench-ccm-pwm", a.timeout, arg=regulator.ccm_pwm_arg(a.t_on_ns, a.fsw))
         name = f"bench-pwm-{a.action}" if a.op == "bench-pwm" else a.op
         return regulator.command(cfg, name, a.timeout, getattr(a, "force", False), getattr(a, "mv", None))
+    if c == "battery":
+        if a.op == "run":
+            return battery.run(cfg, a.ceiling_mv, a.ilim_ma, a.seconds, a.interval)
+        return battery.status(cfg)
     if c == "scope":
         return cmd_scope(cfg, a)
     if c == "la":

@@ -18,6 +18,14 @@
             }
         },
         {
+            "name": "Battery",
+            "inherits": "default",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "PD_VBUS_PATH_CHARGER": "OFF"
+            }
+        },
+        {
             "name": "Release",
             "inherits": "default",
             "cacheVariables": {
@@ -29,6 +37,10 @@
         {
             "name": "Debug",
             "configurePreset": "Debug"
+        },
+        {
+            "name": "Battery",
+            "configurePreset": "Battery"
         },
         {
             "name": "Release",

@@ -99,6 +99,7 @@ void buck_ccm_reset(BuckCcmState *s, float u0_v, float v_ref_v, float v_out_v)
     s->v_cmd_v    = v_ref_v;
     s->v_prev_v   = v_out_v;
     s->i_prev_a   = s->i_out_a;
+    s->v_floor_v  = 0.0f;   /* the caller sets it per update */
 }
 
 void buck_ccm_limit(BuckCcmState *s, const BuckCcmGains *g, float v_ref_v, float v_out_v, float i_a)
@@ -148,11 +149,14 @@ uint32_t buck_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmTi
     s->v_prev_v = v_out_v;
     const float ff_i = g->kff_l * (s->i_out_a - s->i_prev_a) / g->dt_s + g->kff_r * s->i_out_a;
     s->i_prev_a = s->i_out_a;
-    const float n = v_ff + g->kp * e + d_v + ff_i + u;
+    float n = v_ff + g->kp * e + d_v + ff_i + u;
+    /* no-reverse floor: D V_in >= V_floor r1 balances L1 at 0 A or above */
+    const bool floored = (s->v_floor_v > 0.0f) && (n < s->v_floor_v * r1);
+    if (floored) { n = s->v_floor_v * r1; }
     float t_on = (float)c->period_ns * n / v_in_v;
     const float max_on = (float)buck_ccm_max_on_ns(c);
     const float min_on = (float)c->min_on_ns;
-    int8_t clamp = 0;
+    int8_t clamp = floored ? -1 : 0;
     if (t_on >= max_on)      { t_on = max_on; clamp = 1; }
     else if (t_on <= min_on) { t_on = min_on; clamp = -1; }
 
@@ -279,8 +283,11 @@ uint32_t boost_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmT
     const float min_on = (float)boost_ccm_min_on_ns(c);
     const float rest = v_cmd + g->kp * e + d_v + ff_i;   /* n = rest + u */
     float n = rest + u;
+    /* no-reverse floor: n balances V_out (see buck_ccm_update) */
+    const bool floored = (s->v_floor_v > 0.0f) && (n < s->v_floor_v);
+    if (floored) { n = s->v_floor_v; }
     float t_on;
-    int8_t clamp = 0;
+    int8_t clamp = floored ? -1 : 0;
     if (n <= vin_r) { t_on = min_on; clamp = -1; }
     else
     {

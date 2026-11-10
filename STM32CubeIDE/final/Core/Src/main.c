@@ -1108,8 +1108,9 @@ void StartDefaultTask(void const * argument)
   /* Allow peripheral initialisation (regulator_init, PD stack) to settle. */
   osDelay(200);
 
-#if !PD_OWNS_VBUS
-  /* Set a fixed test voltage and start the regulator without PD negotiation. */
+#if !PD_OWNS_VBUS && !(defined(BATTERY_LOAD) && BATTERY_LOAD)
+  /* Set a fixed test voltage and start the regulator without PD negotiation.
+   * Never in the battery-load build: only `bu battery` starts it there. */
   regulator_set_target_voltage(DEFAULT_TASK_TEST_VOLTAGE_MV);
   regulator_start();
 #endif /* With PD_OWNS_VBUS the regulator output is the Type-C VBUS and only
@@ -1154,7 +1155,9 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
      * so without this call no PE timer ever expired (2026-10-06 bench: one
      * Source_Capabilities burst and no resends, and after Accept no PS_RDY:
      * the PE waited forever for tSrcTransition).                           */
+#if !(defined(BATTERY_LOAD) && BATTERY_LOAD)   /* no USB-PD stack */
     USBPD_DPM_TimerCounter();
+#endif
   }
   /* USER CODE END Callback 1 */
 }

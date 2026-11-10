@@ -7,8 +7,8 @@
 dir = "STM32CubeIDE/final"
 ioc = "final.ioc"
 build_system = "cmake"          # "cmake" (CubeMX-generated, canonical) or "make"
-cmake_preset = "Debug"
-elf_cmake = "build/Debug/final.elf"
+cmake_preset = "Battery"        # branch claude/lipo-load: the no-USB battery-load build
+elf_cmake = "build/Battery/final.elf"
 elf_make = "build/final.elf"
 
 [cubemx]
