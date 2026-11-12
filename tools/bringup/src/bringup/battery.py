@@ -44,6 +44,7 @@ def _row(s: dict, t0: float) -> dict:
             "target_mv": c.get("target_mv"), "commanded_mv": c.get("commanded_mv"),
             "v_out_mv": adc.get("v_out_mv"), "v_in_mv": adc.get("v_in_mv"),
             "i_out_ma": c.get("ccm_i_ma"), "i_in_ma": c.get("i_in_filt_ma"),   # IS_MON after its calibration
+            "is_raw_ma": adc.get("i_in_ma"),   # IS_MON before it (one PID cycle's ADC3 value)
             "switch": s["lines"]["OUTPUT_EN_PC8"], "dis": s["lines"]["OUTPUT_DIS_PC9"]}
 
 
@@ -123,6 +124,6 @@ def run(cfg: dict, ceiling_mv: int | None, ilim_ma: int, seconds: float, interva
             "ceiling_mv": ceiling_mv, "above_pack_mv": above_pack_mv, "pack_read_mv": pack_read_mv,
             "battery": _read(cfg, syms), "samples": len(rows), "stopped_early": stopped,
             "ended": rows[-1]["state"] if rows else None, "end_state": end["state"], "end_fault": end["fault_source"],
-            "tail_mean": {k: mean(k) for k in ("v_out_mv", "i_out_ma", "v_in_mv", "i_in_ma")},
+            "tail_mean": {k: mean(k) for k in ("v_out_mv", "i_out_ma", "v_in_mv", "i_in_ma", "is_raw_ma")},
             "limiting_frac": round(sum(1 for r in running if r["lim"]) / len(running), 2) if running else None,
             "log": rel(f)}

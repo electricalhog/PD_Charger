@@ -954,8 +954,9 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
  *                        kl kp / (1 + kp R), about 30x lower into the
  *                        pack).  In CCM the gain is kl / R with the newest
  *                        ID_MON scan's 0.34 ms lag: in the host model
- *                        (test_ilim_lag) 400 holds at 0.17 ohm and
- *                        oscillates at 0.10; 100 holds down to 0.05 ohm.
+ *                        (test_ilim_lag, L1 and C_int at their values)
+ *                        400 holds down to 0.08 ohm and oscillates at
+ *                        0.05; 100 holds down to 0.05 ohm.
  *                        The bench path is about 0.13 ohm incremental
  *                        (2026-11-09: +300 mV 2.69 A, +500 mV about 4.2 A).
  *                        Into 25.3 ohm in CCM the fold is then 4 rad/s
@@ -1093,16 +1094,17 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
 #define CCM_ILIM_KL_CCM_DEFAULT  100.0f  /* [V/(A s)], CCM */
 #define CCM_PEAK_MA_DEFAULT      0u      /* 0 = the PEAK_PROTECT backstop */
 #define CCM_ILIM_SRC_DEFAULT     1u      /* ID_MON */
+#define CCM_ENTRY_RAMP_DEFAULT   1u      /* CCM entry: the limit's reference from V_out (buck_ccm_limit_from) */
 #define CCM_ILIM_FAST_DEFAULT    1u      /* the newest ADC2 scan (adc_monitor.h ADC_ID_LIMIT_SCANS) */
 #define ID_GAIN_PERMILLE_DEFAULT 991
 #define ID_OFFSET_MA_DEFAULT     4
-/* IS_MON: regulator_is_gain_permille / _offset_ma.  Bench 2026-11-09 section
- * 10, buck DCM at 15.5-16 V out from 24.6 V, 0.35-1.35 A on Dan's input
- * ammeter: meter = 0.855 x IS_MON + 10 mA (residuals within 1 mA; the 10 mA
- * includes 7.8 mA drawn with the regulator idle).  Other V_out not
- * checked: section 3 found IS_MON 40 % low at 5 V out.                   */
-#define IS_GAIN_PERMILLE_DEFAULT 855
-#define IS_OFFSET_MA_DEFAULT     10
+/* IS_MON: regulator_is_gain_permille / _offset_ma.  Bench 2026-11-11 section
+ * 1, buck DCM into 25.3 ohm at 5-20 V out from 24.4 V, 85-724 mA on Dan's
+ * input ammeter: meter = 1.0098 x IS_MON + 3.1 mA (residuals within 0.5 mA;
+ * 6.7 mA with the regulator idle).  The 2026-11-09 fit (855 / +10) used a
+ * meter with a ground loop in parallel, which read 13-17 % low.           */
+#define IS_GAIN_PERMILLE_DEFAULT 1010
+#define IS_OFFSET_MA_DEFAULT     3
 #define CCM_HANDOVER_DEFAULT     1u
 #define CCM_HANDOVER_VFW_MV      800u    /* freewheel drop in the valley estimate */
 #define CCM_EXIT_DCM_ADD_MV      { 5000, 7000, 9000, 12000, 15000, 17000, 20000 }
@@ -1608,8 +1610,15 @@ _Static_assert(PULSE_SKIP_ABOVE_MV * 100u < SETPOINT_MIN_MV * (OVP_RELATIVE_PCT 
  * the ADC at 20.02, 24.05, 28.00 and about 35.65 V (36 V hunting): a gain
  * error only, fitted by least squares, residuals -106 to +144 mV.  D2 on
  * VS_MON is still fitted (0.9 percent low at 24 V). */
+/* 2026-11-11 (bench section 6), battery-load build, against the scope's trace
+ * medians (CH2 on V_in, CH4 on V_out, 18 load points, 0.1 to 4.5 A):
+ *   VS_MON read 0.54 percent low at 24.4 to 24.6 V (ratio 0.99462, standard
+ *   deviation 0.0007, the same in DCM and CCM): 69500 -> 69876.
+ *   VD_MON read high at 15.1 to 15.4 V by an amount that depends on the
+ *   operating point: +0.32 V at the pack read (every FET off), +0.23 to
+ *   +0.45 V in DCM, +0.27 to +0.69 V in CCM.  Not one gain, so not changed. */
 #define VD_MON_FULL_SCALE_MV 70645u   /* 71560 x 0.98721 */
-#define VS_MON_FULL_SCALE_MV 69500u   /* 56800 x 24.56 / 20.071 */
+#define VS_MON_FULL_SCALE_MV 69876u   /* 69500 / 0.99462 (2026-11-11); 69500 = 56800 x 24.56 / 20.071 */
 
 /**
  * ADC_IL_FULL_SCALE_MA — Full-scale physical current for IL_MON / IS_MON.

@@ -95,11 +95,29 @@ void buck_ccm_reset(BuckCcmState *s, float u0_v, float v_ref_v, float v_out_v)
     s->u_v        = u0_v;
     s->clamp      = 0;
     s->limiting   = 0u;
+    s->ramp       = 0u;
     s->v_lim_v    = v_ref_v;
     s->v_cmd_v    = v_ref_v;
     s->v_prev_v   = v_out_v;
     s->i_prev_a   = s->i_out_a;
     s->v_floor_v  = 0.0f;   /* the caller sets it per update */
+}
+
+void buck_ccm_limit_from(BuckCcmState *s, float v_ref_v, float v_out_v)
+{
+    /* The reference starts where V_out is and v_lim walks it up at kl (I_lim - I): the current rises to the
+     * limit, or V_out reaches V_ref and the limit hands back.  Entering at V_ref instead, the voltage law
+     * drove the whole gap at once, and the limit acted only once a scan read over it (2026-11-09
+     * section 17: 5.3 A at a 3.5 A limit).  u keeps running meanwhile (s->ramp): held at its preset, its
+     * error (the board makes about 0.5 V over the model) put V_out below v_lim, so v_lim reached V_ref under
+     * the limit, handed back, and u then wound up at once (host model, 4.5 A at 3.5 A). */
+    if (v_out_v < v_ref_v)
+    {
+        s->v_lim_v  = (v_out_v > 0.0f) ? v_out_v : 0.0f;
+        s->v_cmd_v  = s->v_lim_v;
+        s->limiting = 1u;
+        s->ramp     = 1u;
+    }
 }
 
 void buck_ccm_limit(BuckCcmState *s, const BuckCcmGains *g, float v_ref_v, float v_out_v, float i_a)
@@ -129,6 +147,7 @@ void buck_ccm_limit(BuckCcmState *s, const BuckCcmGains *g, float v_ref_v, float
     }
     s->v_cmd_v  = v_cmd;
     s->limiting = lim;
+    if (!lim || i_a >= g->ilim_a) { s->ramp = 0u; }
 }
 
 uint32_t buck_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmTimingCfg *c,
@@ -147,7 +166,8 @@ uint32_t buck_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmTi
     const float e = v_cmd - v_out_v;
     /* anti-windup: the voltage integrator holds while the limit sets v_cmd
      * (V_out sits below V_ref by design) */
-    float u = s->limiting ? s->u_v : (s->u_v + g->ki * e * g->dt_s);
+    const bool hold = s->limiting && !s->ramp;
+    float u = hold ? s->u_v : (s->u_v + g->ki * e * g->dt_s);
     if (u > g->u_max_v) { u = g->u_max_v; }
     if (u < g->u_min_v) { u = g->u_min_v; }
     if (v_in_v < 1.0f) { v_in_v = 1.0f; }
@@ -171,7 +191,7 @@ uint32_t buck_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmTi
      * turns: holding the old value left it up to the full ki e dt per cycle
      * above, and a 20 V reconnect at 400 kHz (duty ceiling 0.86, need 0.82)
      * overshot 1.7 V on the way back (bench 2026-10-20). */
-    if (!s->limiting && ((clamp > 0 && e > 0.0f) || (clamp < 0 && e < 0.0f)))
+    if (!hold && ((clamp > 0 && e > 0.0f) || (clamp < 0 && e < 0.0f)))
     {
         const float u_edge = t_on * v_in_v / (float)c->period_ns - v_ff - g->kp * e - d_v - ff_i;
         u = (u_edge < s->u_v) == (clamp > 0) ? u_edge : s->u_v;
@@ -277,7 +297,8 @@ uint32_t boost_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmT
     const bool floored = !s->limiting && (s->v_floor_v > 0.0f) && (v_cmd < s->v_floor_v);
     if (floored) { v_cmd = s->v_floor_v; }
     const float e = v_cmd - v_out_v;
-    float u = s->limiting ? s->u_v : (s->u_v + g->ki * e * g->dt_s);
+    const bool hold = s->limiting && !s->ramp;
+    float u = hold ? s->u_v : (s->u_v + g->ki * e * g->dt_s);
     if (u > g->u_max_v) { u = g->u_max_v; }
     if (u < g->u_min_v) { u = g->u_min_v; }
     if (v_in_v < 1.0f) { v_in_v = 1.0f; }
@@ -302,7 +323,7 @@ uint32_t boost_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmT
         else if (t_on <= min_on) { t_on = min_on; clamp = -1; }
     }
     /* Back-calculation at a clamp, as buck_ccm_update. */
-    if (!s->limiting && ((clamp > 0 && e > 0.0f) || (clamp < 0 && e < 0.0f)))
+    if (!hold && ((clamp > 0 && e > 0.0f) || (clamp < 0 && e < 0.0f)))
     {
         const float u_edge = vin_r / (1.0f - t_on / per) - rest;
         u = (u_edge < s->u_v) == (clamp > 0) ? u_edge : s->u_v;

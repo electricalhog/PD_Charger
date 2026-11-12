@@ -154,6 +154,8 @@ extern volatile uint16_t regulator_sr_off_ns;
  *                                offset applied), 0 IL_MON (regulator_il_ma)
  *    regulator_ccm_ilim_fast     1: the limit reads ID_MON's newest scan
  *                                (CCM_ILIM_FAST_DEFAULT), 0: its 8-scan mean
+ *    regulator_ccm_entry_ramp    1: a CCM entry with a limit set starts the
+ *                                reference at V_out (CCM_ENTRY_RAMP_DEFAULT)
  *    regulator_ccm_peak_ma       peak comparator threshold in CCM, 0 = the
  *                                9 A backstop (CCM_PEAK_MA_DEFAULT)
  *    regulator_ccm_handover      1: L1 handed over at buck CCM entry and exit
@@ -243,6 +245,7 @@ extern volatile float    regulator_ccm_ilim_kl;
 extern volatile float    regulator_ccm_ilim_kl_ccm;
 extern volatile uint8_t  regulator_ccm_ilim_src;
 extern volatile uint8_t  regulator_ccm_ilim_fast;
+extern volatile uint8_t  regulator_ccm_entry_ramp;
 extern volatile uint16_t regulator_ccm_peak_ma;
 extern volatile uint8_t  regulator_ccm_limiting;
 extern volatile uint16_t regulator_cl_uvp_mv;

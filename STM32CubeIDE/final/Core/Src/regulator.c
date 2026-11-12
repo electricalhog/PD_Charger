@@ -523,6 +523,7 @@ volatile float    regulator_ccm_ilim_kl     = CCM_ILIM_KL_DEFAULT;
 volatile float    regulator_ccm_ilim_kl_ccm = CCM_ILIM_KL_CCM_DEFAULT;
 volatile uint8_t  regulator_ccm_ilim_src    = CCM_ILIM_SRC_DEFAULT;
 volatile uint8_t  regulator_ccm_ilim_fast   = CCM_ILIM_FAST_DEFAULT;
+volatile uint8_t  regulator_ccm_entry_ramp  = CCM_ENTRY_RAMP_DEFAULT;
 volatile uint16_t regulator_ccm_peak_ma     = CCM_PEAK_MA_DEFAULT;
 volatile uint8_t  regulator_ccm_limiting    = 0u;
 volatile uint16_t regulator_cl_uvp_mv       = 0u;
@@ -2425,6 +2426,15 @@ void regulator_pid_tim7_isr(void)
                 ccm_dcm_add_ma    = (add < 0) ? 0 : ((add > 400) ? 400 : add);
                 ccm_dcm_add_sp_mv = effective_setpoint_mv;
             }
+            /* With a limit set, the reference starts at V_out and the limit
+             * walks it up (buck_ccm_limit_from): the voltage law would
+             * otherwise drive the gap to V_ref at once (2026-11-09 section
+             * 17).  regulator_ccm_entry_ramp 0: the reference starts at V_ref. */
+            if (regulator_ccm_entry_ramp && regulator_ccm_ilim_ma != 0u)
+            {
+                buck_ccm_limit_from(&ilim_state, (float)effective_setpoint_mv * 1e-3f, (float)v_out_mv * 1e-3f);
+            }
+            const float v_entry_mv = ilim_state.v_cmd_v * 1e3f;   /* the reference the law starts on */
             /* Bumpless: the first duty reproduces the measured V_out
              * (the feedforward is built on V_ref), plus the integrator this
              * band last ran with, scaled to V_ref (CCM_U0_*). */
@@ -2441,14 +2451,14 @@ void regulator_pid_tim7_isr(void)
                 const float u_def = (ccm_want == CCM_KIND_BAND) ? (float)CCM_BAND_U0_PERMILLE * 1e-3f * v_ref_v
                                                                 : (float)CCM_BOOST_U0_MV * 1e-3f;
                 const float u_base = learned ? ul->u_v * v_ref_v / ul->v_ref_v : u_def;
-                u0 = u_base + ((float)v_out_mv - v_cmd_mv) * 1e-3f;
+                u0 = u_base + ((float)v_out_mv - v_entry_mv) * 1e-3f;
             }
             else
             {
                 const float u_base = learned
                                    ? ul->u_v * v_ref_v / ul->v_ref_v
                                    : -((float)CCM_U0_PERMILLE * 1e-3f * v_ref_v + (float)CCM_U0_MV * 1e-3f);
-                u0 = u_base + ((float)v_out_mv - v_cmd_mv) * 1e-3f
+                u0 = u_base + ((float)v_out_mv - v_entry_mv) * 1e-3f
                               * (1.0f - buck_ccm_refresh_share(&ccm_cfg));
             }
             buck_ccm_reset(&ccm_state, u0, (float)effective_setpoint_mv * 1e-3f, (float)v_out_mv * 1e-3f);
@@ -2563,6 +2573,7 @@ void regulator_pid_tim7_isr(void)
         ccm_state.v_cmd_v  = ilim_state.v_cmd_v;
         ccm_state.v_lim_v  = ilim_state.v_lim_v;
         ccm_state.limiting = ilim_state.limiting;
+        ccm_state.ramp     = ilim_state.ramp;
         /* Battery load: never a duty that would pull current out of the pack.
          * The floor is the pack as read at START, not V_out: V_out = V_pack
          * + I R follows the current, and a floor there held a CCM entry

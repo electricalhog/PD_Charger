@@ -1108,6 +1108,24 @@ static float floor_overshoot_sim(bool boost, bool track_v_out, float ilim_a, flo
     return floor_overshoot_sim_from(boost, track_v_out, ilim_a, offset_v, u0_v, 5.0f, 1.0f, i_min);
 }
 
+/* The pack plant for the limit models below, at its real values (the floor sims above scale L by 50 and check
+ * only the current's sign): L1 4.7 uH into C_int 50 uF (V_out, what VD_MON reads), R to the pack.  The
+ * plant makes offset_v over the averaged model (the board).  Steps of 0.1 us, ten a call; returns the
+ * current into the pack (what ID_MON reads, after C_int). */
+typedef struct { float il, vc; } PackPlant;
+static float pack_plant_us(PackPlant *p, float d, float v_in, float r1, float offset_v, float v_pack, float r)
+{
+    const float l = 4.7e-6f, c = 50e-6f, dt = 0.1e-6f;
+    float i = 0.0f;
+    for (int n = 0; n < 10; n++)
+    {
+        i = (p->vc - v_pack) / r;
+        p->il += (d * v_in - r1 * (p->vc - offset_v)) / l * dt;
+        p->vc += (p->il - i) / c * dt;
+    }
+    return i;
+}
+
 /* The limit's current through ADC2 as the board converts it (adc_monitor.h): a scan every 560 us whose ID_MON
  * result is the mean over its last 114 us; the limit reads the mean of the newest `scans` results.  Buck, the
  * board case of section 15 (from 0 A, ceiling 0.5 V over the pack, plant +0.5 V, u0 -0.627 V, limit 2 A) into
@@ -1115,13 +1133,14 @@ static float floor_overshoot_sim(bool boost, bool track_v_out, float ilim_a, flo
 static float ilim_lag_sim(uint32_t scans, float kl, float r, float *i_pp, float *i_min)
 {
     const BuckCcmTimingCfg c = cfg(5000u, 20u);
-    const BuckCcmGains g = { .ki = 3142.0f, .kp = 0.1f, .u_min_v = -2.0f, .u_max_v = 2.0f, .dt_s = 50e-6f,
+    const BuckCcmGains g = { .ki = 3142.0f, .kp = 0.0f, .u_min_v = -2.0f, .u_max_v = 2.0f, .dt_s = 50e-6f,
                              .ilim_a = 2.0f, .kl = kl, .dt_lim_s = 50e-6f };
-    const float v_in = 24.4f, v_pack = 15.0f, l = 50.0f * 4.7e-6f, offset_v = 0.5f, above_v = 0.5f;
+    const float v_in = 24.4f, v_pack = 15.0f, offset_v = 0.5f, above_v = 0.5f;
     const float r1 = 1.0f - buck_ccm_refresh_share(&c);
     enum { SCAN_US = 560, ID_US = 114, RING = 32, CYCLES = 4000, TAIL = 400 };
     float ring[RING] = { 0 }, acc = 0.0f, i = 0.0f, i_lo = 0.0f, i_hi_t = -1e9f, i_lo_t = 1e9f, i_sum = 0.0f;
     uint32_t head = 0u, t_us = 0u;
+    PackPlant p = { 0.0f, v_pack };
     BuckCcmState s = { 0 };
     buck_ccm_reset(&s, -0.627f, v_pack + above_v, v_pack);
     for (int k = 0; k < CYCLES; k++)
@@ -1129,14 +1148,12 @@ static float ilim_lag_sim(uint32_t scans, float kl, float r, float *i_pp, float 
         float i_meas = 0.0f;
         for (uint32_t n = 0u; n < scans; n++) { i_meas += ring[(head + RING - 1u - n) % RING]; }
         i_meas /= (float)scans;
-        const float v_out = v_pack + i * r;
-        buck_ccm_limit(&s, &g, v_pack + above_v, v_out, i_meas);
+        buck_ccm_limit(&s, &g, v_pack + above_v, p.vc, i_meas);
         s.v_floor_v = v_pack;
-        const float d = (float)buck_ccm_update(&s, &g, &c, v_out, v_in) / (float)c.period_ns;
+        const float d = (float)buck_ccm_update(&s, &g, &c, p.vc, v_in) / (float)c.period_ns;
         for (int j = 0; j < 50; j++, t_us++)
         {
-            const float vo = v_pack + i * r;
-            i += (d * v_in - r1 * (vo - offset_v)) / l * 1e-6f;
+            i = pack_plant_us(&p, d, v_in, r1, offset_v, v_pack, r);
             if (i < i_lo) { i_lo = i; }
             const uint32_t ph = t_us % SCAN_US;
             if (ph >= SCAN_US - ID_US) { acc += i; }
@@ -1154,20 +1171,98 @@ static float ilim_lag_sim(uint32_t scans, float kl, float r, float *i_pp, float 
     return i_sum / (float)TAIL;
 }
 
+/* A CCM entry as on the bench (2026-11-09 section 17): from DCM at 2 A into the pack, ceiling 0.8 V over it,
+ * plant 0.5 V over the model with u0 as regulator.c presets it (u_base -0.627 V plus the V_out - reference
+ * term), the limit on ADC2's newest scan (as ilim_lag_sim) at kl 100.  ramp: buck_ccm_limit_from at the entry,
+ * as regulator.c does.  Returns the true peak of L1; *meas_pk the highest scan, *i_min the lowest L1 after the
+ * entry, *i_end the mean of the last 20 ms of 100 ms. */
+static float ilim_entry_sim(bool ramp, float ilim_a, float r, float *meas_pk, float *i_min, float *i_end)
+{
+    const BuckCcmTimingCfg c = cfg(5000u, 20u);
+    const BuckCcmGains g = { .ki = 3142.0f, .kp = 0.0f, .u_min_v = -2.0f, .u_max_v = 2.0f, .dt_s = 50e-6f,
+                             .ilim_a = ilim_a, .kl = 100.0f, .dt_lim_s = 50e-6f };
+    const float v_in = 24.4f, v_pack = 15.5f, offset_v = 0.5f, v_ref = v_pack + 0.8f;
+    const float r1 = 1.0f - buck_ccm_refresh_share(&c);
+    enum { SCAN_US = 560, ID_US = 114, RING = 32, CYCLES = 2000, TAIL = 400 };
+    float ring[RING], acc = 0.0f, i = 2.0f, pk = i, lo = i, mpk = 0.0f, i_sum = 0.0f;
+    for (int k = 0; k < RING; k++) { ring[k] = i; }
+    uint32_t head = 0u, t_us = 0u;
+    PackPlant p = { i, v_pack + i * r };
+    BuckCcmState s = { 0 }, lim = { 0 };
+    buck_ccm_reset(&lim, 0.0f, v_ref, p.vc);
+    if (ramp) { buck_ccm_limit_from(&lim, v_ref, p.vc); }
+    const float u0 = -0.627f + (p.vc - lim.v_cmd_v) * r1;
+    buck_ccm_reset(&s, u0, v_ref, p.vc);
+    for (int k = 0; k < CYCLES; k++)
+    {
+        if (k > 0) { buck_ccm_limit(&lim, &g, v_ref, p.vc, ring[(head + RING - 1u) % RING]); }
+        s.v_cmd_v = lim.v_cmd_v; s.v_lim_v = lim.v_lim_v; s.limiting = lim.limiting; s.ramp = lim.ramp;
+        s.v_floor_v = v_pack;
+        const float d = (float)buck_ccm_update(&s, &g, &c, p.vc, v_in) / (float)c.period_ns;
+        lim.clamp = s.clamp;
+        for (int j = 0; j < 50; j++, t_us++)
+        {
+            i = pack_plant_us(&p, d, v_in, r1, offset_v, v_pack, r);
+            if (i > pk) { pk = i; }
+            if (i < lo) { lo = i; }
+            const uint32_t ph = t_us % SCAN_US;
+            if (ph >= SCAN_US - ID_US) { acc += i; }
+            if (ph == SCAN_US - 1u)
+            {
+                ring[head] = acc / (float)ID_US;
+                if (ring[head] > mpk) { mpk = ring[head]; }
+                head = (head + 1u) % RING; acc = 0.0f;
+            }
+        }
+        if (k >= CYCLES - TAIL) { i_sum += i; }
+    }
+    *meas_pk = mpk; *i_min = lo; *i_end = i_sum / (float)TAIL;
+    return pk;
+}
+
+static void test_ilim_entry(void)
+{
+    /* From V_ref (the entry before 2026-11-11) the voltage law drives the whole 0.8 V at once and the limit
+     * acts only once a scan reads over it.  From V_out (buck_ccm_limit_from) the peak must stay within 0.3 A
+     * of the limit.  The dip just after the entry is u0's error (0.13 V low here: -0.627 V against the
+     * plant's 0.5 V) over R; it must not reach 0.3 A. */
+    printf("CCM entry from DCM at 2 A into the pack, ceiling +0.8 V, kl 100, newest scan, 100 ms:\n");
+    const float lims[] = { 2.0f, 2.5f, 3.0f, 3.5f };
+    const float rs[] = { 0.10f, 0.13f, 0.17f };
+    for (int a = 0; a < 3; a++)
+    {
+        for (int b = 0; b < 4; b++)
+        {
+            float pk_off, m_off, lo_off, e_off, pk_on, m_on, lo_on, e_on;
+            pk_off = ilim_entry_sim(false, lims[b], rs[a], &m_off, &lo_off, &e_off);
+            pk_on  = ilim_entry_sim(true,  lims[b], rs[a], &m_on,  &lo_on,  &e_on);
+            printf("  %.2f ohm, limit %.1f A: from V_ref L1 peak %.2f (scan %.2f) low %.2f end %.2f A | "
+                   "from V_out peak %.2f (scan %.2f) low %.2f end %.2f A\n", (double)rs[a], (double)lims[b],
+                   pk_off, m_off, lo_off, e_off, pk_on, m_on, lo_on, e_on);
+            CHECK(pk_on < lims[b] + 0.3f, "%.2f ohm, limit %.1f A: entry from V_out peaked at %.2f A",
+                  (double)rs[a], (double)lims[b], pk_on);
+            CHECK(fabsf(e_on - lims[b]) < 0.1f, "%.2f ohm, limit %.1f A: entry from V_out ended at %.2f A",
+                  (double)rs[a], (double)lims[b], e_on);
+            CHECK(lo_on > 0.3f, "%.2f ohm, limit %.1f A: entry from V_out dipped to %.2f A",
+                  (double)rs[a], (double)lims[b], lo_on);
+        }
+    }
+}
+
 static void test_ilim_lag(void)
 {
     printf("current limit through ADC2's lag, buck into the pack, limit 2 A, 200 ms:\n");
-    /* The board as it was (kl 400, 8-scan mean, 0.17 ohm): must oscillate, as section 15 did. */
+    /* The board as it was (kl 400, 8-scan mean, 0.17 ohm): must oscillate, as section 15 did (there it grew
+     * until SW_VIN_RISE; this linear plant settles into a limit cycle). */
     {
         float pp, lo;
         const float m = ilim_lag_sim(8u, 400.0f, 0.17f, &pp, &lo);
         printf("  kl 400, 8-scan mean, 0.17 ohm: I_L %.2f A, last 20 ms p-p %.2f A, lowest %.2f A\n", m, pp, lo);
-        CHECK(pp > 1.0f && lo < -0.5f, "the 8-scan mean should reproduce the oscillation (p-p %.2f A, lowest %.2f A)",
-              pp, lo);
+        CHECK(pp > 1.0f, "the 8-scan mean should reproduce the oscillation (p-p %.2f A)", pp);
     }
     /* The fix: the newest scan and CCM_ILIM_KL_CCM_DEFAULT (100).  Steady at 2 A from 0.05 to 0.17 ohm (the
-     * bench path is about 0.13).  Below 0.10 ohm the entry (1 V over the pack with the plant's 0.5 V) still
-     * dips L1 negative for a moment whatever kl is: printed, checked only at 0.13 and 0.17 ohm. */
+     * bench path is about 0.13).  At 0.05 ohm the start (1 V over the pack with the plant's 0.5 V) dips the
+     * current negative for a moment: printed, reverse checked only at 0.13 and 0.17 ohm. */
     const float rs[] = { 0.05f, 0.10f, 0.13f, 0.17f };
     for (int j = 0; j < 4; j++)
     {
@@ -1178,11 +1273,13 @@ static void test_ilim_lag(void)
         CHECK(fabsf(m - 2.0f) < 0.1f && pp < 0.2f, "kl 100 at %.2f ohm: I_L %.2f A, p-p %.2f A", (double)rs[j], m, pp);
         if (rs[j] > 0.12f) { CHECK(lo > -0.05f, "kl 100 at %.2f ohm: L1 reversed to %.2f A", (double)rs[j], lo); }
     }
-    /* kl 400 on the newest scan is the margin's edge: it oscillates at 0.10 ohm. */
+    /* The margin: kl 400 on the newest scan holds at 0.08 ohm and oscillates at 0.05. */
+    const float r400[] = { 0.08f, 0.05f };
+    for (int j = 0; j < 2; j++)
     {
         float pp, lo;
-        const float m = ilim_lag_sim(1u, 400.0f, 0.10f, &pp, &lo);
-        printf("  kl 400, newest scan, 0.10 ohm: I_L %.2f A, last 20 ms p-p %.2f A\n", m, pp);
+        const float m = ilim_lag_sim(1u, 400.0f, r400[j], &pp, &lo);
+        printf("  kl 400, newest scan, %.2f ohm: I_L %.2f A, last 20 ms p-p %.2f A\n", (double)r400[j], m, pp);
     }
 }
 
@@ -1273,6 +1370,7 @@ int main(int argc, char **argv)
     test_band();
     test_floor();
     test_ilim_lag();
+    test_ilim_entry();
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("buck_ccm: all checks passed\n");
     return 0;

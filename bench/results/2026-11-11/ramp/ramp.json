@@ -1,0 +1,306 @@
+{
+ "above_mv": 800,
+ "phases": [
+  {
+   "mode": "dcm",
+   "pack_read_mv": 15401,
+   "ceiling_mv": 16201,
+   "points": [
+    {
+     "set_ma": 100,
+     "t_set": 0.339,
+     "t_cap0": 2.84,
+     "dc": {
+      "file": "dcm_100_dc.csv",
+      "triggered": true,
+      "sample_rate_sa_s": 124999999.99999999,
+      "download_s": 0.89,
+      "warnings": []
+     },
+     "t_cap1": 4.134
+    },
+    {
+     "set_ma": 250,
+     "t_set": 4.437,
+     "t_cap0": 6.937,
+     "dc": {
+      "file": "dcm_250_dc.csv",
+      "triggered": true,
+      "sample_rate_sa_s": 124999999.99999999,
+      "download_s": 0.87,
+      "warnings": []
+     },
+     "t_cap1": 8.213
+    },
+    {
+     "set_ma": 500,
+     "t_set": 8.523,
+     "t_cap0": 11.023,
+     "dc": {
+      "file": "dcm_500_dc.csv",
+      "triggered": true,
+      "sample_rate_sa_s": 124999999.99999999,
+      "download_s": 0.88,
+      "warnings": []
+     },
+     "ac": {
+      "file": "dcm_500_ac.csv",
+      "triggered": true,
+      "sample_rate_sa_s": 124999999.99999999,
+      "download_s": 2.03,
+      "warnings": [],
+      "scale_v_div": 0.5
+     },
+     "t_cap1": 22.46
+    },
+    {
+     "set_ma": 750,
+     "t_set": 22.57,
+     "t_cap0": 25.07,
+     "dc": {
+      "file": "dcm_750_dc.csv",
+      "triggered": true,
+      "sample_rate_sa_s": 124999999.99999999,
+      "download_s": 0.88,
+      "warnings": []
+     },
+     "t_cap1": 26.355
+    },
+    {
+     "set_ma": 1000,
+     "t_set": 26.608,
+     "t_cap0": 29.108,
+     "dc": {
+      "file": "dcm_1000_dc.csv",
+      "triggered": true,
+      "sample_rate_sa_s": 124999999.99999999,
+      "download_s": 0.88,
+      "warnings": []
+     },
+     "t_cap1": 30.393
+    },
+    {
+     "set_ma": 1250,
+     "t_set": 30.648,
+     "t_cap0": 33.149,
+     "dc": {
+      "file": "dcm_1250_dc.csv",
+      "triggered": true,
+      "sample_rate_sa_s": 124999999.99999999,
+      "download_s": 0.87,
+      "warnings": []
+     },
+     "t_cap1": 34.427
+    },
+    {
+     "set_ma": 1500,
+     "t_set": 34.686,
+     "t_cap0": 37.186,
+     "dc": {
+      "file": "dcm_1500_dc.csv",
+      "triggered": true,
+      "sample_rate_sa_s": 124999999.99999999,
+      "download_s": 0.87,
+      "warnings": []
+     },
+     "ac": {
+      "file": "dcm_1500_ac.csv",
+      "triggered": true,
+      "sample_rate_sa_s": 124999999.99999999,
+      "download_s": 1.39,
+      "warnings": [],
+      "scale_v_div": 0.5
+     },
+     "t_cap1": 47.861
+    },
+    {
+     "set_ma": 1750,
+     "t_set": 48.006,
+     "t_cap0": 50.506,
+     "dc": {
+      "file": "dcm_1750_dc.csv",
+      "triggered": true,
+      "sample_rate_sa_s": 124999999.99999999,
+      "download_s": 0.9,
+      "warnings": []
+     },
+     "t_cap1": 51.805
+    },
+    {
+     "set_ma": 2000,
+     "t_set": 52.006,
+     "t_cap0": 54.506,
+     "dc": {
+      "file": "dcm_2000_dc.csv",
+      "triggered": true,
+      "sample_rate_sa_s": 124999999.99999999,
+      "download_s": 0.9,
+      "warnings": []
+     },
+     "t_cap1": 55.811
+    }
+   ],
+   "end_state": "IDLE",
+   "end_fault": [],
+   "samples": 220
+  },
+  {
+   "mode": "ccm",
+   "pack_read_mv": 15419,
+   "ceiling_mv": 16219,
+   "points": [
+    {
+     "set_ma": 2500,
+     "t_set": 0.344,
+     "t_cap0": 2.844,
+     "dc": {
+      "file": "ccm_2500_dc.csv",
+      "triggered": true,
+      "sample_rate_sa_s": 124999999.99999999,
+      "download_s": 0.88,
+      "warnings": []
+     },
+     "t_cap1": 4.143
+    },
+    {
+     "set_ma": 2000,
+     "t_set": 4.396,
+     "t_cap0": 6.896,
+     "dc": {
+      "file": "ccm_2000_dc.csv",
+      "triggered": true,
+      "sample_rate_sa_s": 124999999.99999999,
+      "download_s": 0.88,
+      "warnings": []
+     },
+     "t_cap1": 8.177
+    },
+    {
+     "set_ma": 1750,
+     "t_set": 8.427,
+     "t_cap0": 10.927,
+     "dc": {
+      "file": "ccm_1750_dc.csv",
+      "triggered": true,
+      "sample_rate_sa_s": 124999999.99999999,
+      "download_s": 0.89,
+      "warnings": []
+     },
+     "t_cap1": 12.222
+    },
+    {
+     "set_ma": 1500,
+     "t_set": 12.478,
+     "t_cap0": 14.978,
+     "dc": {
+      "file": "ccm_1500_dc.csv",
+      "triggered": true,
+      "sample_rate_sa_s": 124999999.99999999,
+      "download_s": 0.86,
+      "warnings": []
+     },
+     "ac": {
+      "file": "ccm_1500_ac.csv",
+      "triggered": true,
+      "sample_rate_sa_s": 124999999.99999999,
+      "download_s": 1.41,
+      "warnings": [],
+      "scale_v_div": 0.5
+     },
+     "t_cap1": 25.703
+    },
+    {
+     "set_ma": 1300,
+     "t_set": 25.82,
+     "t_cap0": 28.321,
+     "dc": {
+      "file": "ccm_1300_dc.csv",
+      "triggered": true,
+      "sample_rate_sa_s": 124999999.99999999,
+      "download_s": 0.92,
+      "warnings": []
+     },
+     "t_cap1": 29.649
+    },
+    {
+     "set_ma": 3000,
+     "t_set": 29.954,
+     "t_cap0": 32.454,
+     "dc": {
+      "file": "ccm_3000_dc.csv",
+      "triggered": true,
+      "sample_rate_sa_s": 124999999.99999999,
+      "download_s": 0.88,
+      "warnings": []
+     },
+     "ac": {
+      "file": "ccm_3000_ac.csv",
+      "triggered": true,
+      "sample_rate_sa_s": 124999999.99999999,
+      "download_s": 1.45,
+      "warnings": [],
+      "scale_v_div": 0.5
+     },
+     "t_cap1": 43.261
+    },
+    {
+     "set_ma": 3500,
+     "t_set": 43.546,
+     "t_cap0": 46.046,
+     "dc": {
+      "file": "ccm_3500_dc.csv",
+      "triggered": true,
+      "sample_rate_sa_s": 124999999.99999999,
+      "download_s": 0.92,
+      "warnings": []
+     },
+     "t_cap1": 47.366
+    },
+    {
+     "set_ma": 4000,
+     "t_set": 47.568,
+     "t_cap0": 50.068,
+     "dc": {
+      "file": "ccm_4000_dc.csv",
+      "triggered": true,
+      "sample_rate_sa_s": 124999999.99999999,
+      "download_s": 0.88,
+      "warnings": []
+     },
+     "t_cap1": 51.351
+    },
+    {
+     "set_ma": 4500,
+     "t_set": 51.606,
+     "t_cap0": 54.106,
+     "dc": {
+      "file": "ccm_4500_dc.csv",
+      "triggered": true,
+      "sample_rate_sa_s": 124999999.99999999,
+      "download_s": 0.89,
+      "warnings": []
+     },
+     "ac": {
+      "file": "ccm_4500_ac.csv",
+      "triggered": true,
+      "sample_rate_sa_s": 124999999.99999999,
+      "download_s": 1.59,
+      "warnings": [],
+      "scale_v_div": 0.5
+     },
+     "t_cap1": 65.057
+    }
+   ],
+   "end_state": "IDLE",
+   "end_fault": [],
+   "samples": 257
+  }
+ ],
+ "idle": {
+  "file": "idle_dc.csv",
+  "triggered": true,
+  "sample_rate_sa_s": 124999999.99999999,
+  "download_s": 1.16,
+  "warnings": []
+ }
+}

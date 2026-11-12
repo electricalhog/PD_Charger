@@ -1,0 +1,31 @@
+
+==================================================================
+  16:00:01  STEP: dcm 1000 mA, ceiling pack + 800 mV  -- read the ammeter now (20 s)
+==================================================================
+  done: ok True end IDLE [] ccm_frac 0.0 lim_frac 1.0 ceiling 16167 tail {'v_out_mv': 15584, 'i_out_ma': 999, 'v_in_mv': 24406, 'i_in_ma': 771, 'is_raw_ma': 751}
+  16:00:22  idle 8 s (meter should read ~0)
+
+SWEEP DONE (dcm) 16:00:30
+
+==================================================================
+  16:00:31  STEP: ccm 2000 mA, ceiling pack + 800 mV  -- read the ammeter now (20 s)
+==================================================================
+  done: ok True end IDLE [] ccm_frac 1.0 lim_frac 1.0 ceiling 16150 tail {'v_out_mv': 15608, 'i_out_ma': 1988, 'v_in_mv': 24358, 'i_in_ma': 1324, 'is_raw_ma': 1307}
+  trace: {"state": "DONE", "file": "bringup_out/20261111-160053_regulator_trace.csv", "ccm_samples": 1537, "ilim_samples": 1537}
+  16:00:53  idle 8 s (meter should read ~0)
+
+==================================================================
+  16:01:01  STEP: ccm 3000 mA, ceiling pack + 800 mV  -- read the ammeter now (20 s)
+==================================================================
+  done: ok True end IDLE [] ccm_frac 1.0 lim_frac 1.0 ceiling 16201 tail {'v_out_mv': 15712, 'i_out_ma': 3004, 'v_in_mv': 24223, 'i_in_ma': 1985, 'is_raw_ma': 1976}
+  trace: {"state": "DONE", "file": "bringup_out/20261111-160123_regulator_trace.csv", "ccm_samples": 1537, "ilim_samples": 1537}
+  16:01:23  idle 8 s (meter should read ~0)
+
+==================================================================
+  16:01:31  STEP: ccm 3500 mA, ceiling pack + 800 mV  -- read the ammeter now (20 s)
+==================================================================
+  done: ok True end IDLE [] ccm_frac 1.0 lim_frac 1.0 ceiling 16184 tail {'v_out_mv': 15802, 'i_out_ma': 3499, 'v_in_mv': 23961, 'i_in_ma': 2336, 'is_raw_ma': 2322}
+  trace: {"state": "DONE", "file": "bringup_out/20261111-160154_regulator_trace.csv", "ccm_samples": 1537, "ilim_samples": 1537}
+  16:01:54  idle 8 s (meter should read ~0)
+
+SWEEP DONE (ccm) 16:02:02

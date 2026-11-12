@@ -435,6 +435,10 @@ start 24484 mV). Not cleared.
 
 **Host model** (`test_ilim_lag`: buck, the ADC2 pipeline as above, the section 15 start, limit 2 A, 200 ms):
 
+(Corrected on 2026-11-11, `../2026-11-11/README.md` section 2: this model used L = 50 × L1, which adds a 1.8 ms
+pole the board does not have. On the real L1 and C_int, kl 400 holds down to 0.08 Ω, and the 8-scan mean still
+oscillates at 0.17 Ω. The table below is the 50× plant.)
+
 | kl | ID_MON | R | I_L (last 20 ms) | p-p | lowest |
 |---|---|---|---|---|---|
 | 400 | 8-scan mean | 0.17 Ω | 1.46 A | 6.84 A | −2.01 A |

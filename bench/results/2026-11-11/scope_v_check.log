@@ -1,0 +1,9 @@
+  16:08:21  idle (regulator IDLE, output switch open)
+  16:08:45  STEP: dcm 1000 mA, ceiling pack + 800 mV (20 s)
+  done: ok True IDLE [] pack 15367 tail {'v_out_mv': 15532, 'i_out_ma': 1000, 'v_in_mv': 24423, 'i_in_ma': 775, 'is_raw_ma': 752}
+  16:09:15  idle 8 s
+  16:09:23  STEP: ccm 3500 mA, ceiling pack + 800 mV (20 s)
+  done: ok True IDLE [] pack 15367 tail {'v_out_mv': 15881, 'i_out_ma': 3483, 'v_in_mv': 24270, 'i_in_ma': 2315, 'is_raw_ma': 2288}
+  16:09:53  idle 8 s
+  16:10:01  idle again
+DONE 16:10:24

@@ -97,6 +97,7 @@ typedef struct
     float u_v;       /**< integrator: the loss voltage the feedforward misses [V] */
     int8_t clamp;    /**< last update: +1 at the longest pulse, -1 at the shortest */
     uint8_t limiting;/**< last update: the current limit set the duty           */
+    uint8_t ramp;    /**< entry ramp (buck_ccm_limit_from) until I first reaches the limit: u runs */
     float v_lim_v;   /**< the limit's voltage reference [V] (valid while limiting) */
     float v_cmd_v;   /**< reference the duty is built on: min(V_ref, v_lim) [V]    */
     float v_prev_v;  /**< last V_out buck_ccm_update saw (derivative) [V]          */
@@ -165,10 +166,15 @@ float buck_ccm_u_initial(const BuckCcmTimingCfg *c, float i_load_a, float r_seri
  *  to min(V_ref, v_lim) and s->limiting.  With ilim_a <= 0, v_cmd = V_ref. */
 void buck_ccm_limit(BuckCcmState *s, const BuckCcmGains *g, float v_ref_v, float v_out_v, float i_a);
 
+/** Engage the limit with its reference at V_out (a CCM entry below V_ref with a limit set): v_lim then rises
+ *  at kl (I_lim - I) per buck_ccm_limit call, and the voltage integrator keeps running (s->ramp) until the
+ *  current first reaches the limit or the limit hands back.  Nothing if V_out >= V_ref. */
+void buck_ccm_limit_from(BuckCcmState *s, float v_ref_v, float v_out_v);
+
 /** One update of the voltage law, every dt_s, on s->v_cmd_v: returns the Q1
  *  on-time [ns] and sets s->t_on_ticks, clamped; at a clamp the integrator
  *  tracks the value that reaches it (no wind-up), and it holds while the
- *  limit is active. */
+ *  limit is active, except in an entry ramp (s->ramp). */
 uint32_t buck_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmTimingCfg *c,
                          float v_out_v, float v_in_v);
 /* With kff_l or kff_r set, the caller puts the output current in s->i_out_a
