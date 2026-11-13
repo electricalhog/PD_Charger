@@ -1084,7 +1084,11 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
 #define CCM_U0_MV                100u
 #define CCM_U0_BANDS             4u
 #define CCM_U0_BAND_MV           { 7000u, 12000u, 17500u }   /* 5 / 9 / 15 / 20 V and the PPS between */
-#define CCM_OCP_MA_DEFAULT       5000u   /* on regulator_il_avg_ma (IL_MON, period mean) */
+#if defined(BATTERY_LOAD) && (BATTERY_LOAD)
+#define CCM_OCP_MA_DEFAULT       CCM_OCP_MA_FULL_SCALE   /* battery load: ID_MON's full scale (2026-11-12) */
+#else
+#define CCM_OCP_MA_DEFAULT       5000u   /* on regulator_ccm_i_avg_ma (ID_MON by default), capped at full scale */
+#endif
 #if defined(BATTERY_LOAD) && (BATTERY_LOAD)
 #define CCM_ILIM_MA_DEFAULT      500u    /* battery load: what the pack takes until `bu battery` sets it */
 #else
@@ -1116,12 +1120,18 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
  * in boost and in buck-boost once V_ref is ENTER_PERMILLE over the lowest V_out
  * the boost law reaches (boost_ccm_v_min, about 1.01 V_in); out under
  * EXIT_PERMILLE.  U0 is the integrator's first value when no learned one
- * exists (losses the feedforward misses, model: +0.05 V at 28 V / 1 A from
- * 25 V, plans/scripts/ccm_bb.py). */
+ * exists.  -440: the board settled u at -390 to -493 mV in boost CCM at 28 V
+ * from 24.3 V into 25.3 ohm (bench 2026-11-03, sweep_*.jsonl), so it makes
+ * about 0.44 V more than the law expects.  Until 2026-11-12 this was +100
+ * (the loss model, plans/scripts/ccm_bb.py): harmless into 25.3 ohm, but
+ * into a pack 0.54 V of error is 4 A over the entry current for about a
+ * millisecond (host test test_boost_pack: 3.8 A peak at a 1 A limit, 0.13
+ * ohm).  One voltage and one load measured: a run into the resistor at the
+ * pack's voltage learns the value for that band before the pack is on. */
 #define CCM_BOOST_ENABLE_DEFAULT 1u
 #define CCM_BOOST_ENTER_PERMILLE 1030u
 #define CCM_BOOST_EXIT_PERMILLE  1010u
-#define CCM_BOOST_U0_MV          100
+#define CCM_BOOST_U0_MV          (-440)
 /* Auto CCM (regulator_ccm_enable 1) for boost CCM over buck-boost DCM: enter
  * when the DCM loop's command (its output-current estimate) reaches ENTER_MA,
  * leave when CCM's ID_MON mean is under EXIT_MA.  Model crossover 0.35 A at
@@ -1150,6 +1160,14 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
 #define CCM_BAND_U0_PERMILLE     (-19)
 #define CCM_DUTY_CLAMP_CYCLES    20u     /* leave after this many PID cycles at the longest pulse */
 #define CCM_OCP_CYCLES           20u     /* 1 ms */
+/* SW_OCP at ID_MON's full scale (2026-11-12): with regulator_ccm_ilim_src 1 the level is never over
+ * regulator_ccm_ocp_fs_ma = (ADC_ID_FULL_SCALE_MA - CCM_OCP_FS_SWING_MA) after regulator_id_gain_permille and
+ * _offset_ma, so a current past what ID_MON can read still trips (its reading sits pinned over that level).  A level
+ * at the last ADC count might not: the INA281 (U8) output swings to just under its supply, which is likely the 3.3 V
+ * the ADC reads against (inference from the schematic's power symbols, not measured).  150 mA raw is 90 mV.
+ * CCM_OCP_MA_FULL_SCALE in regulator_ccm_ocp_ma: the full-scale level alone. */
+#define CCM_OCP_FS_SWING_MA      150u
+#define CCM_OCP_MA_FULL_SCALE    0xFFFFu
 _Static_assert(CCM_REFRESH_NS_MAX + 3u * CCM_DEADTIME_NS_MAX + CCM_PULSE_GUARD_NS + CCM_MIN_ON_NS +
                CCM_MIN_Q2_END_NS < 1000000000u / 400000u,
                "the longest refresh, its dead times and the shortest pulses must fit the 400 kHz period");
@@ -1440,7 +1458,7 @@ _Static_assert(PULSE_SKIP_ABOVE_MV * 100u < SETPOINT_MIN_MV * (OVP_RELATIVE_PCT 
 /* =========================================================================
  * Battery-load build (BATTERY_LOAD, branch claude/lipo-load, plans/lipo-load.md)
  *
- * A LiPo (3S/4S/6S) on VBUS behind a series resistor and a fuse, as a power
+ * A LiPo (3S to 8S) on VBUS behind a series resistor and a fuse, as a power
  * sink.  The pack is never charged full (managed by the operator), so there
  * is no charge termination.  OUTPUT_DIS (the VBUS discharge, after the output
  * switch) would short the pack and is never asserted.  START measures the
@@ -1451,10 +1469,14 @@ _Static_assert(PULSE_SKIP_ABOVE_MV * 100u < SETPOINT_MIN_MV * (OVP_RELATIVE_PCT 
 
 /**
  * BATTERY_CEILING_MAX_MV — Highest ceiling (START / SET_VOLTAGE) accepted.
- * 25000: under a 6S pack's 25.2 V full.  The operator picks the ceiling per
- * pack; this only stops a typo.
+ * 34000: over an 8S pack's 33.6 V full, so a pack read plus the run's margin
+ * still starts near full (it was 25000, for 6S, until 2026-11-12).  The
+ * operator picks the ceiling per pack; this only stops a typo.  The output
+ * ceramics are 50 V parts and SW_OVP trips at OVP_RELATIVE_PCT of the target.
  */
-#define BATTERY_CEILING_MAX_MV   25000u
+#define BATTERY_CEILING_MAX_MV   34000u
+_Static_assert(BATTERY_CEILING_MAX_MV * OVP_RELATIVE_PCT / 100u < 40000u,
+               "battery ceiling: the relative OVP above it must stay under 40 V on the 50 V output ceramics");
 
 /**
  * BATTERY_MEASURE_MS — Output switch closed with every FET off before the

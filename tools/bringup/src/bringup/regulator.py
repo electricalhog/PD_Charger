@@ -50,7 +50,7 @@ FAULT_BITS = {
     0x08: ("SW_UVP", "software output under-voltage"),
     0x10: ("SW_VIN_RANGE", "V_in out of range for the selected mode"),
     0x20: ("SW_BACKSTOP", "too many consecutive cycle-by-cycle backstop events"),
-    0x40: ("SW_OCP", "buck CCM: CCM's filtered current (regulator_ccm_i_avg_ma, ID_MON by default) over regulator_ccm_ocp_ma for 1 ms"),
+    0x40: ("SW_OCP", "CCM: CCM's filtered current (regulator_ccm_i_avg_ma, ID_MON by default) over regulator_ccm_ocp_ma, at most ID_MON's full scale (regulator_ccm_ocp_fs_ma), for 1 ms"),
     0x80: ("SW_VIN_RISE", "battery load: V_in rose BATTERY_VIN_RISE_MV over its value at the start (power going back "
                           "into the input)"),
 }
@@ -212,7 +212,8 @@ _CONTROL = {"regulator_mode": "mode", "target_voltage_mv": "target_mv", "regulat
             "regulator_ccm_entries": "ccm_entries", "regulator_ccm_exits": "ccm_exits",
             "regulator_ccm_exit_reason": "ccm_exit_reason",
             # Period-mean currents and the CCM current limit (2026-10-21)
-            "regulator_ccm_ilim_ma": "ccm_ilim_ma", "regulator_ccm_ilim_src": "ccm_ilim_src",
+            "regulator_ccm_ilim_ma": "ccm_ilim_ma", "regulator_ccm_ilim_ramp_ma_s": "ccm_ilim_ramp_ma_s",
+            "regulator_ccm_ilim_target_ma": "ccm_ilim_target_ma", "regulator_ccm_ilim_src": "ccm_ilim_src",
             "regulator_ccm_ilim_fast": "ccm_ilim_fast",
             "regulator_ccm_peak_ma": "ccm_peak_ma", "regulator_ccm_limiting": "ccm_limiting",
             "regulator_ccm_limit_entries": "ccm_limit_entries", "adc_monitor_adc2_aborts": "adc2_aborts",
@@ -227,7 +228,8 @@ _CONTROL = {"regulator_mode": "mode", "target_voltage_mv": "target_mv", "regulat
 _CONTROL_I = {"regulator_i_out_filt_ma": "i_out_filt_ma", "regulator_i_in_filt_ma": "i_in_filt_ma",
               "regulator_p_in_mw": "p_in_mw", "regulator_p_out_mw": "p_out_mw", "regulator_il_avg_ma": "il_avg_ma",
               "regulator_il_ma": "il_ma", "regulator_ccm_i_lim_meas_ma": "ccm_i_ma",
-              "regulator_ccm_i_avg_ma": "ccm_i_avg_ma"}
+              "regulator_ccm_i_avg_ma": "ccm_i_avg_ma",
+              "regulator_ccm_ocp_fs_ma": "ccm_ocp_fs_ma"}
 # Signed 16-bit: the runtime current calibrations.
 _CONTROL_I16 = {"regulator_il_gain_permille": "il_gain_permille", "regulator_il_offset_ma": "il_offset_ma",
                 "regulator_id_gain_permille": "id_gain_permille", "regulator_id_offset_ma": "id_offset_ma",

@@ -519,6 +519,10 @@ volatile int16_t  regulator_ccm_exit_i0_ma  = 0;
 volatile uint32_t regulator_ccm_handover_timeouts = 0u;
 volatile int32_t  regulator_il_ma           = 0;
 volatile uint16_t regulator_ccm_ilim_ma     = CCM_ILIM_MA_DEFAULT;
+volatile uint16_t regulator_ccm_ilim_ramp_ma_s = 0u;   /* 0 off; cleared at every stop and fault */
+volatile uint16_t regulator_ccm_ilim_target_ma = 0u;
+static int32_t    ilim_ramp_q = -1;   /* regulator_ccm_ilim_ma x PID_EXECUTION_RATE_HZ; -1 not started */
+volatile int32_t  regulator_ccm_ocp_fs_ma   = 0;   /* SW_OCP's full-scale level (5c), telemetry */
 volatile float    regulator_ccm_ilim_kl     = CCM_ILIM_KL_DEFAULT;
 volatile float    regulator_ccm_ilim_kl_ccm = CCM_ILIM_KL_CCM_DEFAULT;
 volatile uint8_t  regulator_ccm_ilim_src    = CCM_ILIM_SRC_DEFAULT;
@@ -1241,6 +1245,7 @@ void regulator_start(void)
     regulator_i_out_filt_ma = 0;
     regulator_i_in_filt_ma  = 0;
     regulator_ccm_i_avg_ma  = 0;
+    ilim_ramp_q = -1;
     regulator_p_in_mw       = 0;
     regulator_p_out_mw      = 0;
     hrtim_set_switching_period(regulator_mode);
@@ -1316,6 +1321,7 @@ void regulator_stop(void)
     {
         regulator_state = REGULATOR_STATE_IDLE;
     }
+    regulator_ccm_ilim_ramp_ma_s = 0u;   /* a ramp is armed per run (step 5d0) */
 
     /* Dropping INPUT_EN below makes VS_GOOD (FLT1) fall; that is a normal
      * shutdown, not a fault, so disarm the fault IRQ first.                 */
@@ -2134,7 +2140,19 @@ void regulator_pid_tim7_isr(void)
         RegulatorMode new_mode = determine_mode_from_voltages(regulator_vin_filt_mv,
                                                               commanded_mv, v_out_mv);
         if (ccm_mode_settle != 0u) { ccm_mode_settle--; }
-        if (new_mode != regulator_mode)
+        /* Boost-kind CCM drives the same legs in buck-boost and boost mode
+         * (Q1 held on with its refresh, Q4 / Q3 switching), so buck-boost to
+         * boost need not leave it; the change runs when CCM ends.  2026-11-12,
+         * 8S pack at 31 V from 24.5 V: CCM's own current lifted V_out over
+         * V_in + BB_ABOVE_VIN_MV through the pack's resistance, the MODE exit
+         * dropped it to the buck-boost DCM cap (about 1.1 A), V_out fell back
+         * under the edge inside CCM_MODE_SETTLE, and CCM re-entered after
+         * CCM_REENTRY_HOLD: a 1 kHz cycle, 0.2 ms CCM / 1 ms DCM at 10 A
+         * peaks, about 1.1 A whatever the limit, Q1 hot (exit log: MODE). */
+        const bool ccm_keeps_mode = regulator_ccm_active && regulator_ccm_kind == CCM_KIND_BOOST &&
+                                    regulator_mode == REGULATOR_MODE_BUCK_BOOST &&
+                                    new_mode == REGULATOR_MODE_BOOST;
+        if (new_mode != regulator_mode && !ccm_keeps_mode)
         {
             /* Out of CCM first (5b), then CCM_MODE_SETTLE cycles in DCM. */
             if (regulator_ccm_active)      { ccm_exit_request = REGULATOR_CCM_EXIT_MODE; }
@@ -2283,6 +2301,30 @@ void regulator_pid_tim7_isr(void)
         : regulator_il_ma;
     regulator_ccm_i_lim_meas_ma = i_lim_meas_ma;
     regulator_ccm_i_avg_ma += (i_lim_meas_ma - regulator_ccm_i_avg_ma) / (1 << POWER_FILTER_SHIFT);
+
+    /* --- 5d0. Limit ramp (regulator_ccm_ilim_ramp_ma_s, 0 off): moves
+     * regulator_ccm_ilim_ma toward regulator_ccm_ilim_target_ma at that rate
+     * every cycle, so a sweep is continuous at the PID rate and needs no SWD
+     * writes while it runs (2026-11-12, DCM to CCM ramps on the pack).  It
+     * starts from the limit as it stands, never writes 0 ("no limit"), and
+     * stop and fault clear the rate.  Exact: the state is mA x cycles/s. --- */
+    if (regulator_ccm_ilim_ramp_ma_s != 0u)
+    {
+        const int32_t hz = (int32_t)PID_EXECUTION_RATE_HZ;
+        const int32_t q_tgt = (int32_t)(regulator_ccm_ilim_target_ma != 0u ? regulator_ccm_ilim_target_ma : 1u) * hz;
+        if (ilim_ramp_q < 0)
+        {
+            ilim_ramp_q = (int32_t)(regulator_ccm_ilim_ma != 0u ? regulator_ccm_ilim_ma : 1u) * hz;
+        }
+        const int32_t step = (int32_t)regulator_ccm_ilim_ramp_ma_s;
+        if (ilim_ramp_q < q_tgt)      { ilim_ramp_q = (q_tgt - ilim_ramp_q > step) ? ilim_ramp_q + step : q_tgt; }
+        else if (ilim_ramp_q > q_tgt) { ilim_ramp_q = (ilim_ramp_q - q_tgt > step) ? ilim_ramp_q - step : q_tgt; }
+        regulator_ccm_ilim_ma = (uint16_t)((ilim_ramp_q + hz / 2) / hz);
+    }
+    else
+    {
+        ilim_ramp_q = -1;
+    }
 
     /* --- 5d. Current limit (regulator_ccm_ilim_ma, buck_ccm_limit) on
      * CCM's current, in CCM and DCM alike (2026-11-06): v_lim lowers the
@@ -2466,8 +2508,14 @@ void regulator_pid_tim7_isr(void)
     }
 
     /* --- 5c. CCM over-current (SW_OCP) on CCM's filtered current: the
-     * backstop behind the current limit (6c), CCM_OCP_MA_DEFAULT --- */
-    if (regulator_ccm_active && regulator_ccm_i_avg_ma > (int32_t)regulator_ccm_ocp_ma)
+     * backstop behind the current limit (6c), CCM_OCP_MA_DEFAULT.  On
+     * ID_MON the level is at most its full scale (CCM_OCP_FS_SWING_MA):
+     * a higher one could never trip. --- */
+    regulator_ccm_ocp_fs_ma = ((int32_t)(ADC_ID_FULL_SCALE_MA - CCM_OCP_FS_SWING_MA) * regulator_id_gain_permille) / 1000
+                              + regulator_id_offset_ma;
+    const int32_t ocp_level_ma = (regulator_ccm_ilim_src == 1u && regulator_ccm_ocp_fs_ma < (int32_t)regulator_ccm_ocp_ma)
+                                 ? regulator_ccm_ocp_fs_ma : (int32_t)regulator_ccm_ocp_ma;
+    if (regulator_ccm_active && regulator_ccm_i_avg_ma > ocp_level_ma)
     {
         if (++ccm_ocp_count >= CCM_OCP_CYCLES)
         {
@@ -3605,6 +3653,7 @@ static void enter_fault(RegulatorFaultSource source)
      * while RUNNING, and it can preempt this function between the disable
      * below and a state change at the end.                                  */
     regulator_state  = REGULATOR_STATE_FAULT;
+    regulator_ccm_ilim_ramp_ma_s = 0u;
 
     /* Disable switching outputs (belt-and-suspenders: hardware fault logic
      * already forces them to INACTIVE, but also do it in software)          */

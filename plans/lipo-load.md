@@ -25,7 +25,7 @@ start that waits for V_in).
 | Boot | no auto-start | The non-PD build started at 28 V. |
 | START (mailbox, arg = ceiling mV) | Reads the pack with Q5/Q6 closed and every FET off (30 ms), then opens the switch. Starts at max(V_pack, 5 V). Step 4c closes the switch once V_out is within 1 V, then the target goes to the ceiling. | No mismatch at the connect. The current limit is in force from the first cycle. |
 | Current | `regulator_ccm_ilim_ma` (boot default 500 mA) through the shared limiter (step 5d), in DCM and CCM | V_out held at V_pack + I·R. This is the PPS limit, proven within ±20 mA into 25.3 Ω (bench 2026-11-06). |
-| Ceiling | `regulator_battery_ceiling_mv`, 5–25 V (`BATTERY_CEILING_MAX_MV`). SET_VOLTAGE changes it. | Set it below the pack's full voltage. |
+| Ceiling | `regulator_battery_ceiling_mv`, 5–34 V (`BATTERY_CEILING_MAX_MV`; 25 V until 2026-11-12). SET_VOLTAGE changes it. | Set it below the pack's full voltage. |
 | CCM no-reverse floor | Both CCM laws hold the duty at or above the one that balances the pack as read at START. | Without it, a reference below the pack drives L1's average current negative, back into V_in. Host test: −25.6 A buck / −12.8 A boost without, 0.00 / −0.01 A with (averaged model). The first build floored at V_out filtered over 0.8 ms, which held a CCM entry overshoot until SW_OCP (2026-11-09). In the model, L1 from 5 A at a 2 A limit stays at 5.00 A with that floor and settles to 2.00 A with the pack floor. |
 | Rectifier windows in DCM | forced off (`regulator_sr_enable` 0) | DCM through the body diodes cannot reverse. |
 | SW_VIN_RISE fault | V_in more than 2 V over its start value for 3 PID cycles | The bench supply cannot sink. This is the backstop for any reverse path left. |
@@ -65,6 +65,7 @@ pull V_out down and the pack holds it up. That is a safe stop; to stop, use stop
 | L1 | 3S (≤ 12.6 V) + series R | buck | §3 items 1–4 (skipped: Dan went to 4S) |
 | L2 | 4S (≤ 16.8 V) + 220 mΩ + 15 A fuse | buck | §3 items 1, 3, 4 answered |
 | L3 | 6S (≤ 25.2 V) + series R | band / boost | ID_MON reads about 19 % low in boost CCM (2026-11-04), so the real current would be over the limit. Calibrate the band and boost CCM current first. |
+| L4 | 8S (24.0–33.6 V) | boost; band near empty | Prepared 2026-11-12, not run (`bench/results/2026-11-12/README.md`): the ceiling to 34 V, boost's integrator preset −440 mV, `boost_cal.py` (the resistor phase first, with no pack, then the pack with an ammeter). |
 
 Raise the current per pack only with temperatures logged: the free-air budget measured on 2026-10-16 is 2–3.5 W of
 board loss for a 60 K rise.
@@ -80,3 +81,49 @@ L2 at 200 mA ran clean on 2026-11-09 (same README, section 6). The pack read was
 current is still unverified.
 
 The floor is checked only in the averaged host model. SW_VIN_RISE is untested.
+
+## 6. 5 A and a continuous DCM-to-CCM current ramp (2026-11-12, flashed and run: bench README section 9)
+
+**SW_OCP at ID_MON's full scale (Dan, 2026-11-12).** SW_OCP watches ID_MON, whose ADC full scale is 5.5 A
+(12 mΩ × 50 V/V into 3.3 V), so a level over about 5.45 A never trips. The BatteryNext build caps the level at
+`regulator_ccm_ocp_fs_ma` = (5500 − 150 mA raw) after 991 / +4 ≈ 5.3 A, and the battery build's default is that
+level alone (`CCM_OCP_MA_FULL_SCALE`). A current past what ID_MON reads still trips, since the reading sits pinned
+over the level. The 150 mA (90 mV) is headroom for the INA281's output swing under its supply, which is likely the
+same 3.3 V the ADC reads against (inference from the schematic, not measured). `boost_cal.py` no longer lowers
+SW_OCP per step: every CCM run is at full scale, refused on an older build where 0xFFFF would turn SW_OCP off. The
+script's own stop level (2 × the limit, at most 7500 mA, on ID_MON or the host-side V_in × I_in / V_out) is the
+backstop at lower currents.
+
+**The ramp, firmware side (step 5d0).** `regulator_ccm_ilim_ramp_ma_s` (0 off) moves `regulator_ccm_ilim_ma`
+toward `regulator_ccm_ilim_target_ma` every PID cycle, so the limit is continuous at 20 kHz and the host writes
+nothing while it runs. Choices:
+- The ramp moves the limit, not the voltage ceiling. The ceiling stays at the pack read plus the margin for the top
+  current. Everything downstream (the limit law in DCM and CCM, the CCM entry ramp, telemetry) is unchanged.
+- Integer state in mA × cycles/s, so slow rates do not stall in float rounding. It never writes 0, which means no
+  limit.
+- Stop and fault clear the rate, so a ramp is armed per run and never carries into the next START.
+- PPS writes `regulator_ccm_ilim_ma` directly; with the rate at 0 (the default) nothing changes for PPS.
+
+**The ramp, host side (`boost_cal.py ramp FROM TO --rate --hold`).** One pack read, one START at FROM, then three
+SWD writes: arm (target TO, rate), turn (target FROM) after the top hold, and nothing else. Auto CCM (the default)
+makes the run cross the handover by itself: boost-kind CCM over buck-boost DCM enters at a DCM command of 400 mA and
+leaves under 200 mA (CCM_BOOST_ENTER_MA / _EXIT_MA), so FROM defaults to 150 mA to see the exit on the way down.
+The regulator trace (trigger `ccm`) is armed 0.5 s before the ramp starts and records the entry at 20 kHz: in CCM its
+current column is ID_MON per cycle. The script's stop level follows the limit of the moment (max(2 ×, + 1000 mA),
+at most 7500 mA), and after the run it reports the entry and exit points, ID_MON minus the limit per segment, mode
+changes, CCM entry / exit counts and the exit log.
+
+**What it should show.** One entry and one exit per run (the 1 kHz MODE cycle is fixed: 3 entries for 3 steps on
+the re-test). The entry near 400 mA, where the entry overshoot is small, then CCM all the way to TO. That avoids
+the ~500 mA overshoot of a cold CCM entry at 4.5–5 A (the two SW_OCP trips of 2026-11-12). Tracking error under
+the limit's law with the ramp's lag at 100 mA/s.
+
+**Risks, not measured.**
+- Heat: at 5 A into 32 V the converter carries about 160 W. The 4S ramp measured 92–95.6 % in CCM up to 69 W, so the
+  loss at 160 W is likely 5–10 W, over the 2–3.5 W free-air budget (§4). The default ramp spends about 25 s over
+  4 A. Board temperatures are not logged by the script.
+- The forced 500 mA SW_OCP of 2026-11-12 (1.87 A at a 500 mA limit, 0.2 s in) is unexplained; an auto entry near
+  400 mA is close to that case. The ccm trace captures it if it recurs; SW_OCP at full scale will not stop it, the
+  script's stop level (1.4 A at that limit, 3 samples) will if it lasts.
+- At 5 A the limit sits about 300 mA under SW_OCP. A cold CCM entry at 4.5–5 A overshot about 500 mA tonight, so the
+  forced 5 A step may trip; the ramp enters near 400 mA instead.

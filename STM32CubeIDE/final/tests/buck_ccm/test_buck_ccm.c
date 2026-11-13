@@ -1283,6 +1283,135 @@ static void test_ilim_lag(void)
     }
 }
 
+/* Boost into an 8S pack (plans/lipo-load.md, the 8S step): a forced-CCM entry from DCM at i0 into the pack, as
+ * ilim_entry_sim but with the boost law and plant: L1 4.7 uH, c_int the five output ceramics under bias (about
+ * 9 uF at 30 V, not buck's 50 uF), r to the pack, the limit on ADC2's newest scan at kl 100, the reference from
+ * V_out at the entry and the integrator preset as regulator.c does for boost (u0_v plus V_out - reference).
+ * The plant makes offset_v over the model: the board settled u at -0.39 to -0.49 V in boost CCM at 28 V into
+ * 25.3 ohm (bench 2026-11-03, sweep_*.jsonl), so it makes about 0.44 V more than the law expects.  meas_gain
+ * scales what the limit reads (ID_MON read 0.7x in boost CCM that day).  Averaged over the period: the 200 kHz
+ * ripple (4.9 A p-p in L1 at 30 V from 24.4 V) is not in it.  Returns the highest pack current; *lo the lowest
+ * after the entry, *end the mean and *pp the peak to peak of the last 20 ms of 200 ms. */
+static float boost_pack_sim(float v_pack, float r, float ilim_a, float meas_gain, float i0, float above_v,
+                            float offset_v, float u0_v, float *lo, float *end, float *pp)
+{
+    const BuckCcmTimingCfg c = { .period_ns = 5000u, .pulse_start_ns = 360u, .dt_ns = 20u, .refresh_ns = 300u,
+                                 .refresh_interval_ns = 5000u, .min_on_ns = 100u, .min_q2_end_ns = 60u };
+    const BuckCcmGains g = { .ki = 3142.0f, .kp = 0.0f, .u_min_v = -2.0f, .u_max_v = 2.0f, .dt_s = 50e-6f,
+                             .ilim_a = ilim_a, .kl = 100.0f, .dt_lim_s = 50e-6f };
+    const float v_in = 24.4f, v_ref = v_pack + above_v, l = 4.7e-6f, cc = 9e-6f, dt = 0.1e-6f;
+    const float r1 = 1.0f - buck_ccm_refresh_share(&c);
+    enum { SCAN_US = 560, ID_US = 114, RING = 32, CYCLES = 4000, TAIL = 400 };
+    float ring[RING], acc = 0.0f, i = i0, pk = i0, low = i0, i_sum = 0.0f, hi_t = -1e9f, lo_t = 1e9f;
+    for (int k = 0; k < RING; k++) { ring[k] = i0 * meas_gain; }
+    uint32_t head = 0u, t_us = 0u;
+    float vc = v_pack + i0 * r, il = i0 * vc / (v_in * r1);   /* power balance at the entry */
+    BuckCcmState s = { 0 }, lim = { 0 };
+    buck_ccm_reset(&lim, 0.0f, v_ref, vc);
+    buck_ccm_limit_from(&lim, v_ref, vc);
+    buck_ccm_reset(&s, u0_v + (vc - lim.v_cmd_v), v_ref, vc);
+    for (int k = 0; k < CYCLES; k++)
+    {
+        if (k > 0) { buck_ccm_limit(&lim, &g, v_ref, vc, ring[(head + RING - 1u) % RING]); }
+        s.v_cmd_v = lim.v_cmd_v; s.v_lim_v = lim.v_lim_v; s.limiting = lim.limiting; s.ramp = lim.ramp;
+        s.v_floor_v = v_pack;
+        const float d = (float)boost_ccm_update(&s, &g, &c, vc, v_in) / (float)c.period_ns;
+        lim.clamp = s.clamp;
+        for (int j = 0; j < 50; j++, t_us++)
+        {
+            for (int n = 0; n < 10; n++)
+            {
+                i = (vc - v_pack) / r;
+                il += (v_in * r1 - (1.0f - d) * (vc - offset_v)) / l * dt;
+                vc += ((1.0f - d) * il - i) / cc * dt;
+            }
+            if (i > pk)  { pk = i; }
+            if (i < low) { low = i; }
+            const uint32_t ph = t_us % SCAN_US;
+            if (ph >= SCAN_US - ID_US) { acc += i * meas_gain; }
+            if (ph == SCAN_US - 1u) { ring[head] = acc / (float)ID_US; head = (head + 1u) % RING; acc = 0.0f; }
+        }
+        if (k >= CYCLES - TAIL)
+        {
+            i_sum += i;
+            if (i > hi_t) { hi_t = i; }
+            if (i < lo_t) { lo_t = i; }
+        }
+    }
+    *lo = low; *end = i_sum / (float)TAIL; *pp = hi_t - lo_t;
+    return pk;
+}
+
+static void test_boost_pack(void)
+{
+    const float u0 = -0.44f, plant = 0.44f, i0 = 0.5f, above = 0.8f;   /* CCM_BOOST_U0_MV and the board */
+    printf("boost CCM entry into an 8S pack from 24.4 V at 0.5 A, ceiling +0.8 V, kl 100, newest scan, 200 ms "
+           "(averaged model):\n");
+    /* The preset before 2026-11-12 (+0.1 V, from the loss model) against the board's 0.44 V: the first duty
+     * makes 0.54 V over the pack's V_out, 4 A over the entry current into 0.13 ohm, until u runs it off
+     * (1 / ki = 0.32 ms).  The limit's scan (0.56 ms) is too slow to act on it. */
+    {
+        float lo, end, pp;
+        const float pk = boost_pack_sim(30.0f, 0.13f, 1.0f, 1.0f, i0, above, plant, 0.1f, &lo, &end, &pp);
+        printf("  preset +0.10 V (old), 30.0 V, 0.13 ohm, limit 1.0 A: peak %.2f A, end %.2f A\n", pk, end);
+        CHECK(pk > 3.5f, "the old preset should overshoot at the entry (peak %.2f A)", pk);
+    }
+    /* With the preset at the board's value, and the board 0.1 V either side of it: steady at the limit (or at
+     * what the ceiling allows, above / r), no limit cycle, and the entry step bounded by the 0.1 V error over
+     * r.  At 26.4-33 V (3.3-4.1 V a cell) and 0.13-0.30 ohm (the 4S path was about 0.13; an 8S pack or a
+     * series resistor adds to it).  A preset 0.1 V under the board dips the current by 0.1 V / r, below 0 at
+     * 0.13 ohm from 0.5 A: printed, and bounded. */
+    const float packs[] = { 26.4f, 30.0f, 33.0f };
+    const float rs[] = { 0.13f, 0.20f, 0.30f };
+    const float lims[] = { 0.5f, 1.0f, 2.0f, 3.0f };
+    const float errs[] = { -0.1f, 0.0f, 0.1f };
+    for (int a = 0; a < 3; a++)
+    {
+        for (int b = 0; b < 3; b++)
+        {
+            for (int k = 0; k < 4; k++)
+            {
+                for (int o = 0; o < 3; o++)
+                {
+                    float lo, end, pp;
+                    const float pk = boost_pack_sim(packs[a], rs[b], lims[k], 1.0f, i0, above, plant + errs[o], u0,
+                                                    &lo, &end, &pp);
+                    const float want = (lims[k] < above / rs[b]) ? lims[k] : above / rs[b];
+                    const float step = 0.1f / rs[b];
+                    if (a == 1 && b == 0)
+                    {
+                        printf("  preset -0.44 V, board %+.2f V, 30.0 V, 0.13 ohm, limit %.1f A: peak %.2f low %.2f "
+                               "end %.2f A, p-p %.3f A\n", (double)(plant + errs[o]), (double)lims[k], pk, lo, end, pp);
+                    }
+                    CHECK(fabsf(end - want) < 0.1f && pp < 0.1f, "%.1f V %.2f ohm limit %.1f A err %+.1f: end "
+                          "%.2f A (want %.2f), p-p %.2f A", (double)packs[a], (double)rs[b], (double)lims[k],
+                          (double)errs[o], end, want, pp);
+                    CHECK(pk < ((want > i0) ? want : i0) + ((errs[o] > 0.0f) ? step : 0.0f) + 0.3f,
+                          "%.1f V %.2f ohm limit %.1f A err %+.1f: peak %.2f A", (double)packs[a], (double)rs[b],
+                          (double)lims[k], (double)errs[o], pk);
+                    CHECK(lo > i0 - ((errs[o] < 0.0f) ? step : 0.0f) - 0.15f,
+                          "%.1f V %.2f ohm limit %.1f A err %+.1f: low %.2f A", (double)packs[a], (double)rs[b],
+                          (double)lims[k], (double)errs[o], lo);
+                }
+            }
+        }
+    }
+    /* What a low reading does: with ID_MON at 0.7x the loop is as stable and holds limit / 0.7 in the pack,
+     * while the ceiling leaves room for it. */
+    {
+        float lo, end, pp;
+        const float pk = boost_pack_sim(30.0f, 0.13f, 2.0f, 0.7f, i0, above, plant, u0, &lo, &end, &pp);
+        printf("  30.0 V, 0.13 ohm, limit 2.0 A read at 0.7x, ceiling +0.8 V: peak %.2f end %.2f A, p-p %.3f A\n",
+               pk, end, pp);
+        CHECK(fabsf(end - 2.0f / 0.7f) < 0.1f && pp < 0.1f, "0.7x reading: end %.2f A, p-p %.2f A", end, pp);
+        /* The ceiling bounds it: 0.25 V over the pack into 0.13 ohm cannot pass 1.93 A however low the reading. */
+        const float pk2 = boost_pack_sim(30.0f, 0.13f, 2.0f, 0.35f, i0, 0.25f, plant, u0, &lo, &end, &pp);
+        printf("  30.0 V, 0.13 ohm, limit 2.0 A read at 0.35x, ceiling +0.25 V: peak %.2f end %.2f A\n", pk2, end);
+        CHECK(end < 0.25f / 0.13f + 0.1f && pk2 < 0.25f / 0.13f + 0.3f, "ceiling bound: end %.2f A, peak %.2f A",
+              end, pk2);
+    }
+}
+
 static void test_floor(void)
 {
     const float buck_off = floor_sim(false, 0.0f), buck_on = floor_sim(false, 15.0f);
@@ -1371,6 +1500,7 @@ int main(int argc, char **argv)
     test_floor();
     test_ilim_lag();
     test_ilim_entry();
+    test_boost_pack();
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("buck_ccm: all checks passed\n");
     return 0;

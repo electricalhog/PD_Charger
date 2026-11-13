@@ -144,7 +144,12 @@ extern volatile uint16_t regulator_sr_off_ns;
  *    regulator_buck_fsw_khz      200 or 400, taken when buck is entered
  *    regulator_ccm_deadtime_ns   Q1/Q2 and Q3/Q4 dead time, clamped
  *    regulator_ccm_ki            integral gain [1/s]
- *    regulator_ccm_ocp_ma        SW_OCP level on regulator_ccm_i_avg_ma
+ *    regulator_ccm_ocp_ma        SW_OCP level on regulator_ccm_i_avg_ma, at
+ *                                most ID_MON's full scale (regulator_ccm_ocp_fs_ma);
+ *                                CCM_OCP_MA_FULL_SCALE (0xFFFF) for that alone
+ *    regulator_ccm_ilim_ramp_ma_s  limit ramp rate [mA/s] toward
+ *                                regulator_ccm_ilim_target_ma, 0 off;
+ *                                cleared at stop and fault (step 5d0)
  *    regulator_ccm_ilim_ma       current limit in CCM and DCM, 0 off
  *                                (buck_ccm.h, regulator.c step 5d)
  *    regulator_ccm_ilim_kl       its integral gain in DCM [V/(A s)]
@@ -241,6 +246,9 @@ extern volatile int16_t  regulator_ccm_exit_iv_ma;
 extern volatile int16_t  regulator_ccm_exit_i0_ma;
 extern volatile uint32_t regulator_ccm_handover_timeouts;
 extern volatile uint16_t regulator_ccm_ilim_ma;
+extern volatile uint16_t regulator_ccm_ilim_ramp_ma_s;
+extern volatile uint16_t regulator_ccm_ilim_target_ma;
+extern volatile int32_t  regulator_ccm_ocp_fs_ma;
 extern volatile float    regulator_ccm_ilim_kl;
 extern volatile float    regulator_ccm_ilim_kl_ccm;
 extern volatile uint8_t  regulator_ccm_ilim_src;

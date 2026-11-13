@@ -1,0 +1,99 @@
+{
+ "phase": "pack",
+ "ccm": "forced",
+ "started": "2026-11-12 20:05:54",
+ "args": {
+  "phase": "pack",
+  "steps": [
+   500,
+   1000
+  ],
+  "ccm": "forced",
+  "go": true,
+  "seconds": 20.0,
+  "settle": 5.0,
+  "idle": 8.0,
+  "ilim": 2000,
+  "r_ohm": 25.3,
+  "cells": 8,
+  "path_mohm": 170,
+  "above_mv": null,
+  "scope": false,
+  "scope_tdiv": 2e-05,
+  "trace": null,
+  "trace_at": 1.0,
+  "trace_post": 1536,
+  "no_prompt": false,
+  "selftest": false
+ },
+ "steps": [
+  {
+   "step": 500,
+   "pack_read_mv": 30958,
+   "above_mv": 336,
+   "ocp_ma": 1500,
+   "ceiling_mv": 31294,
+   "ilim_ma": 500,
+   "abort_ma": 1100,
+   "run": {
+    "ok": false,
+    "start": "OK",
+    "abort": null,
+    "interrupted": false,
+    "end_state": "FAULT",
+    "end_fault": [
+     "SW_OCP"
+    ],
+    "battery": {
+     "ceiling_mv": 31294,
+     "pack_mv": 30976,
+     "keepalive": 579,
+     "vin_start_mv": 24651,
+     "keepalive_stops": 0,
+     "ilim_ma": 500
+    },
+    "extra": null,
+    "trace": null
+   },
+   "tail": {
+    "n": 0
+   },
+   "rows": [
+    {
+     "t": 0.21,
+     "state": "FAULT",
+     "fault": [
+      "SW_OCP"
+     ],
+     "mode": "BUCK_BOOST",
+     "ccm": 0,
+     "kind": 0,
+     "lim": 1,
+     "target_mv": 31294,
+     "commanded_mv": 31294,
+     "v_out_mv": 31441,
+     "v_in_mv": 24326,
+     "id_raw_ma": 966,
+     "id_cal_ma": 1867,
+     "id_lim_ma": 2136,
+     "i_in_ma": 2513,
+     "i_bound_ma": 1944.3,
+     "u_mv": -40.6266,
+     "on_ns": 1286,
+     "fsw_khz": 200,
+     "skip": 0,
+     "switch": 0,
+     "dis": 0,
+     "skip_events": 277790
+    }
+   ]
+  }
+ ],
+ "summary": {
+  "id_gain_permille_now": 991,
+  "id_offset_ma_now": 4
+ },
+ "stopped": "FAULT or not IDLE after the step: FAULT ['SW_OCP'] (not cleared; read `bu regulator status`)",
+ "interrupted": false,
+ "ended": "2026-11-12 20:05:56"
+}
