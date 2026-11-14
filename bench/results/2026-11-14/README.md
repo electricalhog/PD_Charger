@@ -55,3 +55,19 @@ One capture per state, stepping up: DCM 15.7 V (both nodes ring once the inducto
 rectifier FETs off), buck CCM 22.1 V (SW2 held at V_out, SW1 switching at 200 kHz, on-time 4214 ns), band 23.9 V
 (both legs switching, 555 ns), boost 29.4 V (SW1 held high with spikes to about 31 V at each SW2 edge, SW2
 switching, 1089 ns). Overshoots are scope-probe measurements with ground leads, no bandwidth limit.
+
+## 13:46 — boost → band on the scope (`boost_band_20261114_134656.json`, `figures/boost_band_20261114_134656.png`)
+
+`scripts/boost_band_scope.py --go`: START 27 V (auto CCM, boost) into 25.3 ohm, ceiling to 24 V; scope single shot
+on V_out falling through 25.8 V (HF reject), 2 ms/div, 300k points per channel (12.5 MSa/s). Clean run: 1 entry,
+1 exit, 3 kind switches (buck → band → boost on the way up, boost → band down).
+
+- The switch: 4.93 ms after the trigger, where SW1's low pulse per period goes from 4 samples (~330 ns, boost's
+  bootstrap refresh) to 8 (~680 ns, band's Q2 window), at V_out 24.75 V on the scope (about 25.2 V on the board's
+  scale: the scope reads ~0.45 V low). Matches the sweep (boost at the 25.6 V point, band at 25.2 V).
+- No CCM gap: SW1 and SW2 switch every period through it.
+- V_out (25 us mean) against a line fitted to the 2 ms before: −165..+18 mV over the 2 ms after the switch. The same
+  measure elsewhere on this ramp gives −124..+14, −22..+59, −23..+102, −30..+87, −47..+59 and −55..+61 mV (the
+  ramp's own ~0.1 V wobbles), so the switch adds at most about 0.05 V to what the ramp does anyway.
+- The raw V_out samples carry ±2 V of switching pickup from the probe's ground lead and clip at the screen edge;
+  the figure shows 5 us and 25 us means only.

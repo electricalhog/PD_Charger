@@ -110,10 +110,23 @@ no pack). The suite now has three downward scenarios (17 in all): all ran, no fa
 
 The 0.91 V and 2.72 V DCM dips of the 10:35 run are gone. The boost → band change (inside buck-boost mode, about
 25.2 V) is not in any trace: `down_27to24V` triggered on a mode change and 27 → 24 V never changes mode (both are
-buck-boost), so its trace never fired. The logged rows (3.3/s) show 3 kind switches and no CCM gap in it; a
-transient there is not measured.
+buck-boost), so its trace never fired. The logged rows (3.3/s) show 3 kind switches and no CCM gap in it. The
+change is measured on the scope instead (2026-11-14 README, 13:46): the regulator trace cannot catch it (13:43–13:45
+attempts below).
 
 Auto still leaves CCM at the bottom: in `down_28to20V` and the swing, CCM ends in buck near 20 V. The sweep
 (2026-11-14 README) logs the reason: LIGHT_LOAD at the 20 V point (0.81 A against the DCM ceiling), the designed
 auto exit; auto never enters at 12 or 20 V into this resistor either (`start_12V_auto`, `start_20V_auto`: 0
 entries).
+
+## 2026-11-14 13:43–13:45 — trying to trace boost → band (`transitions_resistor_20261114_1343*.json`, `_134426`, `_134522`)
+
+Four single-scenario runs, all clean (no fault, no abort, 1 entry, 1 exit, 3 kind switches each), none with a
+trace of the change: trigger `ceiling` is the current limit, not a ceiling change (never fired); `now` armed with
+the step recorded 100 ms of 27 V, because an SWD command takes ~0.4 s and the set landed after the window; `error`
+at 0.3 V never fired over the ~1 s after the step (the PID error stayed under 0.3 V through the change); at 0.1 V it
+fired on noise at 27 V before the step; and from 33 V the mode stays BUCK_BOOST in boost CCM (no BOOST mode to
+leave), so a mode trigger never fires. The trace has no kind-switch trigger. One logged V_out of 23.47 V (13:43:38,
+1.2 s after the step, steady band, on-time and ID_MON unchanged) reads like the one-sample glitch of 10:35
+(inference). The suite's `down_27to24V` is now `down_33to24V` with the mode trigger, which does not fire either;
+the scope script below replaces it.

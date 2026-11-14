@@ -134,8 +134,12 @@ def resistor_suite() -> list[Sc]:
     ]
     # CCM -> CCM downward (2026-11-14, regulator_ccm_down): boost -> band at BOOST -> BB, band -> buck at BB -> BUCK
     s += [
-        Sc("down_27to24V", "auto, 27 V (boost CCM): ceiling to 24 V (boost -> band); trace on the mode change", "auto",
-           RES_ILIM_MA, RES_ILIM_MA, 4.0, [Ev(2.0, "ceiling", 24000, trace=("mode", 0))], ceiling_mv=27000),
+        # boost -> band happens inside buck-boost mode (no mode trigger) and an SWD command takes ~0.4 s, so the
+        # trace cannot be timed to a 27 -> 24 V step (13:43-13:44 runs).  From 33 V (BOOST mode) the BOOST -> BB
+        # change at ~31 V fires the mode trigger and the band switch at ~25.2 V lands ~75 ms later, inside 100 ms.
+        Sc("down_33to24V", "auto, 33 V (boost CCM, BOOST mode): ceiling to 24 V (boost -> band); trace on the "
+           "BOOST -> buck-boost mode change", "auto", RES_ILIM_MA, RES_ILIM_MA, 4.0,
+           [Ev(2.0, "ceiling", 24000, trace=("mode", 0))], ceiling_mv=33000),
         Sc("down_24to21V", "auto, 24 V (band CCM): ceiling to 21 V (band -> buck); trace on the mode change", "auto",
            RES_ILIM_MA, RES_ILIM_MA, 4.0, [Ev(2.0, "ceiling", 21000, trace=("mode", 0))], ceiling_mv=24000),
         Sc("down_33to12V_forced", "forced CCM, 33 V: ceiling to 12 V (boost -> band -> buck); trace on the mode "

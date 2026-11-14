@@ -20,3 +20,6 @@ __pycache__/
 
 # Bench raw data (scope captures, load telemetry, traces): local only, see each results README
 /bench/results/*/data/
+
+# ST user manual kept locally (not ours to redistribute)
+/STM32CubeIDE/um2505-stm32g4-nucleo64-boards-mb1367-stmicroelectronics.pdf
