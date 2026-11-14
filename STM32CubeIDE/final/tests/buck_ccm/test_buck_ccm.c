@@ -1412,6 +1412,384 @@ static void test_boost_pack(void)
     }
 }
 
+/* The 5 A forced entry into the 8S pack (bench 2026-11-12: SW_OCP 7.4 ms after a 1.1 -> 5 A entry, the
+ * input side read about 6.5 A).  boost_pack_sim with the plant fitted to the board's traces: a series loss
+ * r_s in L1's path (the offset V_out - v_cmd - u fell 0.635 -> 0.150 V from 0.3 to 4 A, ~0.1 ohm, 0.687 V
+ * at 0 A), ID_MON clipped at its full scale (5.45 A), and SW_OCP on the 1.6 ms filter of the newest scan
+ * over ocp_a for 20 cycles.  Ceramics only (9 uF under bias, 2026-11-13: no bulk C).  r is the path over
+ * milliseconds: in this model only 0.03-0.04 ohm reproduces the trip, the 0.13-0.17 ohm slow fit does not.
+ * slew_a_s > 0 enters through buck_ccm_limit_slew_from as regulator.c does (CCM_ILIM_SLEW_MA_MS_DEFAULT). */
+typedef struct { float pk, lo, lo_late, end, pp, trip_ms; uint8_t slewing; float step_hi, step_lo; } EntryRes;
+/* bias_v: what VD_MON reads over V_out once in CCM, against the DCM reading the entry latches (bench 2026-11-13:
+ * about +0.3 V within 0.1 ms of the entry); u0_err: the entry's guess of u off by this much; blind: the
+ * open-loop window in PID cycles (0: none), as regulator.c runs it.  lo_late: the lowest after 2 ms. */
+/* A limit schedule mid-run: from sched[k][0] ms on, the limit is sched[k][1] A (NULL: ilim_a throughout).
+ * Results after the last step go to the step_* fields: the peak over / low under the new limit, and the low. */
+static const float (*g_sched)[2] = NULL;
+static int g_nsched = 0;
+static EntryRes boost_entry_sim_x(float r, float ilim_a, float i0, float slew_a_s, int cycles, float bias_v,
+                                  float u0_err, int blind)
+{
+    const BuckCcmTimingCfg c = { .period_ns = 5000u, .pulse_start_ns = 360u, .dt_ns = 20u, .refresh_ns = 300u,
+                                 .refresh_interval_ns = 5000u, .min_on_ns = 100u, .min_q2_end_ns = 60u };
+    BuckCcmGains g = { .ki = 3142.0f, .kp = 0.0f, .u_min_v = -2.0f, .u_max_v = 2.0f, .dt_s = 50e-6f,
+                       .ilim_a = ilim_a, .kl = 100.0f, .dt_lim_s = 50e-6f, .slew_a_s = slew_a_s };
+    const float v_pack = 31.2f, above_v = 1.6f, offset_v = 0.687f, r_s = 0.10f, u0_v = -0.44f;
+    const float clip_a = 5.45f, ocp_a = 5.305f;   /* ID_MON full scale; SW_OCP at it less 150 mA (5c) */
+    const float v_in = 24.4f, v_ref = v_pack + above_v, l = 4.7e-6f, cc = 9e-6f, dt = 0.1e-6f;
+    const float r1 = 1.0f - buck_ccm_refresh_share(&c);
+    enum { SCAN_US = 560, ID_US = 114, RING = 32, TAIL = 400 };
+    float ring[RING], acc = 0.0f, i = i0, filt = i0, sum = 0.0f, hi_t = -1e9f, lo_t = 1e9f;
+    for (int k = 0; k < RING; k++) { ring[k] = i0; }
+    uint32_t head = 0u, t_us = 0u;
+    int over = 0;
+    float vc = v_pack + i0 * r, d = 0.2f;
+    for (int it = 0; it < 50; it++) { d = 1.0f - (v_in * r1 - r_s * i0 / (1.0f - d)) / (vc - offset_v); }
+    float il = i0 / (1.0f - d);   /* steady at i0 with the series loss */
+    EntryRes R = { i0, i0, i0, 0.0f, 0.0f, -1.0f, 0u, 0.0f, 0.0f };
+    BuckCcmState s = { 0 }, lim = { 0 };
+    buck_ccm_reset(&lim, 0.0f, v_ref, vc);   /* the entry: the DCM reading, no bias */
+    buck_ccm_limit_from(&lim, v_ref, vc);
+    if (slew_a_s > 0.0f && lim.limiting && blind == 0) { buck_ccm_limit_slew_from(&lim, ring[(head + RING - 1u) % RING]); }
+    buck_ccm_reset(&s, u0_v + u0_err + (vc - lim.v_cmd_v), v_ref, vc);
+    if (blind > 0) { buck_ccm_blind_begin(&s, vc); }
+    int blind_left = blind;
+    for (int k = 0; k < cycles; k++)
+    {
+        for (int q = 0; q < g_nsched; q++)
+        {
+            if ((float)k * 0.05f >= g_sched[q][0]) { g.ilim_a = g_sched[q][1]; }
+        }
+        if (g_nsched > 0 && (float)k * 0.05f >= g_sched[g_nsched - 1][0])
+        {
+            if (k * 0.05f < g_sched[g_nsched - 1][0] + 0.05f) { R.step_hi = -9.0f; R.step_lo = 9.0f; }
+        }
+        const float meas = ring[(head + RING - 1u) % RING];
+        const float v_read = vc + bias_v;   /* VD_MON in CCM */
+        bool end_now = false;
+        if (blind_left > 0 && (--blind_left == 0 || meas > ((ilim_a > i0) ? ilim_a : i0) + 0.5f))   /* the guard */
+        {
+            /* regulator.c step 5d: re-seat the limit on the reading, slew from the current */
+            blind_left = 0;
+            end_now = true;
+            if (lim.limiting) { buck_ccm_limit_from(&lim, v_ref, v_read); }
+            if (slew_a_s > 0.0f && lim.limiting) { buck_ccm_limit_slew_from(&lim, meas); }
+        }
+        if (k > 0 && blind_left == 0)
+        {
+            buck_ccm_limit(&lim, &g, v_ref, v_read, meas);
+            s.u_v += lim.du_v;   /* regulator.c step 5d */
+            lim.du_v = 0.0f;
+        }
+        s.v_cmd_v = lim.v_cmd_v; s.v_lim_v = lim.v_lim_v; s.limiting = lim.limiting; s.ramp = lim.ramp;
+        s.v_floor_v = v_pack;
+        if (end_now) { buck_ccm_blind_end(&s, &g, &c, true, v_read); }
+        d = (float)boost_ccm_update(&s, &g, &c, v_read, v_in) / (float)c.period_ns;
+        lim.clamp = s.clamp;
+        filt += (meas - filt) / 32.0f;   /* POWER_FILTER_SHIFT 5 */
+        if (filt > ocp_a) { if (++over >= 20 && R.trip_ms < 0.0f) { R.trip_ms = (float)k * 0.05f; } }
+        else              { over = 0; }
+        for (int j = 0; j < 50; j++, t_us++)
+        {
+            for (int n = 0; n < 10; n++)
+            {
+                i = (vc - v_pack) / r;
+                il += (v_in * r1 - r_s * il - (1.0f - d) * (vc - offset_v)) / l * dt;
+                vc += ((1.0f - d) * il - i) / cc * dt;
+            }
+            if (i > R.pk) { R.pk = i; }
+            if (i < R.lo) { R.lo = i; }
+            if (k >= 40 && i < R.lo_late) { R.lo_late = i; }
+            if (g_nsched > 0 && (float)k * 0.05f >= g_sched[g_nsched - 1][0])
+            {
+                if (i - g.ilim_a > R.step_hi) { R.step_hi = i - g.ilim_a; }
+                if (i < R.step_lo)            { R.step_lo = i; }
+            }
+            const uint32_t ph = t_us % SCAN_US;
+            if (ph >= SCAN_US - ID_US) { acc += (i < clip_a) ? i : clip_a; }
+            if (ph == SCAN_US - 1u) { ring[head] = acc / (float)ID_US; head = (head + 1u) % RING; acc = 0.0f; }
+        }
+        if (k >= cycles - TAIL)
+        {
+            sum += i;
+            if (i > hi_t) { hi_t = i; }
+            if (i < lo_t) { lo_t = i; }
+        }
+    }
+    R.end = sum / (float)TAIL; R.pp = hi_t - lo_t; R.slewing = lim.slewing;
+    return R;
+}
+static EntryRes boost_entry_sim(float r, float ilim_a, float i0, float slew_a_s, int cycles)
+{
+    return boost_entry_sim_x(r, ilim_a, i0, slew_a_s, cycles, 0.0f, 0.0f, 0);
+}
+
+static void test_boost_entry_slew(void)
+{
+    printf("boost CCM forced entry into 31.2 V from 1.1 A, board-fitted plant (r_s 0.1 ohm, ID_MON clip, "
+           "SW_OCP), ceramics only, kl 100, 300 ms:\n");
+    /* The bench failure, reproduced: stepped to 5 A over a stiff path, SW_OCP trips. */
+    {
+        const EntryRes R = boost_entry_sim(0.03f, 5.0f, 1.1f, 0.0f, 6000);
+        printf("  no slew, 0.03 ohm, limit 5.0 A: peak %.2f A, SW_OCP %s %.1f ms\n", R.pk,
+               R.trip_ms < 0.0f ? "no" : "at", R.trip_ms < 0.0f ? 0.0 : (double)R.trip_ms);
+        CHECK(R.pk > 6.0f && R.trip_ms > 0.0f, "unslewed 5 A entry should overshoot and trip (peak %.2f A)", R.pk);
+    }
+    /* Slewed at 50 A/s: within 0.15 A of the limit at its peak, no SW_OCP, settled at the limit, no limit
+     * cycle, and the slew over, for any path 0.01-0.30 ohm and limits 3-5 A; from 0.4 A too (auto entry). */
+    const float rs[] = { 0.01f, 0.02f, 0.03f, 0.05f, 0.10f, 0.17f, 0.30f };
+    const float lims[] = { 3.0f, 4.0f, 4.5f, 5.0f };
+    const float i0s[] = { 1.1f, 0.4f };
+    float worst = -1.0f;
+    for (int a = 0; a < 2; a++)
+    {
+        for (int b = 0; b < 7; b++)
+        {
+            for (int k = 0; k < 4; k++)
+            {
+                const EntryRes R = boost_entry_sim(rs[b], lims[k], i0s[a], 50.0f, 6000);
+                if (R.pk - lims[k] > worst) { worst = R.pk - lims[k]; }
+                if (a == 0 && k == 3)
+                {
+                    printf("  slew 50 A/s, %.2f ohm, limit 5.0 A: peak %.2f low %.2f end %.2f A, p-p %.3f A, "
+                           "SW_OCP %s\n", (double)rs[b], R.pk, R.lo, R.end, R.pp, R.trip_ms < 0.0f ? "no" : "YES");
+                }
+                CHECK(R.pk < lims[k] + 0.15f && R.trip_ms < 0.0f, "slew from %.1f A, %.2f ohm limit %.1f A: peak "
+                      "%.2f A, trip %.1f ms", (double)i0s[a], (double)rs[b], (double)lims[k], R.pk, (double)R.trip_ms);
+                CHECK(fabsf(R.end - lims[k]) < 0.05f && R.pp < 0.1f && !R.slewing, "slew from %.1f A, %.2f ohm "
+                      "limit %.1f A: end %.2f A, p-p %.2f A, slewing %u", (double)i0s[a], (double)rs[b],
+                      (double)lims[k], R.end, R.pp, R.slewing);
+            }
+        }
+    }
+    printf("  slew 50 A/s: worst peak over the limit %.3f A (paths 0.01-0.30 ohm, limits 3-5 A, from 1.1 and "
+           "0.4 A)\n", (double)worst);
+}
+
+static void test_boost_entry_blind(void)
+{
+    printf("boost CCM entry with the open-loop window (blind, 20 PID cycles = 1 ms), VD_MON's CCM reading off the "
+           "DCM one by bias, the entry's u0 off by err, slew 50 A/s, 300 ms:\n");
+    /* Without the window, a +0.3 V jump in the reading (bench 2026-11-13) drives u to its floor at the entry and
+     * the current far under the entry's (the bench's ID_MON, which reads no negative current, showed ~0 A for
+     * 8 ms, then a ring to 3.3 A). */
+    {
+        const EntryRes R = boost_entry_sim_x(0.03f, 5.0f, 0.6f, 50.0f, 6000, 0.3f, 0.0f, 0);
+        printf("  no window, bias +0.3 V, 0.03 ohm, from 0.6 A: lowest after 2 ms %.2f A\n", R.lo_late);
+        CHECK(R.lo_late < 0.0f, "no window: the reading jump should dip the current (lowest %.2f A)", R.lo_late);
+    }
+    /* With it, whatever the jump (-0.3..+0.3 V) and a 0.1 V error in the guess either way: no more than 0.15 A
+     * over the limit, never 0.4 A under the entry current, no SW_OCP, settled at the limit or the ceiling
+     * ((above - bias) / r), no limit cycle. */
+    const float rs[] = { 0.01f, 0.02f, 0.03f, 0.05f, 0.10f, 0.17f, 0.30f };
+    const float bs[] = { -0.3f, 0.0f, 0.3f }, es[] = { -0.1f, 0.0f, 0.1f }, ls[] = { 3.0f, 5.0f }, is[] = { 0.6f, 1.1f };
+    float wpk = -9.0f, wlo = 9.0f;
+    for (int b = 0; b < 3; b++)
+    for (int e = 0; e < 3; e++)
+    for (int p = 0; p < 7; p++)
+    for (int l = 0; l < 2; l++)
+    for (int a = 0; a < 2; a++)
+    {
+        const EntryRes R = boost_entry_sim_x(rs[p], ls[l], is[a], 50.0f, 6000, bs[b], es[e], 20);
+        const float ceil_a = (1.6f - bs[b]) / rs[p];
+        const float want = (ls[l] < ceil_a) ? ls[l] : ceil_a;
+        if (R.pk - ls[l] > wpk) { wpk = R.pk - ls[l]; }
+        if (R.lo - is[a] < wlo) { wlo = R.lo - is[a]; }
+        CHECK(R.pk < ls[l] + 0.15f && R.lo > is[a] - 0.4f && R.trip_ms < 0.0f,
+              "window: bias %+.1f err %+.1f %.2f ohm limit %.0f from %.1f A: peak %.2f low %.2f trip %.1f",
+              (double)bs[b], (double)es[e], (double)rs[p], (double)ls[l], (double)is[a], R.pk, R.lo, (double)R.trip_ms);
+        CHECK(fabsf(R.end - want) < 0.05f && R.pp < 0.1f,
+              "window: bias %+.1f err %+.1f %.2f ohm limit %.0f from %.1f A: end %.2f (want %.2f) p-p %.2f",
+              (double)bs[b], (double)es[e], (double)rs[p], (double)ls[l], (double)is[a], R.end, want, R.pp);
+    }
+    printf("  window: worst peak over the limit %.3f A, worst low under the entry current %.2f A (bias -0.3..+0.3 V, "
+           "err -0.1..+0.1 V, 0.01-0.30 ohm, limits 3 and 5 A, from 0.6 and 1.1 A)\n", (double)wpk, (double)wlo);
+}
+
+static void test_boost_limit_steps(void)
+{
+    printf("boost CCM into the pack, limit steps mid-run (entry from 0.6 A with the window, VD_MON +0.3 V in CCM, "
+           "slew 50 A/s, step at 200 ms, 300 ms after):\n");
+    /* Up: the slewed climb with u running from a re-seat (buck_ccm_limit du_v); down: the limit falls at
+     * once and v_lim walks the current down.  Within 0.15 A over the new limit after a step up, not under it
+     * by more than 0.15 A after a step down, settled, no limit cycle, no SW_OCP; 0.01-0.30 ohm. */
+    const float steps[][2] = { { 1.0f, 5.0f }, { 5.0f, 1.0f }, { 3.0f, 5.0f }, { 5.0f, 3.0f }, { 2.0f, 4.0f },
+                               { 4.0f, 2.0f }, { 5.0f, 0.3f }, { 0.3f, 5.0f } };
+    const float rs[] = { 0.01f, 0.02f, 0.03f, 0.05f, 0.10f, 0.17f, 0.30f };
+    for (unsigned k = 0; k < sizeof steps / sizeof steps[0]; k++)
+    {
+        float sched[1][2] = { { 200.0f, steps[k][1] } };
+        g_sched = (const float (*)[2])sched;
+        g_nsched = 1;
+        float hi = -9.0f, lo = 9.0f;
+        for (int p = 0; p < 7; p++)
+        {
+            const EntryRes R = boost_entry_sim_x(rs[p], steps[k][0], 0.6f, 50.0f, 10000, 0.3f, 0.0f, 20);
+            const float ceil_a = (1.6f - 0.3f) / rs[p];
+            const float want = (steps[k][1] < ceil_a) ? steps[k][1] : ceil_a;
+            const bool up = steps[k][1] > steps[k][0];
+            if (up && R.step_hi > hi) { hi = R.step_hi; }
+            if (R.step_lo < lo)       { lo = R.step_lo; }
+            CHECK(R.trip_ms < 0.0f && fabsf(R.end - want) < 0.05f && R.pp < 0.1f,
+                  "step %.1f->%.1f A, %.2f ohm: trip %.1f end %.2f (want %.2f) p-p %.2f", (double)steps[k][0],
+                  (double)steps[k][1], (double)rs[p], (double)R.trip_ms, R.end, want, R.pp);
+            CHECK(!up || R.step_hi < 0.15f, "step %.1f->%.1f A, %.2f ohm: %.2f A over", (double)steps[k][0],
+                  (double)steps[k][1], (double)rs[p], R.step_hi);
+            CHECK(R.step_lo > ((up ? steps[k][0] : want) - 0.15f), "step %.1f->%.1f A, %.2f ohm: low %.2f A",
+                  (double)steps[k][0], (double)steps[k][1], (double)rs[p], R.step_lo);
+        }
+        if (steps[k][1] > steps[k][0])
+        {
+            printf("  %.1f -> %.1f A: worst %+.3f A over the new limit, lowest after the step %.2f A\n",
+                   (double)steps[k][0], (double)steps[k][1], (double)hi, (double)lo);
+        }
+        else
+        {
+            printf("  %.1f -> %.1f A: lowest after the step %.2f A\n", (double)steps[k][0], (double)steps[k][1],
+                   (double)lo);
+        }
+    }
+    g_sched = NULL;
+    g_nsched = 0;
+    /* An entry above the limit (DCM at 0.6 A, limit 0.3 A).  The excursion is the entry's guess: here u0
+     * (-0.44 V) is about 0.14 V over what the model's plant needs at 0.6 A, so the first duty puts ~0.75 A on
+     * top until the guard (0.5 A over the larger of the limit and the entry current) ends the window at
+     * the next scan (0.6 ms); the limit then walks it down in ~5 ms.  Bounded under 1.5 A, settled. */
+    float pk = 0.0f;
+    for (int p = 0; p < 7; p++)
+    {
+        const EntryRes R = boost_entry_sim_x(rs[p], 0.3f, 0.6f, 50.0f, 4000, 0.3f, 0.0f, 20);
+        if (R.pk > pk) { pk = R.pk; }
+        CHECK(R.pk < 1.5f && R.lo > 0.15f && fabsf(R.end - 0.3f) < 0.05f, "entry 0.6 A into 0.3 A, %.2f ohm: "
+              "peak %.2f low %.2f end %.2f", (double)rs[p], R.pk, R.lo, R.end);
+    }
+    printf("  entry from 0.6 A into a 0.3 A limit: peak %.2f A\n", (double)pk);
+}
+
+/* A laptop on 48 V (2026-11-13: the target, a Framework at 48 V / 5 A): boost CCM from 24.4 V holding 48 V on
+ * the board's ceramics only (c_out, under 48 V of bias), a cable (r_c, l_c) to the laptop's input capacitance
+ * c_l and its sink current: standby 0.2 A, from T1 up to i_hi (edge a_per_ms; 0 = a step), from T2 back to 0
+ * at the same edge (release, still plugged) or with the cable gone at once (unplug).  PD's settings: the
+ * limit at ilim on ID_MON's newest scan (clipped 5.45 A) at kl 100, no slew, no window; the law reads V_out
+ * as the mean over the last PID cycle.  Not modelled: DCM (the start from 0 V runs in DCM up to the CCM
+ * entry), CCM's exit to DCM over the band, SW_OVP (3 PID cycles over 110 %), the ripple.
+ * vb_*: the board's V_out; vl_*: the laptop's; ib_max: the cable current; pp: V_out p-p in the 10 ms
+ * before T2 (a limit cycle shows here). */
+typedef struct { float vb_max, vl_min, vl_max, ib_max, pp, after_max; } LapRes;
+static LapRes laptop_sim(float c_out_uf, float c_l_uf, float l_c_uh, float r_c, float i_hi, float a_per_ms,
+                         float ilim, bool unplug)
+{
+    const BuckCcmTimingCfg c = { .period_ns = 5000u, .pulse_start_ns = 360u, .dt_ns = 20u, .refresh_ns = 300u,
+                                 .refresh_interval_ns = 5000u, .min_on_ns = 100u, .min_q2_end_ns = 60u };
+    const BuckCcmGains g = { .ki = 3142.0f, .kp = 0.0f, .u_min_v = -1.0f, .u_max_v = 2.0f, .dt_s = 50e-6f,
+                             .ilim_a = ilim, .kl = 100.0f, .dt_lim_s = 50e-6f, .slew_a_s = 0.0f };
+    const float v_in = 24.4f, v_ref = 48.0f, l = 4.7e-6f, offset_v = 0.687f, r_s = 0.10f, dt = 0.1e-6f;
+    const float cb = c_out_uf * 1e-6f, cl = c_l_uf * 1e-6f, lc = l_c_uh * 1e-6f, i_sb = 0.2f;
+    const float r1 = 1.0f - buck_ccm_refresh_share(&c);
+    const float T1 = 30.0f, T2 = 60.0f, TEND = 90.0f;
+    enum { SCAN_US = 560, ID_US = 114, RING = 32 };
+    float ring[RING], acc = 0.0f;
+    for (int k = 0; k < RING; k++) { ring[k] = i_sb; }
+    uint32_t head = 0u, t_us = 0u;
+    float d = 0.5f;
+    for (int it = 0; it < 60; it++) { d = 1.0f - (v_in * r1 - r_s * i_sb / (1.0f - d)) / (v_ref - offset_v); }
+    float il = i_sb / (1.0f - d), vb = v_ref, vl = v_ref - r_c * i_sb, ic = i_sb, i_out = i_sb, v_acc = vb;
+    BuckCcmState s = { 0 }, lim = { 0 };
+    buck_ccm_reset(&lim, 0.0f, v_ref, vb);
+    buck_ccm_reset(&s, v_in * r1 / (1.0f - d) - v_ref, v_ref, vb);   /* steady at 48 V */
+    LapRes R = { vb, vl, vl, 0.0f, 0.0f, vb };
+    float hi_t = -1e9f, lo_t = 1e9f;
+    bool plugged = true;
+    for (int k = 0; k < (int)(TEND / 0.05f); k++)
+    {
+        const float tm = (float)k * 0.05f;
+        buck_ccm_limit(&lim, &g, v_ref, v_acc, ring[(head + RING - 1u) % RING]);
+        s.v_cmd_v = lim.v_cmd_v; s.v_lim_v = lim.v_lim_v; s.limiting = lim.limiting; s.ramp = lim.ramp;
+        d = (float)boost_ccm_update(&s, &g, &c, v_acc, v_in) / (float)c.period_ns;
+        lim.clamp = s.clamp;
+        float vsum = 0.0f;
+        for (int j = 0; j < 50; j++, t_us++)
+        {
+            for (int n = 0; n < 10; n++)
+            {
+                const float t = tm + (float)(j * 10 + n) * dt * 1e3f;
+                float isink = i_sb;
+                if (t >= T1)
+                {
+                    isink = (a_per_ms <= 0.0f) ? i_hi : fminf(i_hi, i_sb + a_per_ms * (t - T1));
+                }
+                if (t >= T2)
+                {
+                    if (unplug) { plugged = false; }
+                    else        { isink = (a_per_ms <= 0.0f) ? 0.0f : fmaxf(0.0f, i_hi - a_per_ms * (t - T2)); }
+                }
+                il += (v_in * r1 - r_s * il - (1.0f - d) * (vb - offset_v)) / l * dt;
+                if (plugged)
+                {
+                    ic += (vb - vl - r_c * ic) / lc * dt;
+                    vl += (ic - isink) / cl * dt;
+                    i_out = ic;
+                }
+                else { i_out = 0.0f; }
+                vb += ((1.0f - d) * il - i_out) / cb * dt;
+            }
+            vsum += vb;
+            if (tm < T2)
+            {
+                if (vb > R.vb_max) { R.vb_max = vb; }
+                if (vl < R.vl_min) { R.vl_min = vl; }
+                if (vl > R.vl_max) { R.vl_max = vl; }
+                if (i_out > R.ib_max) { R.ib_max = i_out; }
+            }
+            else if ((unplug ? vb : vl) > R.after_max) { R.after_max = unplug ? vb : vl; }
+            const uint32_t ph = t_us % SCAN_US;
+            if (ph >= SCAN_US - ID_US) { acc += fminf(i_out, 5.45f); }
+            if (ph == SCAN_US - 1u) { ring[head] = acc / (float)ID_US; head = (head + 1u) % RING; acc = 0.0f; }
+        }
+        v_acc = vsum / 50.0f;
+        if (tm >= T2 - 10.0f && tm < T2) { if (vb > hi_t) { hi_t = vb; } if (vb < lo_t) { lo_t = vb; } }
+    }
+    R.pp = hi_t - lo_t;
+    return R;
+}
+
+static void test_laptop_48v(void)
+{
+    printf("a laptop on 48 V, boost CCM from 24.4 V, ceramics only, PD settings (limit 5.25 A, no slew, no "
+           "window), cable 0.05 ohm (model; not run on the bench):\n");
+    const float cos_[] = { 4.0f, 9.0f, 15.0f }, cls[] = { 10.0f, 47.0f, 100.0f }, lcs[] = { 0.3f, 1.0f };
+    const float edges[] = { 1.0f, 10.0f, 0.0f };
+    const char *names[] = { "1 A/ms", "10 A/ms", "a step" };
+    for (int e = 0; e < 3; e++)
+    {
+        float lmin = 99.0f, lmax = 0.0f, rmax = 0.0f, umax = 0.0f, ppmax = 0.0f, imax = 0.0f;
+        for (int a = 0; a < 3; a++)
+        for (int b = 0; b < 3; b++)
+        for (int q = 0; q < 2; q++)
+        {
+            const LapRes R = laptop_sim(cos_[a], cls[b], lcs[q], 0.05f, 5.0f, edges[e], 5.25f, false);
+            const LapRes U = laptop_sim(cos_[a], cls[b], lcs[q], 0.05f, 5.0f, edges[e], 5.25f, true);
+            lmin = fminf(lmin, R.vl_min); lmax = fmaxf(lmax, R.vl_max); rmax = fmaxf(rmax, R.after_max);
+            umax = fmaxf(umax, U.after_max); ppmax = fmaxf(ppmax, R.pp); imax = fmaxf(imax, R.ib_max);
+            /* What holds: a load that moves at 10 A/ms or slower stays within 48 V +-5 % at the laptop,
+             * through 0.2 -> 5 -> 0 A, without a limit cycle. */
+            if (edges[e] > 0.0f && edges[e] <= 10.0f)
+            {
+                CHECK(R.vl_min > 45.6f && R.vl_max < 50.4f && R.after_max < 50.4f && R.pp < 0.1f,
+                      "48 V, %s, C_out %.0f uF, C_laptop %.0f uF, cable %.1f uH: laptop %.2f..%.2f V, release "
+                      "max %.2f V, p-p %.3f V", names[e], (double)cos_[a], (double)cls[b], (double)lcs[q],
+                      R.vl_min, R.vl_max, R.after_max, R.pp);
+            }
+        }
+        printf("  0.2 -> 5 A at %-7s: laptop %.2f..%.2f V, cable current max %.2f A, p-p at 5 A max %.3f V; "
+               "release max %.2f V; unplug: board max %.2f V\n", names[e], (double)lmin, (double)lmax,
+               (double)imax, (double)ppmax, (double)rmax, (double)umax);
+    }
+    /* Known gaps, printed, not checked (C_out 4-15 uF, C_laptop 10-100 uF, cable 0.3-1 uH): a hard step
+     * puts the laptop 3-7 V under 48 V and, at 47 uF behind 1 uH, the limit cycles at about 1 V p-p;
+     * an unplug at 5 A takes the board's V_out to 53-60 V before SW_OVP's 3 PID cycles. */
+}
+
 static void test_floor(void)
 {
     const float buck_off = floor_sim(false, 0.0f), buck_on = floor_sim(false, 15.0f);
@@ -1501,6 +1879,10 @@ int main(int argc, char **argv)
     test_ilim_lag();
     test_ilim_entry();
     test_boost_pack();
+    test_boost_entry_slew();
+    test_boost_entry_blind();
+    test_boost_limit_steps();
+    test_laptop_48v();
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("buck_ccm: all checks passed\n");
     return 0;

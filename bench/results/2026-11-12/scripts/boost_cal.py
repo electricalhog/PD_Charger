@@ -205,6 +205,7 @@ def row_of(st: dict, t: float) -> dict:
             "skip": c.get("pulses_skipped"),        # pulse skipping on at this sample (VD_MON over setpoint + 200 mV)
             "switch": st.get("lines", {}).get("OUTPUT_EN_PC8"), "dis": st.get("lines", {}).get("OUTPUT_DIS_PC9"),
             "ilim_ma": c.get("ccm_ilim_ma"),         # the limit the firmware has now (the ramp moves it)
+            "ilim_eff_ma": c.get("ccm_ilim_eff_ma"), # the CCM entry's slewed limit while it climbs, else 0
             "ocp_fs_ma": c.get("ccm_ocp_fs_ma")}     # SW_OCP's full-scale level (ID_MON, after gain and offset)
 
 
@@ -216,11 +217,15 @@ def run_step(b, ceiling_mv: int, ilim_ma: int, seconds: float, abort_ma, interru
              during=None, interval: float = 0.02, trace: dict | None = None) -> dict:
     """START at the ceiling, keep alive and log until `seconds`, a fault, an abort or an interrupt; always stop.
     `trace` = {"trigger", "threshold_mv", "post", "at", "file"}: arm the regulator trace `at` seconds into the
-    run (so a start ramp cannot fire it) and read it after the stop."""
+    run (so a start ramp cannot fire it) and read it after the stop; `at` 0 arms it before START (the firmware
+    records only while RUNNING), for the CCM entry itself (trigger ccm)."""
     lock = threading.Lock()
     armed = {"ok": False, "result": None}
     b.write("regulator_ccm_ilim_ma", ilim_ma, "u16")
     ka = b.battery()["keepalive"]
+    if trace is not None and trace["at"] <= 0:
+        res = b.trace_arm(trace["trigger"], trace["post"], trace["threshold_mv"])
+        armed["ok"], armed["result"] = bool(res.get("ok")), res.get("result", "?")
     start = b.command("start", mv=ceiling_mv)
     if not start.get("ok"):
         return {"ok": False, "start": start.get("result"), "explanation": start.get("explanation"),
@@ -495,6 +500,10 @@ def execute(a, b, out_dir: Path, interrupted: threading.Event, tap=None) -> dict
             need_fs(b)
             b.write("regulator_ccm_ocp_ma", OCP_FULL_SCALE, "u16")
             result["ocp_fs_ma"] = ocp_fs_of(b)
+            if b.has("regulator_ccm_ilim_slew_ma_ms"):   # CCM entry slew of the limit (2026-11-13), 0 off
+                result["ilim_slew_ma_ms"] = b.read("regulator_ccm_ilim_slew_ma_ms", "u16")
+            if b.has("regulator_ccm_entry_blind"):   # CCM entry's open-loop window [PID cycles] (2026-11-13), 0 off
+                result["entry_blind_cycles"] = b.read("regulator_ccm_entry_blind", "u8")
         b.write("regulator_ccm_enable", CCM_ENABLE[a.ccm], "u8")   # after the 5 V check, which runs as the board was
         for n, step in enumerate(a.steps):
             if interrupted.is_set():
@@ -746,6 +755,10 @@ def execute_ramp(a, b, out_dir: Path, interrupted: threading.Event) -> dict:
         if en:
             b.write("regulator_ccm_ocp_ma", OCP_FULL_SCALE, "u16")
             result["ocp_fs_ma"] = ocp_fs_of(b)
+            if b.has("regulator_ccm_ilim_slew_ma_ms"):   # CCM entry slew of the limit (2026-11-13), 0 off
+                result["ilim_slew_ma_ms"] = b.read("regulator_ccm_ilim_slew_ma_ms", "u16")
+            if b.has("regulator_ccm_entry_blind"):   # CCM entry's open-loop window [PID cycles] (2026-11-13), 0 off
+                result["entry_blind_cycles"] = b.read("regulator_ccm_entry_blind", "u8")
         b.write("regulator_ccm_ilim_ramp_ma_s", 0, "u16")
         b.write("regulator_ccm_ilim_target_ma", fr, "u16")
         n0 = {k: b.read(k, "u32") for k in ("regulator_ccm_entries", "regulator_ccm_exits")}
@@ -985,6 +998,13 @@ def selftest() -> int:
     check(tr.get("armed") == "OK" and tr.get("samples") == 1 and ("trace-arm", "error") in b.log
           and (tmp / "captures" / tr.get("file", "")).exists(), f"resistor: trace armed in-run and read: {tr}")
     check(b.mem["regulator_ccm_enable"] == 1 and b.state == "IDLE", "resistor: CCM enable restored, IDLE")
+    b = FakeBoard()
+    r = execute(args("resistor", "forced", [26000], trace="ccm", trace_at=0.0, trace_post=2000), b, tmp, ev)
+    tr = r["steps"][0]["run"].get("trace") or {}
+    ia = [i for i, c in enumerate(b.log) if c[0] == "trace-arm"]
+    ist = [i for i, c in enumerate(b.log) if c == ("start", 26000)]
+    check(tr.get("armed") == "OK" and ia and ist and ia[0] < ist[0] and len(ia) == 1,
+          f"--trace-at 0: armed once, before START: {b.log}")
 
     b = FakeBoard(pack_mv=30000)
     r = execute(args("resistor", "forced", [32000]), b, tmp, ev)
@@ -1089,7 +1109,7 @@ def main() -> int:
     p.add_argument("--trace", metavar="TRIGGER[:MV]",
                    help="arm the 20 kHz regulator trace in each step: now, error:MV (|setpoint - V_out| over MV), "
                         "ceiling (DCM window limit, not the peak cap), ccm; read after the stop into captures/")
-    p.add_argument("--trace-at", type=float, help="seconds into the run to arm it (default 1; ramp: 0.5 s before it starts)")
+    p.add_argument("--trace-at", type=float, help="seconds into the run to arm it (default 1; ramp: 0.5 s before it starts; 0: before START)")
     p.add_argument("--trace-post", type=int, default=1536, help="samples after the trigger, 50 us each (default 1536 "
                                                                 "of 2048: 77 ms after, 25 ms before)")
     p.add_argument("--no-prompt", action="store_true", help="do not ask for the ammeter reading")
@@ -1128,10 +1148,12 @@ def main() -> int:
         p.error("--settle must be under --seconds")
     if a.trace:
         trig, _, thr = a.trace.partition(":")
-        if trig not in ("now", "error", "ceiling", "ccm"):
-            p.error("--trace must be now, error:MV, ceiling or ccm")
+        if trig not in ("now", "error", "ceiling", "ccm", "mode"):
+            p.error("--trace must be now, error:MV, ceiling, ccm or mode")
         if trig == "error" and not thr.isdigit():
             p.error("--trace error needs a threshold: error:800")
+        if a.trace_at < 0:
+            p.error("--trace-at must be 0 (before START) or later")
         if not 0 <= a.trace_post < 2048:
             p.error("--trace-post must be 0..2047")
         if a.trace_at >= a.seconds:

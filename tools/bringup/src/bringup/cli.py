@@ -383,7 +383,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("mv", type=int); g.add_argument("--timeout", type=float, default=5.0)
     g = rg.add_parser("trace-arm", help="arm the 20 kHz regulator trace (V_out, I_cmd, its ceiling, on-time, flags); "
                                         "it freezes POST samples after the trigger")
-    g.add_argument("--trigger", choices=["now", "switch", "ceiling", "error", "ccm"], default="now",
+    g.add_argument("--trigger", choices=["now", "switch", "ceiling", "error", "ccm", "mode"], default="now",
                    help="now; switch (a switch-pulse opens the output switch); ceiling (on-time at its window limit); "
                         "error (|setpoint - V_out| above --threshold-mv); ccm (the first forced-CCM cycle)")
     g.add_argument("--post", type=int, default=1536, help="samples after the trigger, 50 us each (max 2047)")

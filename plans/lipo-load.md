@@ -127,3 +127,86 @@ the limit's law with the ramp's lag at 100 mA/s.
   script's stop level (1.4 A at that limit, 3 samples) will if it lasts.
 - At 5 A the limit sits about 300 mA under SW_OCP. A cold CCM entry at 4.5–5 A overshot about 500 mA tonight, so the
   forced 5 A step may trip; the ramp enters near 400 mA instead.
+
+## 7. CCM entry limit slew (2026-11-13, bench README section 10)
+
+Ceramics only (Dan, 2026-11-13: no bulk C; if the G474 loop cannot cope, the next step is the STM32G5). At a CCM
+entry with the limit engaged, the limit starts at the measured current and rises at
+`regulator_ccm_ilim_slew_ma_ms` (50 A/s in the battery build, 0 in PD so a PD load step meets the full limit), and
+the voltage integrator runs while it climbs. Bench: the 5 A forced entry that tripped SW_OCP on 2026-11-12 held 5 A
+for 20 s (ammeter 5003 mA), trace peak 5043 mA.
+
+The entry itself: readings taken across the mode change moved (VD_MON about +0.3 V within 0.1 ms) and the closed
+loop chased them, so the current dipped to ~0 A for 8 ms and rang to 3.3 A for ~25 ms before the slew. Rather than
+correct for that reading (an observation, not a property of the hardware as built), the entry now flies blind for
+a short window (Dan, 2026-11-13): for `regulator_ccm_entry_blind` PID cycles (20 = 1 ms in the battery build, 0 in
+PD until it is run there) the duty is the entry's guess, V_out at the entry plus u0, with only the V_in feedforward
+live, and u and v_lim hold. The load cannot move much in a millisecond. At the end the limit is re-seated on the
+V_out read in CCM, the slew starts from the current read in CCM, and u takes up the difference so the first
+closed-loop duty equals the window's (bumpless). ID_MON over the limit ends it early; SW_OCP and the hardware trips
+stay armed throughout. Host model (`test_boost_entry_blind`): for a reading jump of −0.3 to +0.3 V and a guess
+0.1 V off either way, within 0.05 A over the limit and 0.26 A under the entry current, against 2.2 A over and 4.1 A
+under without the window. 20 cycles covers ADC2's first whole ID_MON scan in CCM (one every 0.56 ms).
+
+Mid-run limit changes (same build): every limit increase in CCM now climbs at the same slew, not only the entry;
+decreases act at once (`BUCK_CCM_SLEW_DOWN` 0). A climb that starts while the limit holds V_out below the reference
+re-seats v_lim on V_out and hands the difference to u (bumpless), and u runs during the climb, so the hand-back to
+the voltage loop at the end of it starts from a current u (the stale-u overshoot of the host model: +0.62 A at a
+0.17 Ω path). Host model (`test_boost_limit_steps`, pack plant): up steps within 0.05 A over the new limit, down
+steps without undershoot; an entry at 0.6 A into a 0.3 A limit peaks 1.35 A (the entry guess, ended by the guard).
+New trace trigger `mode` (5): fires on the first regulator mode change after the arm.
+
+## 8. Toward a laptop on 48 V / 5 A (2026-11-13, host model and bench suites)
+
+Host model (`test_laptop_48v`, not run on the bench): boost CCM from 24.4 V to 48 V, board ceramics 4 / 9 / 15 µF at
+bias, laptop input C 10 / 47 / 100 µF, cable 0.05 Ω with 0.3 / 1 µH, standby 0.2 A, PD settings (limit 5.25 A, no
+slew, no window), 0.1 µs steps.
+
+| Load edge 0.2 → 5 A | Laptop V | Release to 0.2 A, max | Unplug at 5 A, board max |
+|---|---|---|---|
+| 1 A/ms | 47.58–48.02 V | 48.15 V | 60.31 V |
+| 10 A/ms | 46.48–48.02 V | 49.32 V | 60.28 V |
+| step | 41.43–48.75 V, 1.1 V p-p ringing | 54.97 V | 60.28 V |
+
+- Edges up to 10 A/ms stay within ±5 % with no ringing (the test checks these).
+- A hard step droops the laptop to ~41 V on ceramics: at 20 kHz the loop answers one PID period later, and ~9 µF
+  at 5 A falls ~2.8 V per 5 µs switching period before then. Raising kp to answer faster destabilizes the 20 kHz
+  loop in the model. This is charge on the capacitor before any controller can act, so it is not only a loop-rate
+  (G5) question.
+- Unplug at 5 A overshoots the board to ~60 V. Output OVP in CCM is software only (3 PID cycles at 110 % or 52.8 V)
+  and the VD_MON AWD skip is open in CCM, so nothing cuts the switching cycle by cycle. Candidate: the G474's
+  comparators with DAC thresholds as HRTIM fault / external events for a cycle-by-cycle output OVP (not built).
+
+What the battery bench can and cannot show toward that case:
+
+- Can: the DCM → CCM entry and exit, limit steps and ramps up to 5 A into a stiff sink (`transitions.py pack`), and
+  voltage slews across V_in through buck / buck-boost / boost with a resistive load (`transitions.py resistor`).
+- Cannot: 48 V (battery-build ceiling 34 V), 240 W (the 25.3 Ω resistor draws 1.9 A / 92 W at 48 V; the pack sits at
+  ~31 V), a fast load step or unplug (switch pulse refused in the battery build, e-load removed), PD / EPR
+  negotiation (PD build), thermals at 160–240 W, and ID_MON headroom at 5 A (full scale ~5.3–5.5 A).
+
+## 9. CCM to CCM across the mode and kind change (2026-11-14, bench README 2026-11-13, resistor suite)
+
+`regulator_ccm_kind_switch` (1 battery, 0 PD): on the way up a running CCM goes straight to the next kind instead
+of exit → ~1 ms DCM → re-entry. Buck CCM reaching buck-boost: the mode changes in place (no output off, no counter
+restart; the band / boost edges rewrite every Timer A / B source the legs use, one preloaded set) and band or boost
+starts from an entry's u0 guess under the 1 ms open-loop window. Band → boost: the same law with n in output
+volts, so u and the limit carry over and only the edges change. Downward changes, a different switching period,
+or a buck Timer B longer than one period exit as before. Bench: the DCM dips (1.2–1.9 V, 3.6 V forced) are gone.
+
+The switch then waits for the law's own reference (the limit's v_cmd), not the ramp setpoint: after an entry's
+re-seat the reference ran about 1 V behind an 80 V/s ramp, and boost chosen on the setpoint sat at its shortest
+pulse, V_out 0.8–1.0 V over the reference for 5–6 ms. Until the reference gets there the running kind holds.
+
+## 10. CCM downward: boost → band → buck (2026-11-14, bench README 2026-11-13 10:49 and 2026-11-14)
+
+`regulator_ccm_down` (1 battery, 0 PD): a falling setpoint no longer exits CCM (RAMP_DOWN only when it is 0). The
+exit dated from 2026-10-20, before entries were bumpless; at the converter's load currents C·dV/dt at 80 V/s
+(~4 mA on 50 uF) is small, so CCM can follow the ramp down. A running boost goes to band when the law's reference
+(min(v_cmd, setpoint)) says band or nothing, or when its on-time sits at the shortest pulse for CCM_FLOOR_CYCLES (3)
+with V_out over the reference: boost and band are one law, so u carries over (mode changes in place when the mode
+leaves BOOST). Band goes to buck when the reference is under buck's reach (V_in × max on / period, CCM_DUTY_ENTER_PCT)
+and band is at its floor, says nothing, or the mode is leaving buck-boost: buck starts from an entry's u0 guess
+under the 1 ms open-loop window, and the buck leg's static Timer B and CMP1 are rewritten. Bench (resistor): band →
+buck at about 22.26 V with no CCM gap and within −0.13/+0.17 V of the reference; the 0.9–2.7 V DCM dips are gone.
+Auto still leaves CCM in buck at light load (LIGHT_LOAD near 20 V into 25.3 ohm), as designed.

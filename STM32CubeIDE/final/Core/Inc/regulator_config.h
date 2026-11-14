@@ -960,6 +960,73 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
  *                        The bench path is about 0.13 ohm incremental
  *                        (2026-11-09: +300 mV 2.69 A, +500 mV about 4.2 A).
  *                        Into 25.3 ohm in CCM the fold is then 4 rad/s
+ * CCM_ILIM_SLEW_MA_MS_DEFAULT regulator_ccm_ilim_slew_ma_ms [mA/ms = A/s],
+ *                        0 off: at a CCM entry with the limit engaged
+ *                        (buck_ccm_limit_from), the limit starts at the
+ *                        measured current and rises at this rate to
+ *                        regulator_ccm_ilim_ma, with the voltage integrator
+ *                        running meanwhile (buck_ccm_limit_slew_from).  A
+ *                        5 A forced entry into the 8S pack tripped SW_OCP
+ *                        (bench 2026-11-12, 7.4 ms in): over milliseconds the
+ *                        pack path is stiff (0.03-0.04 ohm in the
+ *                        board-fitted host model), where kl 100 against the
+ *                        newest scan's lag overran 1.1 -> 5 A to 6.3-6.7 A.
+ *                        At 50 A/s (78 ms from 1.1 to 5 A) the model peaks
+ *                        under 5.1 A for paths 0.01-0.30 ohm, ceramics only
+ *                        (test_boost_entry_slew).  Battery build only: in
+ *                        PD a step into the limit would otherwise fold to
+ *                        the entry current first
+ * CCM_ENTRY_BLIND_DEFAULT regulator_ccm_entry_blind [PID cycles], 0 off: for
+ *                        this long after a CCM entry the duty is the entry's
+ *                        guess (V_out at the entry plus u0) with only the V_in
+ *                        feedforward live; u and v_lim hold, and no V_out
+ *                        reading reaches the law (buck_ccm_blind_begin).  Then
+ *                        the limit is re-seated on CCM's readings and u takes
+ *                        up the difference (bumpless, buck_ccm_blind_end); an
+ *                        ID_MON reading CCM_BLIND_GUARD_MA over the larger of
+ *                        the limit and the entry's current ends it early.  Why: a
+ *                        5 A entry's readings moved across the mode change
+ *                        (VD_MON +0.3 V in 0.1 ms) and the closed loop chased
+ *                        them (current ~0 A for 8 ms, then a ring; bench
+ *                        2026-11-13 README section 10); the load cannot move
+ *                        much in a millisecond.  20 (1 ms) covers ADC2's first
+ *                        whole ID_MON scan in CCM (every 0.56 ms).  Host model
+ *                        (test_boost_entry_blind): reading jumps of -0.3..+0.3 V
+ *                        and a guess 0.1 V off either way stay within 0.05 A
+ *                        over the limit and 0.26 A under the entry current
+ * CCM_KIND_SWITCH_DEFAULT regulator_ccm_kind_switch: 1 hands a running CCM
+ *                        straight to the next kind on the way up (2026-11-14):
+ *                        buck -> band or boost at the buck -> buck-boost mode
+ *                        change, band -> boost at boost's floor.  No CCM exit
+ *                        and no DCM in between.  Band <-> boost keep u (the
+ *                        same law, n in output volts); buck -> band / boost
+ *                        starts from an entry's guess (u0) with the entry's
+ *                        open-loop window.  Why: each of those changes went
+ *                        CCM -> ~1 ms DCM -> CCM, and V_out fell 1.2-1.9 V in
+ *                        the DCM (3.6 V in forced CCM), then stepped up at
+ *                        the re-entry (bench 2026-11-13 README, resistor
+ *                        suite).  Only with the same switching period and a
+ *                        buck refresh interval of one period; anything else,
+ *                        and every downward change, exits as before.
+ *                        0: as before.
+ * CCM_DOWN_DEFAULT       regulator_ccm_down: 1 keeps CCM through a falling
+ *                        setpoint (no RAMP_DOWN exit) and hands it down kind
+ *                        by kind (2026-11-14): boost -> band keeps u; band ->
+ *                        buck changes the mode in place, puts back buck's
+ *                        Timer A / B sources and starts from an entry's u0
+ *                        under the open-loop window.  A switch fires when the
+ *                        law's reference passes the kind's threshold, or when
+ *                        the kind sits at its shortest pulse with V_out over
+ *                        the reference for CCM_FLOOR_CYCLES.  Why: down-ramps
+ *                        left CCM for DCM, which carries less at high V_out
+ *                        (33 V DCM-only stops at 30.4 V at 1.2 A): 33 -> 12 V
+ *                        fell 2.7 V under the reference, 28 -> 20 V 0.9 V
+ *                        (bench 2026-11-14).  The exit dates from 2026-10-20
+ *                        (16 exits / re-entries on a 20 -> 15 V forced ramp,
+ *                        before entries were bumpless).  VIN_RISE and the
+ *                        light-load exit still apply.  0: as before.
+ * CCM_FLOOR_CYCLES       PID cycles at the shortest pulse with V_out over the
+ *                        reference before a downward switch
  * CCM_ILIM_FAST_DEFAULT  regulator_ccm_ilim_fast: 1, the limit reads ID_MON's
  *                        newest ADC2 scan (about 0.34 ms behind), not the
  *                        8-scan mean (about 2.3 ms): with the mean the CCM
@@ -1096,6 +1163,28 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
 #endif
 #define CCM_ILIM_KL_DEFAULT      400.0f  /* [V/(A s)], DCM */
 #define CCM_ILIM_KL_CCM_DEFAULT  100.0f  /* [V/(A s)], CCM */
+#define CCM_BLIND_GUARD_MA       500u    /* the window ends early once ID_MON is this far over max(limit, entry) */
+#if defined(BATTERY_LOAD) && (BATTERY_LOAD)
+#define CCM_ENTRY_BLIND_DEFAULT  20u     /* battery load: 1 ms open-loop at a CCM entry (2026-11-13) */
+#else
+#define CCM_ENTRY_BLIND_DEFAULT  0u      /* PD: not yet run on the bench */
+#endif
+#if defined(BATTERY_LOAD) && (BATTERY_LOAD)
+#define CCM_DOWN_DEFAULT         1u      /* battery load: CCM through falling setpoints (2026-11-14) */
+#else
+#define CCM_DOWN_DEFAULT         0u      /* PD: not yet run on the bench */
+#endif
+#define CCM_FLOOR_CYCLES         3u
+#if defined(BATTERY_LOAD) && (BATTERY_LOAD)
+#define CCM_KIND_SWITCH_DEFAULT  1u      /* battery load: CCM -> CCM across the mode / kind change (2026-11-14) */
+#else
+#define CCM_KIND_SWITCH_DEFAULT  0u      /* PD: not yet run on the bench */
+#endif
+#if defined(BATTERY_LOAD) && (BATTERY_LOAD)
+#define CCM_ILIM_SLEW_MA_MS_DEFAULT 50u  /* battery load: CCM entry slews the limit at 50 A/s (2026-11-13) */
+#else
+#define CCM_ILIM_SLEW_MA_MS_DEFAULT 0u   /* PD: a load step meets the full limit at once */
+#endif
 #define CCM_PEAK_MA_DEFAULT      0u      /* 0 = the PEAK_PROTECT backstop */
 #define CCM_ILIM_SRC_DEFAULT     1u      /* ID_MON */
 #define CCM_ENTRY_RAMP_DEFAULT   1u      /* CCM entry: the limit's reference from V_out (buck_ccm_limit_from) */

@@ -315,3 +315,41 @@ ran to the end, no fault.** Pack 31131 mV, ceiling 32631 mV.
   24616 mV). The documented rule needs V_out over V_in + 7 V; the samples are 0.3 s apart, so an excursion between
   them is possible. Not explained.
 - Board temperature not logged.
+
+## 10. The CCM entry's limit slew, 5 A forced (2026-11-13 08:05, Dan ran it)
+
+**Build (BatteryNext, flashed 2026-11-13, read back: 991 / +4, slew 50).** At a CCM entry with the limit
+engaged (`buck_ccm_limit_from`), the limit now starts at the measured current and rises at
+`regulator_ccm_ilim_slew_ma_ms` (A/s; default 50 in the battery build, 0 in PD) to `regulator_ccm_ilim_ma`, with
+the voltage integrator running while it climbs (`buck_ccm_limit_slew_from`, buck_ccm.c). Why, from the host model
+fitted to section 9 (series loss 0.1 Ω in L1's path, ID_MON clip, SW_OCP filter, 9 µF of ceramics, no bulk C):
+only a path of 0.03–0.04 Ω over milliseconds reproduces the 5 A trip (peak 6.7 A, SW_OCP at 7.4 ms, the bench
+tripped at 7.4 ms as well), where kl 100 against the newest scan's lag overruns. Slewed at 50 A/s the model peaks
+at most 0.12 A over the limit for paths 0.01–0.30 Ω, limits 3–5 A, from 0.4 and 1.1 A
+(`test_boost_entry_slew`). With u held during the slew instead, a 0.17 Ω path overshot to 6.9 A in the model. The
+stiff path is an inference from the model, not a measurement.
+
+**`pack 5000 --ccm forced --trace ccm --trace-at 0 --trace-post 2000` (renamed from the script's output, which
+reused section 9's file names; `boost_cal_pack_forced_5000-5000_slew.json`,
+trace `captures/trace_pack_forced_5000_slew.csv`): ran 20 s, no fault.** Pack 31234 mV, ceiling 32734 mV. Ammeter
+5003 mA; tail ID_MON 4991 mA, V_in × I_in / V_out 4974 mA, u −402 mV. Highest logged ID_MON: newest scan 5198 mA,
+filtered 5091 mA (SW_OCP level 5305 mA).
+
+The entry, from the trace (per-cycle ID_MON newest scan, which updates every 560 µs):
+
+| after entry | ID_MON (mA) | u (mV) |
+|---|---|---|
+| 0–8 ms | 12..603 (mean 80 / 232) | −440 → −1000 (the CCM_U_MIN_MV floor) at 0.8 ms |
+| 8–32 ms | rings 553..3271, about 8.5 ms period, damped | −1000..+406 |
+| 32–88 ms | 2229 → 4893, smooth, ~47 A/s | −185..−420 |
+| 88–100 ms | 4846..5043 | −401 (held) |
+
+- No overshoot over 5 A: the trace's highest is 5043 mA, at the end of the slew.
+- At the entry the current fell from DCM's ~0.6 A (DCM command 614–748 mA, which reads high, section 9) to near 0
+  for ~8 ms, then rang to 3.3 A while the slewed limit was near 1–2 A, before the clean climb. In the same 0.1 ms,
+  VD_MON's V_out rose 31148 → 31441 mV while the current fell: the DCM-to-CCM jump in VD_MON's bias seen before
+  (+0.16–0.19 V, section 9), here about +0.3 V. With the reference started at the DCM reading, the law saw V_out
+  0.3 V over it and drove u to its floor; v_lim then climbs at kl × (limit − I) ≈ 0.06 V/ms, and the two integrators
+  ring. Inference from the trace; the host model has no such bias and shows no dip.
+- One logged V_out sample at 1.64 s read 30562 mV (others 32.3–33.5 V) with ID_MON 5040 mA: not explained.
+- Board temperature not logged.

@@ -46,6 +46,11 @@
 extern "C" {
 #endif
 
+/** buck_ccm_limit with slew_a_s > 0: 1, a falling limit slews down at the same rate; 0, it falls at once. */
+#ifndef BUCK_CCM_SLEW_DOWN
+#define BUCK_CCM_SLEW_DOWN 0
+#endif
+
 /** HRTIM ticks per microsecond: 170 MHz x 32 (regulator_config.h checks it). */
 #define BUCK_CCM_TICKS_PER_US 5440u
 /** Shortest non-zero compare and period value the HRTIM accepts at x32 (RM0440). */
@@ -90,6 +95,7 @@ typedef struct
     float dt_lim_s;  /**< buck_ccm_limit period [s]                   */
     float kff_l;     /**< load-current feedforward: kff_l dI_out/dt [H] (L1: 4.7e-6) */
     float kff_r;     /**< and kff_r I_out [ohm] (the series drop)     */
+    float slew_a_s;  /**< entry slew of the limit [A/s] (buck_ccm_limit_slew_from); <= 0: none */
 } BuckCcmGains;
 
 typedef struct
@@ -98,6 +104,16 @@ typedef struct
     int8_t clamp;    /**< last update: +1 at the longest pulse, -1 at the shortest */
     uint8_t limiting;/**< last update: the current limit set the duty           */
     uint8_t ramp;    /**< entry ramp (buck_ccm_limit_from) until I first reaches the limit: u runs */
+    uint8_t slewing; /**< the slewed limit is under g->ilim_a (climbing)                   */
+    uint8_t slew_on; /**< ilim_slew_a holds a history (slew_a_s > 0 and a limit set)        */
+    uint8_t slew_entry; /**< u runs in this climb: from an entry (buck_ccm_limit_slew_from), or a step
+                             mid-run once buck_ccm_limit has re-seated the reference (du_v) */
+    float du_v;      /**< buck_ccm_limit: add to the law's u and clear (a mid-run re-seat, bumpless) [V] */
+    float ilim_slew_a; /**< the limit acted on while slew_a_s > 0 [A]                       */
+    uint8_t blind;   /**< open-loop entry window (buck_ccm_blind_begin): the law runs on v_blind_v, u
+                          held; 1 begun, 2 the law has run in it (ref_blind_v valid) */
+    float v_blind_v; /**< V_out latched at the entry, what the law sees while blind [V]          */
+    float ref_blind_v; /**< the law's reference term in the window (for the bumpless end) [V]    */
     float v_lim_v;   /**< the limit's voltage reference [V] (valid while limiting) */
     float v_cmd_v;   /**< reference the duty is built on: min(V_ref, v_lim) [V]    */
     float v_prev_v;  /**< last V_out buck_ccm_update saw (derivative) [V]          */
@@ -170,6 +186,26 @@ void buck_ccm_limit(BuckCcmState *s, const BuckCcmGains *g, float v_ref_v, float
  *  at kl (I_lim - I) per buck_ccm_limit call, and the voltage integrator keeps running (s->ramp) until the
  *  current first reaches the limit or the limit hands back.  Nothing if V_out >= V_ref. */
 void buck_ccm_limit_from(BuckCcmState *s, float v_ref_v, float v_out_v);
+
+/** Slew the limit from the present current (2026-11-13, a CCM entry into a battery): with g->slew_a_s > 0
+ *  buck_ccm_limit acts on ilim_slew_a, which starts here at i_a and moves toward ilim_a at slew_a_s (up; down
+ *  per BUCK_CCM_SLEW_DOWN), as it does after any step of ilim_a; while it climbs the voltage integrator keeps
+ *  running (as in the entry ramp).  slew_a_s <= 0 or ilim_a <= 0 drop the history.  Call after
+ *  buck_ccm_limit_from. */
+void buck_ccm_limit_slew_from(BuckCcmState *s, float i_a);
+
+/** Open-loop entry window (2026-11-13, Dan): from a CCM entry for a few PID cycles the law sees V_out as
+ *  latched here, not as measured, and u holds, so the duty is the entry's guess (V_out at the entry plus u0)
+ *  with only the V_in feedforward live: the law never acts on a reading taken across the mode change.  The
+ *  caller holds the current limit's state meanwhile.  Call after buck_ccm_reset. */
+void buck_ccm_blind_begin(BuckCcmState *s, float v_out_v);
+
+/** End the window: s->v_cmd_v and s->limiting already hold the reference the closed loop starts on (the
+ *  caller re-seats the limit at the measured V_out); u takes up the difference between the window's reference
+ *  term and the new one at v_out_v, so the first closed-loop duty equals the window's (bumpless).  boost
+ *  selects boost_ccm_update's law (n in output volts), else buck_ccm_update's. */
+void buck_ccm_blind_end(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmTimingCfg *c, bool boost,
+                        float v_out_v);
 
 /** One update of the voltage law, every dt_s, on s->v_cmd_v: returns the Q1
  *  on-time [ns] and sets s->t_on_ticks, clamped; at a clamp the integrator

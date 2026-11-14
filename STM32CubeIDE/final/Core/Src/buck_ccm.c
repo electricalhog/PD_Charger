@@ -96,6 +96,11 @@ void buck_ccm_reset(BuckCcmState *s, float u0_v, float v_ref_v, float v_out_v)
     s->clamp      = 0;
     s->limiting   = 0u;
     s->ramp       = 0u;
+    s->slewing    = 0u;
+    s->slew_on    = 0u;
+    s->slew_entry = 0u;
+    s->du_v       = 0.0f;
+    s->blind      = 0u;
     s->v_lim_v    = v_ref_v;
     s->v_cmd_v    = v_ref_v;
     s->v_prev_v   = v_out_v;
@@ -120,18 +125,92 @@ void buck_ccm_limit_from(BuckCcmState *s, float v_ref_v, float v_out_v)
     }
 }
 
+void buck_ccm_blind_begin(BuckCcmState *s, float v_out_v)
+{
+    /* At a DCM-to-CCM entry the law's first errors are readings taken across the mode change: VD_MON read
+     * ~0.3 V higher within 0.1 ms of a 5 A forced entry while the current fell (bench 2026-11-13, README
+     * section 10), the integrator chased it to its floor, the current dropped to ~0 for 8 ms and the two
+     * integrators rang for 25 ms.  The load cannot move much in a millisecond, so the entry's guess holds it
+     * better than a reading the law cannot yet trust. */
+    s->blind     = 1u;
+    s->v_blind_v = v_out_v;
+    s->v_prev_v  = v_out_v;
+}
+
+void buck_ccm_blind_end(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmTimingCfg *c, bool boost,
+                        float v_out_v)
+{
+    if (!s->blind) { return; }
+    if (s->blind == 1u)   /* ended before the law ran blind: nothing to carry over */
+    {
+        s->blind    = 0u;
+        s->v_prev_v = v_out_v;
+        return;
+    }
+    float v_cmd = s->v_cmd_v;
+    if (!s->limiting && (s->v_floor_v > 0.0f) && (v_cmd < s->v_floor_v)) { v_cmd = s->v_floor_v; }
+    const float ref = (boost ? v_cmd : v_cmd * (1.0f - buck_ccm_refresh_share(c))) + g->kp * (v_cmd - v_out_v);
+    float u = s->u_v + (s->ref_blind_v - ref);
+    if (u > g->u_max_v) { u = g->u_max_v; }
+    if (u < g->u_min_v) { u = g->u_min_v; }
+    s->u_v      = u;
+    s->blind    = 0u;
+    s->v_prev_v = v_out_v;
+}
+
+void buck_ccm_limit_slew_from(BuckCcmState *s, float i_a)
+{
+    /* The limit loop's gain is kl over the path's incremental resistance, and into a battery over
+     * milliseconds that path is stiff: an 8S pack, its wiring, fuse and ammeter, 0.03-0.04 Ohm in the
+     * board-fitted model against the 0.13-0.17 Ohm of a slow fit.  Stepping the limit there from ~1.1 A
+     * (forced entry) to 5 A, v_lim overran by the ~0.5 ms the newest ID_MON scan lags and the current
+     * peaked 6.3-6.7 A (model; bench 2026-11-12: SW_OCP 7.4 ms after a 5 A forced entry).  Slewed, each
+     * step is small against the lag, so the overrun is too; and with u running meanwhile it learns the
+     * offset at the rising current, which held at u0 overshot instead on a soft path (0.17 Ohm: 6.9 A at
+     * 50 A/s with u held, 5.00 A with u running; host model). */
+    s->ilim_slew_a = (i_a > 0.0f) ? i_a : 0.0f;
+    s->slew_on     = 1u;
+    s->slew_entry  = 1u;
+}
+
 void buck_ccm_limit(BuckCcmState *s, const BuckCcmGains *g, float v_ref_v, float v_out_v, float i_a)
 {
     /* v_lim integrates down while I is over the limit and back up while it
      * is under, and hands back to V_ref once it reaches it. */
     float v_cmd = v_ref_v;
     uint8_t lim = 0u;
-    if (g->ilim_a > 0.0f && (s->limiting || i_a > g->ilim_a))
+    /* With slew_a_s > 0 the limit acted on rises no faster than that, from an entry (buck_ccm_limit_slew_from)
+     * or a step of g->ilim_a alike (2026-11-13: a step mid-run meets the same stiff path as an entry); it
+     * falls at the same rate when SLEW_DOWN, else at once.  Without history it starts at the limit. */
+    float ilim_a = g->ilim_a;
+    if (g->slew_a_s > 0.0f && ilim_a > 0.0f)
+    {
+        const float step = g->slew_a_s * g->dt_lim_s;
+        if (!s->slew_on) { s->ilim_slew_a = ilim_a; s->slew_on = 1u; }
+        if (s->ilim_slew_a < ilim_a)      { s->ilim_slew_a = (ilim_a - s->ilim_slew_a > step) ? s->ilim_slew_a + step : ilim_a; }
+        else if (s->ilim_slew_a > ilim_a) { s->ilim_slew_a = (BUCK_CCM_SLEW_DOWN && s->ilim_slew_a - ilim_a > step)
+                                                             ? s->ilim_slew_a - step : ilim_a; }
+        ilim_a = s->ilim_slew_a;
+    }
+    else { s->slew_on = 0u; }
+    s->slewing = s->slew_on && (s->ilim_slew_a < g->ilim_a);
+    /* A climb starting mid-run while the limit acts: u has held at the limit's steady error, which drifts
+     * with the operating point (the board's loss falls ~0.1 V/A), and integrating that stale error later (in
+     * the climb, or at the hand-back to V_ref) put 0.6 A over a 5 A limit at 0.17 Ohm (host model).  So the
+     * reference re-seats on V_out, the law's u takes the difference (s->du_v, for the caller: bumpless) and
+     * u runs through the climb as after an entry. */
+    if (s->slewing && !s->slew_entry && s->limiting && v_out_v < v_ref_v)
+    {
+        s->du_v      += s->v_lim_v - v_out_v;
+        s->v_lim_v    = v_out_v;
+        s->slew_entry = 1u;
+    }
+    if (ilim_a > 0.0f && (s->limiting || i_a > ilim_a))
     {
         /* Entry starts at the measured V_out (a load step has already
          * pulled it down), never above V_ref. */
         float v_lim = s->limiting ? s->v_lim_v : ((v_out_v < v_ref_v) ? v_out_v : v_ref_v);
-        const float ei = g->ilim_a - i_a;
+        const float ei = ilim_a - i_a;
         /* no integration into a duty clamp it is pushing against */
         if (!((s->clamp > 0 && ei > 0.0f) || (s->clamp < 0 && ei < 0.0f)))
         {
@@ -147,7 +226,9 @@ void buck_ccm_limit(BuckCcmState *s, const BuckCcmGains *g, float v_ref_v, float
     }
     s->v_cmd_v  = v_cmd;
     s->limiting = lim;
-    if (!lim || i_a >= g->ilim_a) { s->ramp = 0u; }
+    if (!lim || i_a >= ilim_a) { s->ramp = 0u; }
+    if (!s->slewing)                      { s->slew_entry = 0u; }
+    if (lim && s->slewing && s->slew_entry) { s->ramp = 1u; }   /* u runs while an entry's limit climbs */
 }
 
 uint32_t buck_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmTimingCfg *c,
@@ -160,13 +241,14 @@ uint32_t buck_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmTi
      * the integrator's offset applies.  Not while the current limit acts:
      * its target is a positive current, and with u held a floor there kept
      * 3 A in at a 2 A limit (section 15). */
+    if (s->blind) { v_out_v = s->v_blind_v; s->v_prev_v = v_out_v; }   /* open-loop window: no reading */
     float v_cmd = s->v_cmd_v;
     const bool floored = !s->limiting && (s->v_floor_v > 0.0f) && (v_cmd < s->v_floor_v);
     if (floored) { v_cmd = s->v_floor_v; }
     const float e = v_cmd - v_out_v;
     /* anti-windup: the voltage integrator holds while the limit sets v_cmd
      * (V_out sits below V_ref by design) */
-    const bool hold = s->limiting && !s->ramp;
+    const bool hold = (s->limiting && !s->ramp) || s->blind;
     float u = hold ? s->u_v : (s->u_v + g->ki * e * g->dt_s);
     if (u > g->u_max_v) { u = g->u_max_v; }
     if (u < g->u_min_v) { u = g->u_min_v; }
@@ -179,6 +261,8 @@ uint32_t buck_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmTi
     const float ff_i = g->kff_l * (s->i_out_a - s->i_prev_a) / g->dt_s + g->kff_r * s->i_out_a;
     s->i_prev_a = s->i_out_a;
     float n = v_ff + g->kp * e + d_v + ff_i + u;
+    s->ref_blind_v = v_ff + g->kp * e;   /* the reference term (buck_ccm_blind_end) */
+    if (s->blind) { s->blind = 2u; }
     float t_on = (float)c->period_ns * n / v_in_v;
     const float max_on = (float)buck_ccm_max_on_ns(c);
     const float min_on = (float)c->min_on_ns;
@@ -293,11 +377,12 @@ uint32_t boost_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmT
                           float v_out_v, float v_in_v)
 {
     /* no-reverse floor on the reference, not while limiting (see buck_ccm_update) */
+    if (s->blind) { v_out_v = s->v_blind_v; s->v_prev_v = v_out_v; }   /* open-loop window: no reading */
     float v_cmd = s->v_cmd_v;
     const bool floored = !s->limiting && (s->v_floor_v > 0.0f) && (v_cmd < s->v_floor_v);
     if (floored) { v_cmd = s->v_floor_v; }
     const float e = v_cmd - v_out_v;
-    const bool hold = s->limiting && !s->ramp;
+    const bool hold = (s->limiting && !s->ramp) || s->blind;
     float u = hold ? s->u_v : (s->u_v + g->ki * e * g->dt_s);
     if (u > g->u_max_v) { u = g->u_max_v; }
     if (u < g->u_min_v) { u = g->u_min_v; }
@@ -312,6 +397,8 @@ uint32_t boost_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmT
     const float max_on = (float)boost_ccm_max_on_ns(c);
     const float min_on = (float)boost_ccm_min_on_ns(c);
     const float rest = v_cmd + g->kp * e + d_v + ff_i;   /* n = rest + u */
+    s->ref_blind_v = v_cmd + g->kp * e;   /* the reference term (buck_ccm_blind_end) */
+    if (s->blind) { s->blind = 2u; }
     float n = rest + u;
     float t_on;
     int8_t clamp = floored ? -1 : 0;

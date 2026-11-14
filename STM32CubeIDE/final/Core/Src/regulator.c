@@ -194,6 +194,7 @@ volatile RegulatorTraceCtl    regulator_trace_ctl = {0};
 static volatile bool trace_at_limit = false;
 /** Set by SWITCH_PULSE as it opens the switch; the trace's SWITCH trigger.  */
 static volatile bool trace_switch_event = false;
+static uint32_t trace_last_mode = 0xFFFFFFFFu;   /* TRIG_MODE: the mode the cycle before (none at arm) */
 /** SWITCH_PULSE: open, waiting for TIM4 to reconnect; step 4c holds off.  */
 static volatile bool switch_pulse_active = false;
 /** SWITCH_PULSE: DWT->CYCCNT when OUTPUT_EN went low.                     */
@@ -525,6 +526,17 @@ static int32_t    ilim_ramp_q = -1;   /* regulator_ccm_ilim_ma x PID_EXECUTION_R
 volatile int32_t  regulator_ccm_ocp_fs_ma   = 0;   /* SW_OCP's full-scale level (5c), telemetry */
 volatile float    regulator_ccm_ilim_kl     = CCM_ILIM_KL_DEFAULT;
 volatile float    regulator_ccm_ilim_kl_ccm = CCM_ILIM_KL_CCM_DEFAULT;
+volatile uint16_t regulator_ccm_ilim_slew_ma_ms = CCM_ILIM_SLEW_MA_MS_DEFAULT;
+volatile uint16_t regulator_ccm_ilim_eff_ma = 0u;
+volatile uint8_t  regulator_ccm_entry_blind = CCM_ENTRY_BLIND_DEFAULT;
+volatile uint32_t regulator_ccm_blind_early = 0u;
+static uint16_t   ccm_blind_left = 0u;   /* PID cycles left in the entry's open-loop window */
+static int32_t    ccm_blind_i0_ma = 0;   /* the current the limit read at the entry */
+volatile uint8_t  regulator_ccm_kind_switch = CCM_KIND_SWITCH_DEFAULT;
+volatile uint8_t  regulator_ccm_down        = CCM_DOWN_DEFAULT;
+static uint8_t    ccm_floor_cycles = 0u;   /* PID cycles at the kind's shortest pulse, V_out over the reference */
+volatile uint32_t regulator_ccm_kind_switches = 0u;
+volatile uint8_t  regulator_ccm_kind_switch_last = 0u;
 volatile uint8_t  regulator_ccm_ilim_src    = CCM_ILIM_SRC_DEFAULT;
 volatile uint8_t  regulator_ccm_ilim_fast   = CCM_ILIM_FAST_DEFAULT;
 volatile uint8_t  regulator_ccm_entry_ramp  = CCM_ENTRY_RAMP_DEFAULT;
@@ -1239,6 +1251,7 @@ void regulator_start(void)
     ccm_hold = 0u;
     ccm_dwell = 0u;
     ccm_ocp_count = 0u;
+    ccm_blind_left = 0u;
     buck_ccm_reset(&ccm_state, 0.0f, (float)voltage_mv * 1e-3f, 0.0f);
     buck_ccm_reset(&ilim_state, 0.0f, (float)voltage_mv * 1e-3f, 0.0f);
     regulator_ccm_limiting = 0u;
@@ -1417,7 +1430,7 @@ static uint32_t trace_arm(uint32_t arg)
 {
     const uint32_t trigger = arg & 0xFu;
     uint32_t post = (arg >> 4) & 0xFFFu;
-    if (trigger > (uint32_t)REGULATOR_TRACE_TRIG_CCM)
+    if (trigger > (uint32_t)REGULATOR_TRACE_TRIG_MODE)
     {
         return REGULATOR_TRACE_BAD_ARG;
     }
@@ -1433,6 +1446,7 @@ static uint32_t trace_arm(uint32_t arg)
     regulator_trace_ctl.pulse_us      = 0u;
     regulator_trace_ctl.pulse_cycles  = 0u;
     trace_switch_event = false;
+    trace_last_mode    = 0xFFFFFFFFu;
     regulator_trace_ctl.state         = REGULATOR_TRACE_ARMED;
     return REGULATOR_TRACE_OK;
 }
@@ -2017,6 +2031,84 @@ void regulator_hrtim_fault_isr(void)
  * Priority: NVIC_PRIORITY_PID_TIM7 (2).
  * No FreeRTOS API calls allowed.
  */
+/** The entry's first-duty guess for `kind` (5b): u such that the law's first duty reproduces V_out from the
+ *  reference v_entry_mv, plus the losses this setpoint band last ran with (learned), else the default. */
+static float ccm_u0_guess(uint8_t kind, const BuckCcmTimingCfg *c, uint32_t setpoint_mv, uint32_t v_out_mv,
+                          float v_entry_mv)
+{
+    const float v_ref_v = (float)setpoint_mv * 1e-3f;
+    const CcmULearned *ul = &ccm_u_learned[ccm_u_band(setpoint_mv)];
+    const bool learned = ul->period_ns == c->period_ns && ul->v_ref_v > 0.0f && ul->kind == kind;
+    if (kind != CCM_KIND_BUCK)
+    {
+        /* Boost and band: the law's n is in output volts, so the first duty reproduces V_out with
+         * u = V_out - V_ref plus the losses (learned, else CCM_BOOST_U0_MV, or for band
+         * CCM_BAND_U0_PERMILLE of V_ref). */
+        const float u_def = (kind == CCM_KIND_BAND) ? (float)CCM_BAND_U0_PERMILLE * 1e-3f * v_ref_v
+                                                    : (float)CCM_BOOST_U0_MV * 1e-3f;
+        const float u_base = learned ? ul->u_v * v_ref_v / ul->v_ref_v : u_def;
+        return u_base + ((float)v_out_mv - v_entry_mv) * 1e-3f;
+    }
+    const float u_base = learned ? ul->u_v * v_ref_v / ul->v_ref_v
+                                 : -((float)CCM_U0_PERMILLE * 1e-3f * v_ref_v + (float)CCM_U0_MV * 1e-3f);
+    return u_base + ((float)v_out_mv - v_entry_mv) * 1e-3f * (1.0f - buck_ccm_refresh_share(c));
+}
+
+/** The kinds in V_out order: buck, band, boost. */
+static inline uint8_t ccm_kind_rank(uint8_t k)
+{
+    return (k == CCM_KIND_BUCK) ? 1u : (k == CCM_KIND_BAND) ? 2u : (k == CCM_KIND_BOOST) ? 3u : 0u;
+}
+
+/** A running CCM may go straight from `from` to `to`, `mode` being the mode after the switch.  Upward
+ *  (regulator_ccm_kind_switch): buck -> band or boost in buck-boost, band -> boost.  Downward
+ *  (regulator_ccm_down): boost -> band in buck-boost, band -> buck in buck.  Always the same switching period
+ *  in `mode`, and buck's Timer B at one period (the boost / band writer sets Timer B's period to Timer A's;
+ *  buck's sets its own). */
+static bool ccm_switch_ok(uint8_t from, uint8_t to, RegulatorMode mode)
+{
+    if (!regulator_ccm_active) { return false; }
+    const bool up   = (from == CCM_KIND_BUCK && (to == CCM_KIND_BAND || to == CCM_KIND_BOOST) &&
+                       mode == REGULATOR_MODE_BUCK_BOOST) ||
+                      (from == CCM_KIND_BAND && to == CCM_KIND_BOOST && mode == REGULATOR_MODE_BUCK_BOOST);
+    const bool down = (from == CCM_KIND_BOOST && to == CCM_KIND_BAND && mode == REGULATOR_MODE_BUCK_BOOST) ||
+                      (from == CCM_KIND_BAND && to == CCM_KIND_BUCK && mode == REGULATOR_MODE_BUCK);
+    if (up && !regulator_ccm_kind_switch) { return false; }
+    if (down && !regulator_ccm_down)      { return false; }
+    if (!up && !down)                     { return false; }
+    if (from == CCM_KIND_BUCK || to == CCM_KIND_BUCK)
+    {
+        const uint32_t ivl = regulator_ccm_refresh_interval_ns;
+        if (ivl != 0u && ivl != sw_period_ns) { return false; }
+    }
+    return mode_period_ticks(mode) == sw_period_ticks;
+}
+
+/** The reference the CCM law runs on (the limit's v_cmd: under the setpoint while it limits or walks up from
+ *  a re-seat), at most `setpoint_mv`. */
+static uint32_t ccm_ref_mv(uint32_t setpoint_mv)
+{
+    const float r = ilim_state.v_cmd_v * 1e3f;
+    if (!(r > 0.0f))               { return setpoint_mv; }
+    return (r < (float)setpoint_mv) ? (uint32_t)r : setpoint_mv;
+}
+
+/** Buck -> buck-boost with CCM staying on (5b, regulator_ccm_kind_switch): the mode only.  No output off, no
+ *  counter restart, no DCM legs: CCM keeps all four outputs, and this cycle's band / boost edges (6c, one
+ *  preloaded set under the update hold) rewrite every Timer A / B source and compare the legs use.  The
+ *  skip watchdog stays open (CCM).  The same period in both modes (ccm_switch_ok). */
+static void ccm_mode_in_place(RegulatorMode new_mode, uint32_t v_out_mv, uint32_t voltage_mv)
+{
+    const uint32_t k = regulator_mode_log_index % 8u;
+    regulator_mode_log[k][0] = HAL_GetTick();
+    regulator_mode_log[k][1] = (uint32_t)regulator_mode | ((uint32_t)new_mode << 8) | (1u << 16);   /* 1: in CCM */
+    regulator_mode_log[k][2] = voltage_mv;
+    regulator_mode_log[k][3] = regulator_vin_filt_mv;
+    regulator_mode_log[k][4] = v_out_mv;
+    regulator_mode_log_index++;
+    regulator_mode = new_mode;
+}
+
 void regulator_pid_tim7_isr(void)
 {
     if (regulator_state != REGULATOR_STATE_RUNNING)
@@ -2133,12 +2225,24 @@ void regulator_pid_tim7_isr(void)
     }
     const uint32_t commanded_mv = regulator_commanded_mv;
 
+    bool ccm_mode_switch = false;   /* 3b -> 5b: buck CCM reached buck-boost, or band CCM reached buck */
+    bool ccm_buck_legs   = false;   /* 5b -> 6c: band -> buck, buck's Timer A / B sources back first */
     /* --- 3b. Mode selection (§5.1), every cycle: where the slewed setpoint
      * is headed, gated by where V_out is (determine_mode_from_voltages).
      * The loop's current command carries over unchanged (step 5).       */
     {
+        /* Buck CCM with the kind switch on: buck -> buck-boost when the law's own reference (the limit's
+         * v_cmd, ccm_ref_mv) gets there, not the ramp's setpoint ahead of it.  The limit's re-seat at an
+         * entry left the reference about 1 V behind an 80 V/s ramp, and the change landed band CCM under
+         * the reference it can make (bench 2026-11-14: auto at 22.0 V, forced at 22.97 V; threshold 23 V). */
+        uint32_t mode_mv = commanded_mv;
+        if (regulator_ccm_active && regulator_ccm_kind_switch && regulator_ccm_kind == CCM_KIND_BUCK)
+        {
+            const uint32_t ref_mv = ccm_ref_mv(commanded_mv);
+            if (ref_mv < mode_mv) { mode_mv = ref_mv; }
+        }
         RegulatorMode new_mode = determine_mode_from_voltages(regulator_vin_filt_mv,
-                                                              commanded_mv, v_out_mv);
+                                                              mode_mv, v_out_mv);
         if (ccm_mode_settle != 0u) { ccm_mode_settle--; }
         /* Boost-kind CCM drives the same legs in buck-boost and boost mode
          * (Q1 held on with its refresh, Q4 / Q3 switching), so buck-boost to
@@ -2154,8 +2258,26 @@ void regulator_pid_tim7_isr(void)
                                     new_mode == REGULATOR_MODE_BOOST;
         if (new_mode != regulator_mode && !ccm_keeps_mode)
         {
-            /* Out of CCM first (5b), then CCM_MODE_SETTLE cycles in DCM. */
-            if (regulator_ccm_active)      { ccm_exit_request = REGULATOR_CCM_EXIT_MODE; }
+            /* Out of CCM first (5b), then CCM_MODE_SETTLE cycles in DCM.  Buck CCM into
+             * buck-boost: 5b may instead switch straight to band or boost CCM
+             * (regulator_ccm_kind_switch), else it exits as before. */
+            const bool ccm_up_bb   = regulator_ccm_kind_switch && regulator_ccm_kind == CCM_KIND_BUCK &&
+                                     new_mode == REGULATOR_MODE_BUCK_BOOST;
+            const bool ccm_down_bk = regulator_ccm_down && regulator_ccm_kind == CCM_KIND_BAND &&
+                                     new_mode == REGULATOR_MODE_BUCK;
+            /* Boost CCM from boost into buck-boost (regulator_ccm_down): the same legs, so only the mode. */
+            const bool ccm_down_bb = regulator_ccm_down && regulator_ccm_kind == CCM_KIND_BOOST &&
+                                     regulator_mode == REGULATOR_MODE_BOOST && new_mode == REGULATOR_MODE_BUCK_BOOST &&
+                                     mode_period_ticks(new_mode) == sw_period_ticks;
+            if (regulator_ccm_active && ccm_exit_request == REGULATOR_CCM_EXIT_NONE && ccm_down_bb)
+            {
+                ccm_mode_in_place(new_mode, v_out_mv, commanded_mv);
+            }
+            else if (regulator_ccm_active && ccm_exit_request == REGULATOR_CCM_EXIT_NONE && (ccm_up_bb || ccm_down_bk))
+            {
+                ccm_mode_switch = true;   /* 5b: switch in place, or exit */
+            }
+            else if (regulator_ccm_active)  { ccm_exit_request = REGULATOR_CCM_EXIT_MODE; }
             else if (ccm_mode_settle == 0u) { change_mode_while_running(new_mode, v_out_mv, commanded_mv); }
         }
     }
@@ -2331,12 +2453,46 @@ void regulator_pid_tim7_isr(void)
      * reference of whichever loop runs, so a CCM entry or exit keeps the
      * limit, and a PPS fold need not force CCM (a fast drop in V_out needs
      * DCM).  Its anti-windup clamp is last cycle's, from the loop that ran:
-     * CCM's duty clamp, or the DCM command at 0 or its ceiling. --- */
+     * CCM's duty clamp, or the DCM command at 0 or its ceiling.
+     *
+     * The entry's open-loop window (regulator_ccm_entry_blind, 2026-11-13):
+     * while it lasts the limit's state holds as the entry set it and the law
+     * runs on the latched V_out (buck_ccm_blind_begin).  At its end, or early
+     * once ID_MON reads over the limit, the limit is re-seated on the V_out
+     * read in CCM, its slew starts from the current read in CCM, and step 6c
+     * hands the law over bumplessly (buck_ccm_blind_end). --- */
+    bool ccm_blind_end_now = false;
+    if (!regulator_ccm_active) { ccm_blind_left = 0u; }
+    else if (ccm_blind_left != 0u)
+    {
+        /* the guard: ID_MON CCM_BLIND_GUARD_MA over the larger of the limit and the entry's current (an
+         * entry at the limit must not end it on noise) */
+        const int32_t base = (regulator_ccm_ilim_ma != 0u && (int32_t)regulator_ccm_ilim_ma > ccm_blind_i0_ma)
+                             ? (int32_t)regulator_ccm_ilim_ma : ccm_blind_i0_ma;
+        const bool over = i_lim_meas_ma > base + (int32_t)CCM_BLIND_GUARD_MA;
+        if (--ccm_blind_left == 0u || over)
+        {
+            if (over && ccm_blind_left != 0u) { regulator_ccm_blind_early++; }
+            ccm_blind_left    = 0u;
+            ccm_blind_end_now = true;
+            if (ilim_state.limiting)
+            {
+                buck_ccm_limit_from(&ilim_state, (float)effective_setpoint_mv * 1e-3f, (float)v_out_mv * 1e-3f);
+                if (regulator_ccm_ilim_slew_ma_ms != 0u && ilim_state.limiting)
+                {
+                    buck_ccm_limit_slew_from(&ilim_state, (float)i_lim_meas_ma * 1e-3f);
+                }
+            }
+        }
+    }
+    if (ccm_blind_left == 0u)
     {
         const BuckCcmGains lim_g = {
             .ilim_a = (float)regulator_ccm_ilim_ma * 1e-3f,
             .kl = regulator_ccm_active ? regulator_ccm_ilim_kl_ccm : regulator_ccm_ilim_kl,
             .dt_lim_s = 1.0f / (float)PID_EXECUTION_RATE_HZ,
+            /* mA/ms is A/s; 0 out of CCM ends a slew at the next call */
+            .slew_a_s = regulator_ccm_active ? (float)regulator_ccm_ilim_slew_ma_ms : 0.0f,
         };
         const uint8_t was_limiting = ilim_state.limiting;
         buck_ccm_limit(&ilim_state, &lim_g, (float)effective_setpoint_mv * 1e-3f, (float)v_out_mv * 1e-3f,
@@ -2344,6 +2500,16 @@ void regulator_pid_tim7_isr(void)
         regulator_ccm_limiting = ilim_state.limiting;
         regulator_ccm_v_lim_mv = ilim_state.limiting ? ilim_state.v_lim_v * 1e3f : 0.0f;
         if (ilim_state.limiting && !was_limiting) { regulator_ccm_limit_entries++; }
+        regulator_ccm_ilim_eff_ma = ilim_state.slewing ? (uint16_t)(ilim_state.ilim_slew_a * 1e3f) : 0u;
+        /* a climb re-seated mid-run (buck_ccm_limit): the law's u takes the difference, so the duty holds */
+        if (ilim_state.du_v != 0.0f)
+        {
+            float u = ccm_state.u_v + ilim_state.du_v;
+            if (u > (float)CCM_U_MAX_MV * 1e-3f) { u = (float)CCM_U_MAX_MV * 1e-3f; }
+            if (u < (float)CCM_U_MIN_MV * 1e-3f) { u = (float)CCM_U_MIN_MV * 1e-3f; }
+            ccm_state.u_v    = u;
+            ilim_state.du_v  = 0.0f;
+        }
     }
     /* The reference both loops track: the setpoint, or v_lim below it. */
     const float v_cmd_mv = ilim_state.v_cmd_v * 1e3f;
@@ -2358,11 +2524,147 @@ void regulator_pid_tim7_isr(void)
      * IL_MON), V_out held over CCM_OVER_BAND (DCM then skips), V_in rising
      * (regeneration), or a switch, mode or enable change.  The DCM loop's
      * integrator is held in CCM and preset to the load current on exit. --- */
+    /* 3b's buck -> buck-boost with buck CCM running (regulator_ccm_kind_switch): change the mode in place when
+     * buck-boost calls for band or boost CCM at this setpoint (the kind follows below), else leave CCM as
+     * before (MODE exit, DCM, then the mode change). */
+    if (ccm_mode_switch && regulator_ccm_kind == CCM_KIND_BUCK)
+    {
+        ccm_mode_switch = false;
+        const uint8_t to = ccm_kind_for(REGULATOR_MODE_BUCK_BOOST, effective_setpoint_mv, v_in_mv, CCM_KIND_NONE);
+        if (ccm_switch_ok(CCM_KIND_BUCK, to, REGULATOR_MODE_BUCK_BOOST) && regulator_ccm_enable &&
+            !softstart_active && target_voltage_mv >= regulator_commanded_mv)
+        {
+            ccm_mode_in_place(REGULATOR_MODE_BUCK_BOOST, v_out_mv, commanded_mv);
+        }
+        else { ccm_exit_request = REGULATOR_CCM_EXIT_MODE; }
+    }
     /* The kind this mode and setpoint call for (ccm_kind_for), and its timing. */
-    const uint8_t ccm_want = ccm_kind_for(regulator_mode, effective_setpoint_mv, v_in_mv, regulator_ccm_kind);
-    const uint8_t ccm_k = regulator_ccm_active ? regulator_ccm_kind : ccm_want;
+    uint8_t ccm_want = ccm_kind_for(regulator_mode, effective_setpoint_mv, v_in_mv, regulator_ccm_kind);
+    /* An upward switch (ccm_switch_ok) waits for the law's own reference, as 3b's mode change: until it gets
+     * there the running kind holds (no exit).  Band -> boost at a setpoint the reference had not reached
+     * pinned boost at its shortest pulse, V_out 0.8-1.0 V over the reference for 5-6 ms (bench 2026-11-14). */
+    if (regulator_ccm_active && ccm_want != regulator_ccm_kind &&
+        ccm_kind_rank(ccm_want) > ccm_kind_rank(regulator_ccm_kind) &&
+        ccm_switch_ok(regulator_ccm_kind, ccm_want, regulator_mode) &&
+        ccm_kind_for(regulator_mode, ccm_ref_mv(effective_setpoint_mv), v_in_mv, regulator_ccm_kind) == regulator_ccm_kind)
+    {
+        ccm_want = regulator_ccm_kind;
+    }
+    uint8_t ccm_k = regulator_ccm_active ? regulator_ccm_kind : ccm_want;
     BuckCcmTimingCfg ccm_cfg;
     ccm_timing_cfg(&ccm_cfg, ccm_k);
+    /* Straight to the kind wanted where the only exit would have been MODE (regulator_ccm_kind_switch,
+     * ccm_switch_ok: upward only).  Band -> boost: the same law with n in output volts, so u and the limit
+     * carry over and only the edges change.  Buck -> band / boost: a different law; u starts from an entry's
+     * guess on the present reference, and the entry's open-loop window covers the change (5d re-seats and
+     * hands over at its end, as at an entry). */
+    if (regulator_ccm_active && ccm_want != regulator_ccm_kind && ccm_exit_request == REGULATOR_CCM_EXIT_NONE &&
+        regulator_ccm_enable && !softstart_active && target_voltage_mv >= regulator_commanded_mv &&
+        (output_switch_on || switch_pulse_active) && ccm_kind_rank(ccm_want) > ccm_kind_rank(regulator_ccm_kind) &&
+        ccm_switch_ok(regulator_ccm_kind, ccm_want, regulator_mode))
+    {
+        BuckCcmTimingCfg to_cfg;
+        ccm_timing_cfg(&to_cfg, ccm_want);
+        if (ccm_cfg_valid(&to_cfg, ccm_want))
+        {
+            const uint8_t from = regulator_ccm_kind;
+            regulator_ccm_kind = ccm_want;
+            regulator_ccm_kind_switches++;
+            regulator_ccm_kind_switch_last = (uint8_t)((from << 4) | ccm_want);
+            ccm_k   = ccm_want;
+            ccm_cfg = to_cfg;
+            ccm_dwell        = 0u;   /* the entry's grace on the over-band exit */
+            ccm_over_count   = 0u;
+            ccm_clamp_cycles = 0u;
+            if (from == CCM_KIND_BUCK)
+            {
+                const float u0 = ccm_u0_guess(ccm_want, &ccm_cfg, effective_setpoint_mv, v_out_mv,
+                                              ilim_state.v_cmd_v * 1e3f);
+                buck_ccm_reset(&ccm_state, u0, (float)effective_setpoint_mv * 1e-3f, (float)v_out_mv * 1e-3f);
+                if (regulator_ccm_entry_blind != 0u)
+                {
+                    buck_ccm_blind_begin(&ccm_state, (float)v_out_mv * 1e-3f);
+                    ccm_blind_left  = regulator_ccm_entry_blind;
+                    ccm_blind_i0_ma = i_lim_meas_ma;
+                }
+            }
+        }
+    }
+    /* Downward (regulator_ccm_down): boost -> band, band -> buck, when the law's reference falls past the
+     * running kind's threshold (ccm_kind_for on the reference), or when the kind sits at its shortest pulse
+     * with V_out over the reference for CCM_FLOOR_CYCLES (it can go no lower: band's floor measured about
+     * 22.3 V, boost's 25.2 V at 1 A, both above their model thresholds).  Band -> buck only within buck's
+     * reach (the entry's V_in x D_max test).  3b's buck-boost -> buck with band running ends here too: the
+     * switch, else the MODE exit. */
+    if (regulator_ccm_active && regulator_ccm_down && regulator_ccm_kind != CCM_KIND_BUCK)
+    {
+        const uint32_t ref_mv = ccm_ref_mv(effective_setpoint_mv);
+        const bool shortest = ccm_state.t_on_ticks <= buck_ccm_ticks(boost_ccm_min_on_ns(&ccm_cfg)) + 1u;
+        if (shortest && !ccm_state.blind && v_out_mv > ref_mv) { if (ccm_floor_cycles < 0xFFu) { ccm_floor_cycles++; } }
+        else                                                    { ccm_floor_cycles = 0u; }
+        const bool at_floor = ccm_floor_cycles >= CCM_FLOOR_CYCLES;
+        uint8_t to = CCM_KIND_NONE;
+        RegulatorMode to_mode = regulator_mode;
+        BuckCcmTimingCfg to_cfg;
+        if (regulator_ccm_kind == CCM_KIND_BOOST && regulator_mode == REGULATOR_MODE_BUCK_BOOST)
+        {
+            const uint8_t k = ccm_kind_for(REGULATOR_MODE_BUCK_BOOST, ref_mv, v_in_mv, CCM_KIND_BOOST);
+            if (at_floor || k == CCM_KIND_BAND || k == CCM_KIND_NONE) { to = CCM_KIND_BAND; }
+        }
+        else if (regulator_ccm_kind == CCM_KIND_BAND && regulator_mode == REGULATOR_MODE_BUCK_BOOST)
+        {
+            const uint8_t k = ccm_kind_for(REGULATOR_MODE_BUCK_BOOST, ref_mv, v_in_mv, CCM_KIND_BAND);
+            if (at_floor || k == CCM_KIND_NONE || ccm_mode_switch)
+            {
+                ccm_timing_cfg(&to_cfg, CCM_KIND_BUCK);
+                const uint32_t cap_mv = (uint32_t)(((uint64_t)v_in_mv * buck_ccm_max_on_ns(&to_cfg)) / to_cfg.period_ns);
+                if ((uint64_t)ref_mv * 100u <= (uint64_t)cap_mv * CCM_DUTY_ENTER_PCT)
+                {
+                    to = CCM_KIND_BUCK;
+                    to_mode = REGULATOR_MODE_BUCK;
+                }
+            }
+        }
+        if (to != CCM_KIND_NONE && ccm_exit_request == REGULATOR_CCM_EXIT_NONE && regulator_ccm_enable &&
+            !softstart_active && (output_switch_on || switch_pulse_active) &&
+            ccm_switch_ok(regulator_ccm_kind, to, to_mode))
+        {
+            ccm_timing_cfg(&to_cfg, to);
+            if (ccm_cfg_valid(&to_cfg, to))
+            {
+                const uint8_t from = regulator_ccm_kind;
+                if (to_mode != regulator_mode) { ccm_mode_in_place(to_mode, v_out_mv, commanded_mv); }
+                regulator_ccm_kind = to;
+                regulator_ccm_kind_switches++;
+                regulator_ccm_kind_switch_last = (uint8_t)((from << 4) | to);
+                ccm_want = to;
+                ccm_k    = to;
+                ccm_cfg  = to_cfg;
+                ccm_dwell        = 0u;
+                ccm_over_count   = 0u;
+                ccm_clamp_cycles = 0u;
+                ccm_floor_cycles = 0u;
+                if (to == CCM_KIND_BUCK)
+                {
+                    /* a different law: an entry's guess and the window, as buck -> band; and in 6c buck's
+                     * Timer A / B sources (band's writer replaced them) under the same update hold */
+                    const float u0 = ccm_u0_guess(CCM_KIND_BUCK, &ccm_cfg, effective_setpoint_mv, v_out_mv,
+                                                  ilim_state.v_cmd_v * 1e3f);
+                    buck_ccm_reset(&ccm_state, u0, (float)effective_setpoint_mv * 1e-3f, (float)v_out_mv * 1e-3f);
+                    if (regulator_ccm_entry_blind != 0u)
+                    {
+                        buck_ccm_blind_begin(&ccm_state, (float)v_out_mv * 1e-3f);
+                        ccm_blind_left  = regulator_ccm_entry_blind;
+                        ccm_blind_i0_ma = i_lim_meas_ma;
+                    }
+                    ccm_buck_legs = true;
+                }
+                ccm_mode_switch = false;
+            }
+        }
+    }
+    else { ccm_floor_cycles = 0u; }
+    if (ccm_mode_switch) { ccm_exit_request = REGULATOR_CCM_EXIT_MODE; }   /* 3b's change, no switch: exit */
     /* Boost CCM whose DCM fallback is buck-boost (both legs pulsing, high
      * peaks) wins from a few hundred mA; buck and plain boost only near the
      * DCM ceiling (plans/scripts/ccm_bb.py crossover table). */
@@ -2388,7 +2690,7 @@ void regulator_pid_tim7_isr(void)
         RegulatorCcmExit why = REGULATOR_CCM_EXIT_NONE;
         if (ccm_exit_request != REGULATOR_CCM_EXIT_NONE)   { why = ccm_exit_request; }
         else if (!regulator_ccm_enable)                    { why = REGULATOR_CCM_EXIT_DISABLED; }
-        else if (target_voltage_mv < regulator_commanded_mv) { why = REGULATOR_CCM_EXIT_RAMP_DOWN; }
+        else if (!regulator_ccm_down && target_voltage_mv < regulator_commanded_mv) { why = REGULATOR_CCM_EXIT_RAMP_DOWN; }
         else if (ccm_want != regulator_ccm_kind)          { why = REGULATOR_CCM_EXIT_MODE; }
         /* A SWITCH_PULSE keeps CCM: its reconnect is the bench's load step. */
         else if (softstart_active || (!output_switch_on && !switch_pulse_active))
@@ -2475,35 +2777,28 @@ void regulator_pid_tim7_isr(void)
             if (regulator_ccm_entry_ramp && regulator_ccm_ilim_ma != 0u)
             {
                 buck_ccm_limit_from(&ilim_state, (float)effective_setpoint_mv * 1e-3f, (float)v_out_mv * 1e-3f);
+                /* and the limit itself rises from the present current (regulator_ccm_ilim_slew_ma_ms,
+                 * battery build): a step to it overran into the stiff pack path (bench 2026-11-12,
+                 * SW_OCP 7.4 ms into a 5 A forced entry; buck_ccm_limit_slew_from) */
+                if (regulator_ccm_ilim_slew_ma_ms != 0u && ilim_state.limiting && regulator_ccm_entry_blind == 0u)
+                {
+                    buck_ccm_limit_slew_from(&ilim_state, (float)i_lim_meas_ma * 1e-3f);
+                }   /* with the open-loop window, the slew starts at its end (5d) */
             }
             const float v_entry_mv = ilim_state.v_cmd_v * 1e3f;   /* the reference the law starts on */
             /* Bumpless: the first duty reproduces the measured V_out
              * (the feedforward is built on V_ref), plus the integrator this
              * band last ran with, scaled to V_ref (CCM_U0_*). */
-            const float v_ref_v = (float)effective_setpoint_mv * 1e-3f;
-            const CcmULearned *ul = &ccm_u_learned[ccm_u_band(effective_setpoint_mv)];
-            const bool learned = ul->period_ns == ccm_cfg.period_ns && ul->v_ref_v > 0.0f && ul->kind == ccm_want;
-            float u0;
-            if (ccm_want != CCM_KIND_BUCK)
-            {
-                /* Boost and band: the law's n is in output volts, so the
-                 * first duty reproduces V_out with u = V_out - V_ref plus the
-                 * losses (learned, else CCM_BOOST_U0_MV, or for band
-                 * CCM_BAND_U0_PERMILLE of V_ref). */
-                const float u_def = (ccm_want == CCM_KIND_BAND) ? (float)CCM_BAND_U0_PERMILLE * 1e-3f * v_ref_v
-                                                                : (float)CCM_BOOST_U0_MV * 1e-3f;
-                const float u_base = learned ? ul->u_v * v_ref_v / ul->v_ref_v : u_def;
-                u0 = u_base + ((float)v_out_mv - v_entry_mv) * 1e-3f;
-            }
-            else
-            {
-                const float u_base = learned
-                                   ? ul->u_v * v_ref_v / ul->v_ref_v
-                                   : -((float)CCM_U0_PERMILLE * 1e-3f * v_ref_v + (float)CCM_U0_MV * 1e-3f);
-                u0 = u_base + ((float)v_out_mv - v_entry_mv) * 1e-3f
-                              * (1.0f - buck_ccm_refresh_share(&ccm_cfg));
-            }
+            const float u0 = ccm_u0_guess(ccm_want, &ccm_cfg, effective_setpoint_mv, v_out_mv, v_entry_mv);
             buck_ccm_reset(&ccm_state, u0, (float)effective_setpoint_mv * 1e-3f, (float)v_out_mv * 1e-3f);
+            /* Open-loop window: the law holds this first duty's guess (V_in feedforward only) for
+             * regulator_ccm_entry_blind PID cycles, then step 5d re-seats and 6c hands over. */
+            if (regulator_ccm_entry_blind != 0u)
+            {
+                buck_ccm_blind_begin(&ccm_state, (float)v_out_mv * 1e-3f);
+                ccm_blind_left  = regulator_ccm_entry_blind;
+                ccm_blind_i0_ma = i_lim_meas_ma;
+            }
         }
     }
 
@@ -2627,6 +2922,12 @@ void regulator_pid_tim7_isr(void)
          * + I R follows the current, and a floor there held a CCM entry
          * overshoot until SW_OCP (bench 2026-11-09 section 9). */
         ccm_state.v_floor_v = BATTERY ? (float)regulator_battery_pack_mv * 1e-3f : 0.0f;
+        if (ccm_blind_end_now)
+        {
+            buck_ccm_blind_end(&ccm_state, &g, &ccm_cfg,
+                               regulator_ccm_kind == CCM_KIND_BOOST || regulator_ccm_kind == CCM_KIND_BAND,
+                               (float)v_out_mv * 1e-3f);
+        }
         if (regulator_ccm_kind == CCM_KIND_BOOST || regulator_ccm_kind == CCM_KIND_BAND)
         {
             (void)boost_ccm_update(&ccm_state, &g, &ccm_cfg, (float)v_out_mv * 1e-3f, (float)v_in_mv * 1e-3f);
@@ -2640,6 +2941,13 @@ void regulator_pid_tim7_isr(void)
             (void)buck_ccm_update(&ccm_state, &g, &ccm_cfg, (float)v_out_mv * 1e-3f, (float)v_in_mv * 1e-3f);
             BuckCcmTiming t;
             buck_ccm_timing_ticks(&ccm_cfg, ccm_state.t_on_ticks, &t);   /* 184 ps steps */
+            if (ccm_buck_legs)
+            {
+                /* band -> buck (5b): buck's Timer A / B sources and DCM compares first, then the buck edges
+                 * below overwrite the compares; one preloaded set under the hold (above) */
+                hrtim_apply_buck_mode_static_leg();
+                HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP1xR = TB_CMP1_DCM;
+            }
             if (ccm_enter_now && regulator_ccm_handover)
             {
                 /* Handover (buck_ccm.h): the first period moves L1 from DCM's
@@ -2909,6 +3217,9 @@ void regulator_pid_tim7_isr(void)
                 case REGULATOR_TRACE_TRIG_ERROR:
                     fire = (uint32_t)(err < 0 ? -err : err) > tc->threshold_mv;      break;
                 case REGULATOR_TRACE_TRIG_CCM:     fire = regulator_ccm_active;     break;
+                case REGULATOR_TRACE_TRIG_MODE:
+                    fire = trace_last_mode != 0xFFFFFFFFu && (uint32_t)regulator_mode != trace_last_mode;
+                    trace_last_mode = (uint32_t)regulator_mode;                  break;
                 default: break;
             }
         }

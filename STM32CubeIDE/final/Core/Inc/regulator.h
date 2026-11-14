@@ -154,6 +154,20 @@ extern volatile uint16_t regulator_sr_off_ns;
  *                                (buck_ccm.h, regulator.c step 5d)
  *    regulator_ccm_ilim_kl       its integral gain in DCM [V/(A s)]
  *    regulator_ccm_ilim_kl_ccm   the same in CCM
+ *    regulator_ccm_ilim_slew_ma_ms CCM entry: the limit rises from the
+ *                                measured current at this rate [A/s], 0 off
+ *                                (CCM_ILIM_SLEW_MA_MS_DEFAULT)
+ *    regulator_ccm_ilim_eff_ma   telemetry: the slewed limit while it climbs, else 0
+ *    regulator_ccm_entry_blind   CCM entry: PID cycles of open-loop duty before the
+ *                                law closes, 0 off (CCM_ENTRY_BLIND_DEFAULT)
+ *    regulator_ccm_blind_early   windows ended early by ID_MON over the limit
+ *    regulator_ccm_kind_switch   1: a running CCM goes straight to the next
+ *                                kind on the way up, no DCM between
+ *                                (CCM_KIND_SWITCH_DEFAULT)
+ *    regulator_ccm_down          1: CCM stays through a falling setpoint and
+ *                                hands down kind by kind (CCM_DOWN_DEFAULT)
+ *    regulator_ccm_kind_switches telemetry: such switches since boot;
+ *                                regulator_ccm_kind_switch_last (from << 4) | to
  *    regulator_ccm_ilim_src      CCM's current (limit, SW_OCP, light-load
  *                                exit): 1 ID_MON (default, regulator_id_gain/
  *                                offset applied), 0 IL_MON (regulator_il_ma)
@@ -251,6 +265,14 @@ extern volatile uint16_t regulator_ccm_ilim_target_ma;
 extern volatile int32_t  regulator_ccm_ocp_fs_ma;
 extern volatile float    regulator_ccm_ilim_kl;
 extern volatile float    regulator_ccm_ilim_kl_ccm;
+extern volatile uint16_t regulator_ccm_ilim_slew_ma_ms;
+extern volatile uint16_t regulator_ccm_ilim_eff_ma;
+extern volatile uint8_t  regulator_ccm_entry_blind;
+extern volatile uint32_t regulator_ccm_blind_early;
+extern volatile uint8_t  regulator_ccm_kind_switch;
+extern volatile uint8_t  regulator_ccm_down;
+extern volatile uint32_t regulator_ccm_kind_switches;
+extern volatile uint8_t  regulator_ccm_kind_switch_last;
 extern volatile uint8_t  regulator_ccm_ilim_src;
 extern volatile uint8_t  regulator_ccm_ilim_fast;
 extern volatile uint8_t  regulator_ccm_entry_ramp;
@@ -478,7 +500,9 @@ typedef enum
  * Triggers: NOW at the first sample; SWITCH when SWITCH_PULSE opens the output
  * switch; CEILING when the on-time reaches its window limit (step 6); ERROR
  * when |setpoint - V_out| exceeds the threshold; CCM on the first forced-CCM
- * cycle (buck, boost or band).
+ * cycle (buck, boost or band); MODE on the first cycle whose regulator mode
+ * (buck / buck-boost / boost) differs from the cycle before (2026-11-13, for
+ * the V_in boundary on a voltage slew).
  */
 #define REGULATOR_TRACE_LEN 2048u
 
@@ -488,7 +512,8 @@ typedef enum
     REGULATOR_TRACE_TRIG_SWITCH  = 1u,
     REGULATOR_TRACE_TRIG_CEILING = 2u,
     REGULATOR_TRACE_TRIG_ERROR   = 3u,
-    REGULATOR_TRACE_TRIG_CCM     = 4u
+    REGULATOR_TRACE_TRIG_CCM     = 4u,
+    REGULATOR_TRACE_TRIG_MODE    = 5u
 } RegulatorTraceTrigger;
 
 typedef enum

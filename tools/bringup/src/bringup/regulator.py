@@ -61,13 +61,13 @@ CMD = {"clear-fault": 1, "stop": 2, "bench-pwm-on": 3, "bench-pwm-off": 4, "set-
 ARG_CMDS = ("set-voltage", "start")   # take a millivolt argument in regulator_debug.arg
 RAW_ARG_CMDS = ("trace-arm", "switch-pulse")   # take a packed argument (trace_arg) or microseconds
 BENCH_ARG_CMDS = ("bench-ccm-pwm",)             # packed argument (ccm_pwm_arg), BENCH_RESULTS
-TRACE_TRIGGERS = {"now": 0, "switch": 1, "ceiling": 2, "error": 3, "ccm": 4}
+TRACE_TRIGGERS = {"now": 0, "switch": 1, "ceiling": 2, "error": 3, "ccm": 4, "mode": 5}
 TRACE_STATES = {0: "IDLE", 1: "ARMED", 2: "TRIGGERED", 3: "DONE"}
 TRACE_RESULTS = {
     0: ("OK", ""),
     1: ("NOT_RUNNING", "the regulator must be RUNNING for a switch pulse"),
     2: ("SWITCH_BUSY", "the output switch is not closed yet (start still connecting) or a pulse is running"),
-    3: ("BAD_ARG", "trigger 0-4; pulse 1-50000 us (SWITCH_PULSE_MAX_US)"),
+    3: ("BAD_ARG", "trigger 0-5; pulse 1-50000 us (SWITCH_PULSE_MAX_US)"),
     4: ("NO_SWITCH", "firmware built without OUTPUT_SWITCH_ENABLED"),
 }
 TRACE_LEN = 2048
@@ -215,6 +215,11 @@ _CONTROL = {"regulator_mode": "mode", "target_voltage_mv": "target_mv", "regulat
             "regulator_ccm_ilim_ma": "ccm_ilim_ma", "regulator_ccm_ilim_ramp_ma_s": "ccm_ilim_ramp_ma_s",
             "regulator_ccm_ilim_target_ma": "ccm_ilim_target_ma", "regulator_ccm_ilim_src": "ccm_ilim_src",
             "regulator_ccm_ilim_fast": "ccm_ilim_fast",
+            "regulator_ccm_ilim_slew_ma_ms": "ccm_ilim_slew_ma_ms", "regulator_ccm_ilim_eff_ma": "ccm_ilim_eff_ma",
+            "regulator_ccm_entry_blind": "ccm_entry_blind", "regulator_ccm_blind_early": "ccm_blind_early",
+            # CCM -> CCM across the mode / kind change (2026-11-14): last = (from << 4) | to
+            "regulator_ccm_kind_switch": "ccm_kind_switch", "regulator_ccm_kind_switches": "ccm_kind_switches",
+            "regulator_ccm_kind_switch_last": "ccm_kind_switch_last", "regulator_ccm_down": "ccm_down",
             "regulator_ccm_peak_ma": "ccm_peak_ma", "regulator_ccm_limiting": "ccm_limiting",
             "regulator_ccm_limit_entries": "ccm_limit_entries", "adc_monitor_adc2_aborts": "adc2_aborts",
             # Forced CCM kind (2026-11-03): 0 none, 1 buck, 2 boost, 3 band
