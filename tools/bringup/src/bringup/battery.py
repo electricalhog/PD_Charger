@@ -1,4 +1,4 @@
-"""Battery-load build (branch claude/lipo-load, plans/lipo-load.md): a LiPo on VBUS as a power sink.
+"""Battery-load build (cmake --preset Battery, plans/lipo-load.md): a LiPo on VBUS as a power sink.
 
 The firmware has no USB.  START (the regulator mailbox, arg = the ceiling in mV) reads the pack with the output
 switch closed and every FET off, starts at the pack voltage with the switch open, closes it once V_out is there and

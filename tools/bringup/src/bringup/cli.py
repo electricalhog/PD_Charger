@@ -394,7 +394,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("ms", type=float); g.add_argument("--timeout", type=float, default=3.0)
     rg.add_parser("trace", help="read the regulator trace (oldest first) into a CSV, with a summary")
 
-    # battery load (branch claude/lipo-load: no-USB build)
+    # battery load (cmake --preset Battery: the no-USB build)
     ba = sub.add_parser("battery", help="battery-load build: a LiPo on VBUS as a power sink").add_subparsers(
         dest="op", required=True)
     ba.add_parser("status", help="ceiling, pack reading, keepalive, current limit, regulator state")

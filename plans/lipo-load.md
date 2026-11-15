@@ -1,4 +1,4 @@
-# LiPo as a power sink (branch `claude/lipo-load`, 2026-11-09)
+# LiPo as a power sink (started on branch `claude/lipo-load`, 2026-11-09)
 
 **Why.** Dan: a LiPo on VBUS as a load that can sink a lot of power, on its own branch with no USB at all. Charging is
 managed so the pack is never full; this is not a charger (no termination, no balancing).
@@ -8,9 +8,12 @@ start that waits for V_in).
 
 ## 1. Build
 
-- `cmake --preset Battery` (`build/Battery`); `bu` on this branch points there (`tools/bringup/bringup.toml`). The PD
-  branches' `build/Debug` cache is never touched from here.
-- `BATTERY_LOAD` is set unconditionally in `CMakeLists.txt`. Any PD option ON stops the configure.
+- `cmake --preset Battery` (`build/Battery`); `bu` points there by default (`tools/bringup/bringup.toml`). The PD
+  builds are `cmake --preset Debug` and `cmake --preset EprPps` (`build/Debug`, `build/EprPps`).
+- `BATTERY_LOAD` is a CMake option with no default (2026-11-15, branch `claude/regulator-epr-pps`): a configure
+  without it stops, so a build directory from before it was an option (`build/BatteryNext`) cannot quietly turn into a
+  PD build with OUTPUT_DIS live. Reconfigure such a directory with `-DBATTERY_LOAD=ON`. With it ON, any PD option ON
+  stops the configure, and `PD_VBUS_PATH_CHARGER` defaults to OFF.
 - **Left out of the build:** the USB-PD stack, UCPD, TCPP0203, the tracer/GUI, the SRC1M1 BSP, `pd_policy.c` and
   `pd_vbus.c`.
 - `Core/Src/battery_no_usb.c` stubs the five entry points the generated code still calls. The UCPD peripheral is never

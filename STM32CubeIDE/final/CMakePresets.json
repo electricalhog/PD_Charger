@@ -6,15 +6,15 @@
             "hidden": true,
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/build/${presetName}",
-		    "toolchainFile": "${sourceDir}/cmake/gcc-arm-none-eabi.cmake",
-            "cacheVariables": {
-            }
+            "toolchainFile": "${sourceDir}/cmake/gcc-arm-none-eabi.cmake",
+            "cacheVariables": {}
         },
         {
             "name": "Debug",
             "inherits": "default",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug"
+                "CMAKE_BUILD_TYPE": "Debug",
+                "BATTERY_LOAD": "OFF"
             }
         },
         {
@@ -22,14 +22,32 @@
             "inherits": "default",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
-                "PD_VBUS_PATH_CHARGER": "OFF"
+                "PD_VBUS_PATH_CHARGER": "OFF",
+                "BATTERY_LOAD": "ON"
+            }
+        },
+        {
+            "name": "EprPps",
+            "inherits": "default",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "BATTERY_LOAD": "OFF",
+                "PD_VBUS_PATH_CHARGER": "ON",
+                "PD_VCONN": "ON",
+                "PD_BENCH_15V": "ON",
+                "PD_BENCH_20V": "ON",
+                "PD_BENCH_PPS": "ON",
+                "PD_BENCH_EPR_28V": "ON",
+                "PD_BENCH_EPR_36V": "ON",
+                "PD_BENCH_EPR_48V": "ON"
             }
         },
         {
             "name": "Release",
             "inherits": "default",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release"
+                "CMAKE_BUILD_TYPE": "Release",
+                "BATTERY_LOAD": "OFF"
             }
         }
     ],
@@ -41,6 +59,10 @@
         {
             "name": "Battery",
             "configurePreset": "Battery"
+        },
+        {
+            "name": "EprPps",
+            "configurePreset": "EprPps"
         },
         {
             "name": "Release",

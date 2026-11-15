@@ -1545,7 +1545,7 @@ _Static_assert(PULSE_SKIP_ABOVE_MV * 100u < SETPOINT_MIN_MV * (OVP_RELATIVE_PCT 
 #define VIN_START_MIN_MV 9000u
 
 /* =========================================================================
- * Battery-load build (BATTERY_LOAD, branch claude/lipo-load, plans/lipo-load.md)
+ * Battery-load build (BATTERY_LOAD, cmake --preset Battery, plans/lipo-load.md)
  *
  * A LiPo (3S to 8S) on VBUS behind a series resistor and a fuse, as a power
  * sink.  The pack is never charged full (managed by the operator), so there

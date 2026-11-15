@@ -50,6 +50,22 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/buck_ccm.c
 )
 
+# Battery-load build (plans/lipo-load.md): a LiPo or a resistor on VBUS as
+# a power sink, and no USB at all (the PD stack bypassed).  The USB-PD, UCPD,
+# TCPP and tracer sources are left out (Core/Src/battery_no_usb.c stubs what
+# the generated code still calls), every PD option must be off, OUTPUT_DIS is
+# never asserted (it would short a pack) and only the debugger mailbox
+# (`bu battery`) starts the regulator.  OFF: the USB-PD build, where only a
+# negotiated contract drives VBUS (PD_OWNS_VBUS).
+# No default: a build directory configured before this was an option (such as
+# build/BatteryNext) must fail rather than quietly become a PD build with
+# OUTPUT_DIS live.  Use a preset (Battery, Debug, EprPps) or -DBATTERY_LOAD=ON|OFF.
+if(NOT DEFINED BATTERY_LOAD)
+    message(FATAL_ERROR "BATTERY_LOAD is not set.  Configure with a preset (cmake --preset Battery | Debug | EprPps) "
+                        "or -DBATTERY_LOAD=ON (battery / resistor, no USB) or -DBATTERY_LOAD=OFF (USB-PD).")
+endif()
+option(BATTERY_LOAD "Battery / resistor load on VBUS, no USB-PD stack" OFF)
+
 # USB-PD VBUS path.  ON: the Type-C VBUS is this board's regulator output
 # behind the output switch (Core/Src/pd_vbus.c); the X-NUCLEO-SRC1M1 BSP is
 # left out of the link because it drives PC8 (OUTPUT_EN here, TCPP03 ENABLE
@@ -58,7 +74,13 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
 # bench build (SRC1M1 BSP, default task starts the regulator at
 # DEFAULT_TASK_TEST_VOLTAGE_MV, mailbox start/set-voltage allowed); use it
 # only with nothing plugged into the Type-C receptacle.
-option(PD_VBUS_PATH_CHARGER "USB-PD VBUS through the regulator and output switch" ON)
+# Defaults to ON in the USB-PD build, OFF with BATTERY_LOAD.
+if(BATTERY_LOAD)
+    set(PD_VBUS_PATH_CHARGER_DEFAULT OFF)
+else()
+    set(PD_VBUS_PATH_CHARGER_DEFAULT ON)
+endif()
+option(PD_VBUS_PATH_CHARGER "USB-PD VBUS through the regulator and output switch" ${PD_VBUS_PATH_CHARGER_DEFAULT})
 # VCONN switches on GPIOs (pins in Core/Inc/pd_bench_config.h).  Needed for
 # EPR entry: the source must power the cable e-marker to read it over SOP'.
 option(PD_VCONN "Source VCONN through GPIO-driven switches" OFF)
@@ -87,42 +109,37 @@ option(PD_BENCH_EPR_28V "Offer the 28 V EPR PDO (bench, needs PD_VCONN)" OFF)
 option(PD_BENCH_EPR_36V "Offer the 36 V EPR PDO (bench, needs PD_BENCH_EPR_28V)" OFF)
 option(PD_BENCH_EPR_48V "Offer the 48 V EPR PDO (bench, needs PD_BENCH_EPR_36V)" OFF)
 
-# Battery-load build (branch claude/lipo-load, plans/lipo-load.md): a LiPo on
-# VBUS as a power sink, and no USB at all.  Not an option on this branch: the
-# USB-PD, UCPD, TCPP and tracer sources are left out (Core/Src/battery_no_usb.c
-# stubs what the generated code still calls), and every PD option must be off.
-# Use the Battery preset (build/Battery), so the PD branches' build/Debug cache
-# is never reconfigured from here.
-set(BATTERY_LOAD ON)
-foreach(opt PD_VBUS_PATH_CHARGER PD_VCONN PD_BENCH_DRY_RUN PD_BENCH_FORCE_VCONN PD_BENCH_15V PD_BENCH_20V
-        PD_BENCH_24V PD_BENCH_PPS PD_BENCH_EPR_28V PD_BENCH_EPR_36V PD_BENCH_EPR_48V)
-    if(${opt})
-        message(FATAL_ERROR "${opt} is ON: this branch is the battery-load build with no USB. "
-                            "Configure with: cmake --preset Battery")
-    endif()
-endforeach()
-target_compile_definitions(stm32cubemx INTERFACE BATTERY_LOAD=1)
-target_sources(${CMAKE_PROJECT_NAME} PRIVATE Core/Src/battery_no_usb.c)
-set(BATTERY_NO_USB_SRCS
-    TCPP/App/app_tcpp.c
-    USBPD/App/usbpd.c USBPD/App/usbpd_pwr_if.c USBPD/App/usbpd_dpm_core.c
-    USBPD/Target/usbpd_dpm_user.c USBPD/Target/usbpd_pwr_user.c USBPD/Target/usbpd_vdm_user.c
-    Drivers/BSP/X-NUCLEO-SRC1M1/src1m1_usbpd_pwr.c
-    Utilities/GUI_INTERFACE/data_struct_tlv.c Utilities/GUI_INTERFACE/bsp_gui.c Utilities/GUI_INTERFACE/gui_api.c
-    Utilities/TRACER_EMB/tracer_emb.c Utilities/TRACER_EMB/tracer_emb_hw.c
-    Middlewares/ST/STM32_USBPD_Library/Core/src/usbpd_trace.c
-    Middlewares/ST/STM32_USBPD_Library/Devices/STM32G4XX/src/usbpd_cad_hw_if.c
-    Middlewares/ST/STM32_USBPD_Library/Devices/STM32G4XX/src/usbpd_hw.c
-    Middlewares/ST/STM32_USBPD_Library/Devices/STM32G4XX/src/usbpd_hw_if_it.c
-    Middlewares/ST/STM32_USBPD_Library/Devices/STM32G4XX/src/usbpd_phy.c
-    Middlewares/ST/STM32_USBPD_Library/Devices/STM32G4XX/src/usbpd_phy_hw_if.c
-    Middlewares/ST/STM32_USBPD_Library/Devices/STM32G4XX/src/usbpd_pwr_hw_if.c
-    Middlewares/ST/STM32_USBPD_Library/Devices/STM32G4XX/src/usbpd_timersserver.c
-    Core/Src/pd_policy.c Core/Src/pd_vbus.c)
-list(TRANSFORM BATTERY_NO_USB_SRCS PREPEND ${CMAKE_SOURCE_DIR}/)
-set_source_files_properties(${BATTERY_NO_USB_SRCS}
-    DIRECTORY ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/cmake/stm32cubemx
-    PROPERTIES HEADER_FILE_ONLY ON)
+if(BATTERY_LOAD)
+    foreach(opt PD_VBUS_PATH_CHARGER PD_VCONN PD_BENCH_DRY_RUN PD_BENCH_FORCE_VCONN PD_BENCH_15V PD_BENCH_20V
+            PD_BENCH_24V PD_BENCH_PPS PD_BENCH_EPR_28V PD_BENCH_EPR_36V PD_BENCH_EPR_48V)
+        if(${opt})
+            message(FATAL_ERROR "${opt} is ON with BATTERY_LOAD (the battery-load build has no USB). "
+                                "Configure with: cmake --preset Battery")
+        endif()
+    endforeach()
+    target_compile_definitions(stm32cubemx INTERFACE BATTERY_LOAD=1)
+    target_sources(${CMAKE_PROJECT_NAME} PRIVATE Core/Src/battery_no_usb.c)
+    set(BATTERY_NO_USB_SRCS
+        TCPP/App/app_tcpp.c
+        USBPD/App/usbpd.c USBPD/App/usbpd_pwr_if.c USBPD/App/usbpd_dpm_core.c
+        USBPD/Target/usbpd_dpm_user.c USBPD/Target/usbpd_pwr_user.c USBPD/Target/usbpd_vdm_user.c
+        Drivers/BSP/X-NUCLEO-SRC1M1/src1m1_usbpd_pwr.c
+        Utilities/GUI_INTERFACE/data_struct_tlv.c Utilities/GUI_INTERFACE/bsp_gui.c Utilities/GUI_INTERFACE/gui_api.c
+        Utilities/TRACER_EMB/tracer_emb.c Utilities/TRACER_EMB/tracer_emb_hw.c
+        Middlewares/ST/STM32_USBPD_Library/Core/src/usbpd_trace.c
+        Middlewares/ST/STM32_USBPD_Library/Devices/STM32G4XX/src/usbpd_cad_hw_if.c
+        Middlewares/ST/STM32_USBPD_Library/Devices/STM32G4XX/src/usbpd_hw.c
+        Middlewares/ST/STM32_USBPD_Library/Devices/STM32G4XX/src/usbpd_hw_if_it.c
+        Middlewares/ST/STM32_USBPD_Library/Devices/STM32G4XX/src/usbpd_phy.c
+        Middlewares/ST/STM32_USBPD_Library/Devices/STM32G4XX/src/usbpd_phy_hw_if.c
+        Middlewares/ST/STM32_USBPD_Library/Devices/STM32G4XX/src/usbpd_pwr_hw_if.c
+        Middlewares/ST/STM32_USBPD_Library/Devices/STM32G4XX/src/usbpd_timersserver.c
+        Core/Src/pd_policy.c Core/Src/pd_vbus.c)
+    list(TRANSFORM BATTERY_NO_USB_SRCS PREPEND ${CMAKE_SOURCE_DIR}/)
+    set_source_files_properties(${BATTERY_NO_USB_SRCS}
+        DIRECTORY ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/cmake/stm32cubemx
+        PROPERTIES HEADER_FILE_ONLY ON)
+endif()
 
 if(PD_VBUS_PATH_CHARGER)
     target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE PD_VBUS_PATH_CHARGER=1)
