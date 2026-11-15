@@ -1164,26 +1164,14 @@ _Static_assert(SYSCLK_HZ / 1000000UL * HRTIM_PRESCALER_MUL == 5440u,
 #define CCM_ILIM_KL_DEFAULT      400.0f  /* [V/(A s)], DCM */
 #define CCM_ILIM_KL_CCM_DEFAULT  100.0f  /* [V/(A s)], CCM */
 #define CCM_BLIND_GUARD_MA       500u    /* the window ends early once ID_MON is this far over max(limit, entry) */
-#if defined(BATTERY_LOAD) && (BATTERY_LOAD)
-#define CCM_ENTRY_BLIND_DEFAULT  20u     /* battery load: 1 ms open-loop at a CCM entry (2026-11-13) */
-#else
-#define CCM_ENTRY_BLIND_DEFAULT  0u      /* PD: not yet run on the bench */
-#endif
-#if defined(BATTERY_LOAD) && (BATTERY_LOAD)
-#define CCM_DOWN_DEFAULT         1u      /* battery load: CCM through falling setpoints (2026-11-14) */
-#else
-#define CCM_DOWN_DEFAULT         0u      /* PD: not yet run on the bench */
-#endif
+#define CCM_ENTRY_BLIND_DEFAULT  20u     /* 1 ms open-loop at a CCM entry (battery load 2026-11-13; PD from 2026-11-15, not yet run with a PD sink) */
+#define CCM_DOWN_DEFAULT         1u      /* CCM through falling setpoints (battery load 2026-11-14; PD from 2026-11-15, not yet run with a PD sink) */
 #define CCM_FLOOR_CYCLES         3u
-#if defined(BATTERY_LOAD) && (BATTERY_LOAD)
-#define CCM_KIND_SWITCH_DEFAULT  1u      /* battery load: CCM -> CCM across the mode / kind change (2026-11-14) */
-#else
-#define CCM_KIND_SWITCH_DEFAULT  0u      /* PD: not yet run on the bench */
-#endif
+#define CCM_KIND_SWITCH_DEFAULT  1u      /* CCM -> CCM across the mode / kind change (battery load 2026-11-14; PD from 2026-11-15, not yet run with a PD sink) */
 #if defined(BATTERY_LOAD) && (BATTERY_LOAD)
 #define CCM_ILIM_SLEW_MA_MS_DEFAULT 50u  /* battery load: CCM entry slews the limit at 50 A/s (2026-11-13) */
 #else
-#define CCM_ILIM_SLEW_MA_MS_DEFAULT 0u   /* PD: a load step meets the full limit at once */
+#define CCM_ILIM_SLEW_MA_MS_DEFAULT 0u   /* PD: a load step meets the full limit at once (kept off 2026-11-15) */
 #endif
 #define CCM_PEAK_MA_DEFAULT      0u      /* 0 = the PEAK_PROTECT backstop */
 #define CCM_ILIM_SRC_DEFAULT     1u      /* ID_MON */

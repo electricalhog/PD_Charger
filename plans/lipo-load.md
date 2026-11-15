@@ -203,7 +203,7 @@ pulse, V_out 0.8–1.0 V over the reference for 5–6 ms. Until the reference ge
 
 ## 10. CCM downward: boost → band → buck (2026-11-14, bench README 2026-11-13 10:49 and 2026-11-14)
 
-`regulator_ccm_down` (1 battery, 0 PD): a falling setpoint no longer exits CCM (RAMP_DOWN only when it is 0). The
+`regulator_ccm_down` (1 in both builds since 2026-11-15; PD not yet run with a sink): a falling setpoint no longer exits CCM (RAMP_DOWN only when it is 0). The
 exit dated from 2026-10-20, before entries were bumpless; at the converter's load currents C·dV/dt at 80 V/s
 (~4 mA on 50 uF) is small, so CCM can follow the ramp down. A running boost goes to band when the law's reference
 (min(v_cmd, setpoint)) says band or nothing, or when its on-time sits at the shortest pulse for CCM_FLOOR_CYCLES (3)
@@ -213,3 +213,13 @@ and band is at its floor, says nothing, or the mode is leaving buck-boost: buck 
 under the 1 ms open-loop window, and the buck leg's static Timer B and CMP1 are rewritten. Bench (resistor): band →
 buck at about 22.26 V with no CCM gap and within −0.13/+0.17 V of the reference; the 0.9–2.7 V DCM dips are gone.
 Auto still leaves CCM in buck at light load (LIGHT_LOAD near 20 V into 25.3 ohm), as designed.
+
+## 11. One branch for both builds (2026-11-15, branch `claude/regulator-epr-pps`)
+
+- `BATTERY_LOAD` is a CMake option with no default (section 1). Presets: `Battery` (no USB, mailbox START only),
+  `Debug` / `Release` (USB-PD), `EprPps` (USB-PD with VCONN, 15/20 V, SPR PPS and EPR 28/36/48 V).
+- The PD build now takes the battery-validated CCM defaults: `regulator_ccm_down` 1, `regulator_ccm_kind_switch` 1,
+  `regulator_ccm_entry_blind` 20 (1 ms). None of them has run with a PD sink yet.
+- `regulator_ccm_ilim_slew_ma_ms` stays 50 A/s in the Battery build and 0 in PD (Dan, 2026-11-15): a laptop load
+  step at CCM entry would otherwise meet a limit that starts at the entry current and climbs for up to ~100 ms.
+- The Battery preset's flash image is byte-identical to `build/BatteryNext` (the image on the board on 2026-11-14).
