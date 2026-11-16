@@ -2713,21 +2713,19 @@ void regulator_pid_tim7_isr(void)
             ccm_exit_now = true;
             ccm_exit_request = REGULATOR_CCM_EXIT_NONE;
             ccm_mode_settle  = CCM_MODE_SETTLE;
-            /* The DCM loop restarts at the measured load (CCM's current,
-             * filtered), at least 30 % of its ceiling: too low sags the
-             * output, too high is clipped by pulse skipping. */
-            float i0 = (float)regulator_ccm_i_avg_ma;
-            if (regulator_ccm_handover)
-            {
-                /* the measured load (CCM-corrected) plus DCM's offset over it */
-                const uint32_t dsp = (effective_setpoint_mv > ccm_dcm_add_sp_mv)
-                                   ? effective_setpoint_mv - ccm_dcm_add_sp_mv : ccm_dcm_add_sp_mv - effective_setpoint_mv;
-                i0 += (float)((ccm_dcm_add_ma >= 0 && dsp <= CCM_EXIT_DCM_LEARN_MV) ? ccm_dcm_add_ma
-                                                                                    : ccm_exit_dcm_add_ma(v_out_mv));
-            }
-            else if (i0 < 0.3f * i_max_ma) { i0 = 0.3f * i_max_ma; }
-            if (i0 < 0.0f)            { i0 = 0.0f; }
-            if (i0 > i_max_ma)        { i0 = i_max_ma; }
+            /* The DCM loop restarts at the measured load: the lower of CCM's
+             * filtered current and the newest per-cycle reading, so a load
+             * that has just dropped is not seeded at the filter's lag (bench
+             * 2026-11-15: 1586 mA into 13 mA, SW_OVP at 15 V).  Handover: plus
+             * DCM's offset over the load (learned at the entry, or the table's
+             * after a drop); else at least 30 % of the ceiling (too low sags
+             * the output, too high is clipped by skipping). */
+            const uint32_t dsp = (effective_setpoint_mv > ccm_dcm_add_sp_mv)
+                               ? effective_setpoint_mv - ccm_dcm_add_sp_mv : ccm_dcm_add_sp_mv - effective_setpoint_mv;
+            const float add_learned = (ccm_dcm_add_ma >= 0 && dsp <= CCM_EXIT_DCM_LEARN_MV) ? (float)ccm_dcm_add_ma : -1.0f;
+            const float i0 = buck_ccm_exit_seed_ma((float)regulator_ccm_i_avg_ma, (float)i_lim_meas_ma,
+                                                   regulator_ccm_handover != 0u, add_learned,
+                                                   (float)ccm_exit_dcm_add_ma(v_out_mv), 0.3f * i_max_ma, i_max_ma);
             regulator_ccm_exit_i0_ma = (int16_t)i0;
             pid_state.integrator     = i0;
             pid_state.previous_error = 0.0f;

@@ -4,9 +4,10 @@ Passive only: `tw trace on` (PD packets on the console) and `tw vbus` (its INA: 
 second, with the G474's regulator status twice a second.  No CC, sink or inject command is sent.
 
 With TRACE_MV (second argument) the regulator trace is armed on |PID error| > TRACE_MV, 1000 samples (50 ms) after
-the trigger and 1048 before.  It is read out and armed again whenever it completes, and read once at a regulator
-fault (the ring then holds the last 102 ms before the fault, triggered or not) together with the fault snapshot.
-The fault is never cleared.
+the trigger and 1048 before.  It is read out and armed again whenever it completes, and read at every regulator
+fault (the ring then holds the last 102 ms before the fault, triggered or not).  The fault snapshot and VD_MON
+fault trace are saved at every fault, with or without TRACE_MV.  The fault is never cleared; after Dan clears it
+the trace is armed again.
 
   uv run --quiet --project tools/bringup python bench/results/2026-11-15/scripts/twonkie_log.py [SECONDS [TRACE_MV]]
 Output: bench/results/2026-11-15/twonkie_<time>.jsonl (one object per line: tw = a console line, reg = a status,
@@ -55,11 +56,17 @@ def reg():
             put("reg", state=st["state"], fault=st["fault_source"], target_mv=c.get("target_mv"), mode=c.get("mode"),
                 ccm=c.get("ccm_active"), v_out_mv=a.get("v_out_mv"), v_in_mv=a.get("v_in_mv"),
                 i_out_ma=c.get("ccm_i_avg_ma"), i_in_ma=c.get("i_in_filt_ma"))
-            if trace_mv and st["state"] == "FAULT" and not fault_done:
+            if st["state"] == "FAULT" and not fault_done:
+                # every fault (2026-11-16: the first version saved only the first one's)
                 fault_done = True
-                trace_out(n, "fault"); n += 1
+                if trace_mv:
+                    trace_out(n, "fault"); n += 1
                 put("fault", snapshot=probe.mem_read(cfg, "regulator_fault_snapshot", dtype="u32", count=6)["values"],
                     vd_raw=probe.mem_read(cfg, "regulator_fault_trace", dtype="u16", count=64)["values"])
+            elif st["state"] != "FAULT" and fault_done:
+                fault_done = False   # cleared by Dan; arm for the next one
+                if trace_mv:
+                    arm()
             elif trace_mv and st["state"] != "FAULT":
                 if probe.mem_read(cfg, "regulator_trace_ctl", dtype="u32", count=1)["values"][0] == 3:
                     trace_out(n, "done"); n += 1

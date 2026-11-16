@@ -422,3 +422,15 @@ uint32_t boost_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmT
     s->t_on_ticks = (uint32_t)(t_on * (float)BUCK_CCM_TICKS_PER_US * 1e-3f + 0.5f);
     return (uint32_t)(t_on + 0.5f);
 }
+
+float buck_ccm_exit_seed_ma(float i_avg_ma, float i_newest_ma, bool handover, float add_learned_ma,
+                            float add_table_ma, float floor_ma, float i_max_ma)
+{
+    const bool dropped = 2.0f * i_newest_ma < i_avg_ma;
+    float i0 = (i_newest_ma < i_avg_ma) ? i_newest_ma : i_avg_ma;
+    if (handover)           { i0 += (add_learned_ma >= 0.0f && !dropped) ? add_learned_ma : add_table_ma; }
+    else if (i0 < floor_ma) { i0 = floor_ma; }
+    if (i0 > i_max_ma)      { i0 = i_max_ma; }
+    if (i0 < 0.0f)          { i0 = 0.0f; }
+    return i0;
+}

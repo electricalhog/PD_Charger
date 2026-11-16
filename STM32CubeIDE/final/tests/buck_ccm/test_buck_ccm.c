@@ -1790,6 +1790,42 @@ static void test_laptop_48v(void)
      * an unplug at 5 A takes the board's V_out to 53-60 V before SW_OVP's 3 PID cycles. */
 }
 
+/* The DCM restart at a CCM exit (buck_ccm_exit_seed_ma), from the bench trace of 2026-11-15 21:41 (15 V, power
+ * bank): the per-cycle current fell 2021 -> 13 mA in about 1 ms, the filtered one still read about 1.06 A at the
+ * exit, and DCM restarted at 1586 mA; one PID cycle later V_out was 16.97 V (+1.97 V, so about 40 uF at 15 V).
+ * Check: with no load, one PID cycle at the seed stays under SW_OVP's 110 % at 5, 9 and 15 V, even with the
+ * largest learned offset (400 mA), and a steady load still restarts at the load plus the learned offset.
+ * A single-cycle bound: the loop's own correction in the cycles after is not modelled. */
+static void test_exit_seed(void)
+{
+    const float c_f = 40e-6f, t_pid = 50e-6f, i_max = 3000.0f;
+    printf("CCM exit seed: bench 1586 mA -> %+.2f V in one PID cycle at 40 uF\n", (double)(1.586f * t_pid / c_f));
+    const float vs[] = { 5.0f, 9.0f, 15.0f }, table[] = { 169.0f, 150.0f, 83.0f };
+    for (int k = 0; k < 3; k++)
+    {
+        const float i0 = buck_ccm_exit_seed_ma(1060.0f, 13.0f, true, 400.0f, table[k], 0.3f * i_max, i_max);
+        const float dv = (i0 - 13.0f) * 1e-3f * t_pid / c_f;
+        printf("  %2.0f V, load 2.02 A -> 13 mA, learned add 400 mA: seed %4.0f mA, %+.2f V in one PID cycle\n",
+               (double)vs[k], (double)i0, (double)dv);
+        CHECK(vs[k] + dv < 1.10f * vs[k], "exit seed at %.0f V: %.0f mA, V_out %.2f V over 110 %%",
+              (double)vs[k], (double)i0, (double)(vs[k] + dv));
+    }
+    /* A steady light load: newest and filtered agree; the seed is the load plus the learned add, as before. */
+    CHECK(fabsf(buck_ccm_exit_seed_ma(900.0f, 905.0f, true, 300.0f, 83.0f, 900.0f, i_max) - 1200.0f) < 0.5f,
+          "steady load: seed should be 900 + 300 mA");
+    /* No learned add (other setpoint): the table's. */
+    CHECK(fabsf(buck_ccm_exit_seed_ma(900.0f, 905.0f, true, -1.0f, 83.0f, 900.0f, i_max) - 983.0f) < 0.5f,
+          "no learned add: seed should be 900 + 83 mA");
+    /* A load that rose since the filter: the filtered value bounds it (as before). */
+    CHECK(fabsf(buck_ccm_exit_seed_ma(900.0f, 1400.0f, true, 300.0f, 83.0f, 900.0f, i_max) - 1200.0f) < 0.5f,
+          "rising load: seed should stay at the filtered 900 + 300 mA");
+    /* No handover: the 30 % floor still applies; clamps at 0 and the ceiling. */
+    CHECK(fabsf(buck_ccm_exit_seed_ma(1060.0f, 13.0f, false, -1.0f, 83.0f, 900.0f, i_max) - 900.0f) < 0.5f,
+          "no handover: floor");
+    CHECK(buck_ccm_exit_seed_ma(-50.0f, -80.0f, true, -1.0f, 0.0f, 0.0f, i_max) == 0.0f, "seed below 0");
+    CHECK(buck_ccm_exit_seed_ma(5000.0f, 5000.0f, true, 400.0f, 83.0f, 0.0f, i_max) == i_max, "seed over the ceiling");
+}
+
 static void test_floor(void)
 {
     const float buck_off = floor_sim(false, 0.0f), buck_on = floor_sim(false, 15.0f);
@@ -1873,6 +1909,7 @@ int main(int argc, char **argv)
     test_limit();
     test_entry();
     test_handover();
+    test_exit_seed();
     test_boost();
     test_band();
     test_floor();

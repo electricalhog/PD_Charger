@@ -295,6 +295,16 @@ float boost_ccm_v_max(const BuckCcmTimingCfg *c, float v_in_v);
 uint32_t boost_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmTimingCfg *c,
                           float v_out_v, float v_in_v);
 
+/** The DCM loop's restart current at a CCM exit [mA].  The load is the lower of CCM's filtered current and its
+ *  newest per-cycle reading: after a fast load drop the filter still holds the old load, and seeding DCM with it
+ *  put 1.6 A into 13 mA and tripped SW_OVP (bench 2026-11-15, 15 V, Anker power bank).  With the handover, DCM's
+ *  offset over the load goes on top: add_learned_ma (learned at the CCM entry; < 0 if not valid here), or
+ *  add_table_ma when it is not valid or the load has dropped under half the filtered value (the learned offset
+ *  belongs to the load CCM was entered at).  Without the handover the load is raised to at least floor_ma.  The
+ *  result is within 0..i_max_ma. */
+float buck_ccm_exit_seed_ma(float i_avg_ma, float i_newest_ma, bool handover, float add_learned_ma,
+                            float add_table_ma, float floor_ma, float i_max_ma);
+
 #ifdef __cplusplus
 }
 #endif
