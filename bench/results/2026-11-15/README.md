@@ -105,3 +105,33 @@ trace and its `tw vbus` reading 6.6 times a second, and the G474's status twice 
   It never stopped after a count, as a source is expected to (nCapsCount, 50). Not looked into.
 - The Twonkie prints the PPS APDO as "13400mV/5720mA": its firmware decodes every PDO as fixed (inference; the
   source's own `pd status` shows PPS 5–21 V, 3 A).
+
+## 21:32 — real PD load: 15 V, then 9 V, then SW_OVP at the third attach (Twonkie in line)
+
+Log `twonkie_20261115_213158.jsonl` (same passive logger, 300 s). The device was plugged and unplugged by Dan; what
+it is was not recorded here.
+
+| Time in log | What | Twonkie VBUS | Twonkie current | G474 |
+|---|---|---|---|---|
+| 6.7 s | attach, 15 V contract (PS_RDY 167 ms after Accept) | | | |
+| 12–150 s | 15 V held | 14.87–14.97 V, mean 14.92 V | 2.03–2.08 A, mean 2.05 A | V_out mean 15.01 V, ID_MON 2.02 A, IS_MON 1.27 A at 24.10 V in; CCM in 221 of 221 reads |
+| 150.3 s | detach, VBUS 0–3 mV | | | IDLE |
+| 151.5 s | attach, 9 V contract (PS_RDY 93 ms after Accept) | | | |
+| 154–184 s | 9 V held | 8.97–9.03 V, mean 9.00 V | 1.78–2.48 A, mean 2.29 A | V_out mean 8.99 V, ID_MON 2.25 A; CCM in 48 of 48 reads |
+| 184.6 s | detach, VBUS 0–3 mV | | | IDLE |
+| 186.9 s | attach, 5.19 V; VBUS back at 0 at 187.05 s; attach again, 5.20 V at 187.35 s | | 0 A | RUNNING at 5 V |
+| 187.50 s | request for 9 V / 3 A accepted; Hard Reset on the wire 31 ms after the Accept, no PS_RDY | 9 mV at 187.50 s | | **FAULT SW_OVP** |
+
+- **First auto CCM entries in the PD build under a real load:** CCM at 15 V / 2.05 A from 8.3 s and at 9 V from
+  152.5 s, with the defaults turned on today. No fault and no Hard Reset in either contract.
+- **The fault (snapshot and `regulator_fault_trace`, read 21:39):** V_out 7485 mV with the slewed setpoint still at
+  5000 mV (OVP is 110 % of 5.0 V for 3 PID cycles). VD_MON's last 64 scans: flat near 300 counts (5.2 V) for 25
+  scans, rising over about 14 scans, then flat near 435 counts (7.5 V) for 24 scans. So V_out stepped up 2.3 V and
+  stayed there before the setpoint had moved. The Twonkie's 150 ms readings did not catch 7.5 V on VBUS.
+- **Cause not found.** It happened 31 ms after the Accept, which is where the source starts a transition
+  (tSrcTransition, 25–35 ms); whether the source's own start of the ramp or voltage coming back from the device
+  raised V_out is not known. The two earlier requests from the same port (15 V, 9 V) had no such step.
+- **After the fault:** latched, never cleared. INPUT_EN off, output switch open, OUTPUT_DIS on, VBUS 0–9 mV.
+  The source kept answering attaches without VBUS: by 21:39 its counters read 22 VBUS-on failures, 7 Hard Resets
+  and 7 transition time-outs since the 20:47 reset. The device kept sending requests with VBUS at 0, so it has its
+  own supply (inference).
