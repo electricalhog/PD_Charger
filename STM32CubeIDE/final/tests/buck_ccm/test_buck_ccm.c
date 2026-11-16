@@ -1,0 +1,1926 @@
+/*
+ * Host test for Core/Src/buck_ccm.c: plays the register program back as the
+ * HRTIM would run it, one tick at a time, and checks every edge.
+ *
+ *   make -C STM32CubeIDE/final/tests/buck_ccm
+ *
+ * Event model (what regulator.c programs in buck CCM, buck_ccm.h):
+ *   Q1 TA1  set Timer A CMP4 (pulse start), reset Timer A CMP2
+ *   Q2 TA2  set Timer A period and Timer C CMP2 (event 3), reset Timer A CMP3
+ *           (Timer C CMP3, event 4, parked)
+ *   Q3 TB1  set Timer B CMP4, reset Timer B CMP2
+ *   Q4 TB2  set Timer B period, reset Timer B CMP3
+ * Timers A and C run at the switching period, Timer B at the refresh interval,
+ * all reset together.  The comparator (EEV4) is not modelled: it only ends
+ * Q1 early, which lengthens the Q1-to-Q2 gap.
+ */
+#include "buck_ccm.h"
+
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+
+#ifndef LIM_KL
+#define LIM_KL  400.0f
+#endif
+
+static int failures = 0;
+#define CHECK(cond, ...)                                                    \
+    do {                                                                    \
+        if (!(cond)) {                                                      \
+            failures++;                                                     \
+            if (failures < 20) { printf("FAIL %s:%d: ", __FILE__, __LINE__); \
+                                 printf(__VA_ARGS__); printf("\n"); }       \
+        }                                                                   \
+    } while (0)
+
+static BuckCcmTimingCfg cfg(uint32_t period_ns, uint32_t dt_ns)
+{
+    BuckCcmTimingCfg c = {
+        .period_ns = period_ns, .pulse_start_ns = 250u, .dt_ns = dt_ns, .refresh_ns = 150u,
+        .refresh_interval_ns = 10000u, .min_on_ns = 100u, .min_q2_end_ns = 60u,
+    };
+    return c;
+}
+
+/* Run two Timer B periods; check the second. */
+static void play(const BuckCcmTimingCfg *c, const BuckCcmTiming *t)
+{
+    const uint32_t pa = buck_ccm_ticks(c->period_ns);
+    const uint32_t a_cmp4 = t->a_cmp4;
+    CHECK(a_cmp4 == buck_ccm_ticks(c->pulse_start_ns), "a_cmp4 %u", a_cmp4);
+    const uint32_t dt = buck_ccm_ticks(c->dt_ns);
+    CHECK(t->a_cmp2 < pa && t->c_cmp2 < pa, "compare beyond the period: a_cmp2 %u c_cmp2 %u period %u",
+          t->a_cmp2, t->c_cmp2, pa);
+    CHECK(t->b_per <= BUCK_CCM_MAX_COMPARE && t->b_per % pa == 0u, "Timer B period %u", t->b_per);
+    int q1 = 0, q2 = 1, q3 = 1, q4 = 0;
+    uint32_t off1 = 0, off2 = 0, off3 = 0, off4 = 0, on1 = 0, q1_ticks = 0;
+    for (uint32_t n = 0; n < 2u * t->b_per; n++)
+    {
+        const uint32_t a = n % pa, b = n % t->b_per;
+        const int p1 = q1, p2 = q2, p3 = q3, p4 = q4;
+        if (a == a_cmp4)                   { q1 = 1; }
+        if (a == t->a_cmp2)                { q1 = 0; }
+        if (a == 0u || a == t->c_cmp2)     { q2 = 1; }
+        if (a == t->a_cmp3)                { q2 = 0; }
+        if (b == t->b_cmp4)                { q3 = 1; }
+        if (b == t->b_cmp2)                { q3 = 0; }
+        if (b == 0u)                       { q4 = 1; }
+        if (b == t->b_cmp3)                { q4 = 0; }
+        if (!q1) { off1++; } else { off1 = 0; }
+        if (!q2) { off2++; } else { off2 = 0; }
+        if (!q3) { off3++; } else { off3 = 0; }
+        if (!q4) { off4++; } else { off4 = 0; }
+        if (n < t->b_per) { continue; }          /* settle */
+        CHECK(!(q1 && q2), "Q1 and Q2 on together at tick %u (t_on %u ns, dt %u ns)", n, t->t_on_ns, c->dt_ns);
+        CHECK(!(q3 && q4), "Q3 and Q4 on together at tick %u", n);
+        if (q1 && !p1) { CHECK(off2 >= dt, "Q2->Q1 gap %u < %u ticks", off2, dt); on1 = n; }
+        if (q2 && !p2) { CHECK(off1 >= dt, "Q1->Q2 gap %u < %u ticks (t_on %u)", off1, dt, t->t_on_ns); }
+        if (q3 && !p3) { CHECK(off4 >= dt, "Q4->Q3 gap %u < %u ticks", off4, dt); }
+        if (q4 && !p4) { CHECK(off3 >= dt, "Q3->Q4 gap %u < %u ticks", off3, dt); }
+        if (q4)        { CHECK(q2 && !q1, "refresh outside Q2's on-time at tick %u", n); }
+        /* Efficiency, not safety: Q3 carries the charge current, else it
+         * flows through Q3's 2 V reverse conduction. */
+        if (q1)        { CHECK(q3, "Q1 on while Q3 is off at tick %u", n); }
+        if (!q1 && p1) { q1_ticks = n - on1; CHECK(q1_ticks == t->a_cmp2 - a_cmp4, "Q1 width"); }
+    }
+    const uint32_t want = buck_ccm_ticks(c->pulse_start_ns + t->t_on_ns) - a_cmp4;
+    CHECK(abs((int)q1_ticks - (int)want) <= 1, "Q1 on %u ticks, want %u", q1_ticks, want);
+}
+
+static void test_timing(void)
+{
+    const uint32_t periods[] = { 2500u, 5000u };
+    for (unsigned k = 0; k < 2; k++)
+    {
+        for (uint32_t dt = 10u; dt <= 40u; dt += 10u)
+        {
+            BuckCcmTimingCfg c = cfg(periods[k], dt);
+            CHECK(buck_ccm_cfg_valid(&c), "config invalid: period %u dt %u", c.period_ns, dt);
+            for (uint32_t ton = 0u; ton <= c.period_ns + 500u; ton += 37u)
+            {
+                BuckCcmTiming t;
+                buck_ccm_timing(&c, ton, &t);
+                CHECK(t.t_on_ns <= buck_ccm_max_on_ns(&c) && t.t_on_ns >= c.min_on_ns, "clamp %u", t.t_on_ns);
+                play(&c, &t);
+            }
+        }
+    }
+    /* Longer refresh with the pulse start moved as regulator.c does
+     * (refresh + 2 dt + 20 ns), every period and every 10 us. */
+    const uint32_t refresh[] = { 200u, 300u, 600u };
+    for (unsigned k = 0; k < 2; k++)
+    {
+        for (unsigned r = 0; r < 3; r++)
+        {
+            for (uint32_t ivl = 0u; ivl < 2u; ivl++)
+            {
+                BuckCcmTimingCfg c = cfg(periods[k], 20u);
+                c.refresh_ns = refresh[r];
+                c.pulse_start_ns = refresh[r] + 2u * 20u + 20u;
+                if (c.pulse_start_ns < 250u) { c.pulse_start_ns = 250u; }
+                c.refresh_interval_ns = ivl ? 10000u : periods[k];
+                CHECK(buck_ccm_cfg_valid(&c), "refresh %u ivl %u invalid", c.refresh_ns, c.refresh_interval_ns);
+                for (uint32_t ton = 0u; ton <= c.period_ns; ton += 53u)
+                {
+                    BuckCcmTiming t;
+                    buck_ccm_timing(&c, ton, &t);
+                    play(&c, &t);
+                }
+            }
+        }
+    }
+
+    /* Configurations the firmware must refuse. */
+    BuckCcmTimingCfg bad = cfg(2500u, 60u);          /* refresh + 2 dt reaches the pulse start */
+    CHECK(!buck_ccm_cfg_valid(&bad), "dt 60 ns accepted");
+    bad = cfg(3000u, 20u);                           /* 10 us is not a multiple of 3 us */
+    CHECK(!buck_ccm_cfg_valid(&bad), "non-multiple refresh interval accepted");
+    bad = cfg(2500u, 20u); bad.refresh_interval_ns = 15000u;   /* Timer B period past 0xFFDF */
+    CHECK(!buck_ccm_cfg_valid(&bad), "Timer B period over range accepted");
+}
+
+static void test_law(void)
+{
+    BuckCcmTimingCfg c = cfg(2500u, 20u);
+    BuckCcmGains g = { .ki = 3142.0f, .kp = 0.0f, .u_min_v = -1.0f, .u_max_v = 2.0f, .dt_s = 50e-6f,
+                       .dt_lim_s = 50e-6f };
+    BuckCcmState s = { 0 };
+    buck_ccm_reset(&s, 0.0f, 20.0f, 20.0f);
+    /* Zero error, zero integrator: pure feedforward, D = V_ref (1 - r) / V_in. */
+    uint32_t ton = buck_ccm_update(&s, &g, &c, 20.0f, 24.0f);
+    const float want = 2500.0f * 20.0f * (1.0f - 150.0f / 10000.0f) / 24.0f;
+    CHECK(fabsf((float)ton - want) <= 1.0f, "feedforward %u ns, want %.0f", ton, want);
+
+    /* Averaged plant: V_out follows D V_in / (1 - r) less an IR drop, one
+     * PID cycle late.  The integrator must take the drop out. */
+    s.u_v = 0.0f;
+    float v_out = 19.5f;
+    for (int k = 0; k < 4000; k++)
+    {
+        buck_ccm_limit(&s, &g, 20.0f, v_out, 0.0f);
+        ton = buck_ccm_update(&s, &g, &c, v_out, 24.0f);
+        const float d = (float)ton / 2500.0f;
+        v_out = d * 24.0f / (1.0f - 150.0f / 10000.0f) - 2.5f * 0.08f;
+    }
+    CHECK(fabsf(v_out - 20.0f) < 0.005f, "closed loop settled at %.4f V", v_out);
+    CHECK(fabsf(s.u_v - 0.2f * (1.0f - 0.015f)) < 0.01f, "integrator %.3f V", s.u_v);
+
+    /* Anti-windup: V_in too low for the setpoint pins t_on at the ceiling;
+     * the integrator must not keep climbing. */
+    s.u_v = 0.0f;
+    for (int k = 0; k < 2000; k++) { buck_ccm_limit(&s, &g, 20.0f, 15.0f, 0.0f); (void)buck_ccm_update(&s, &g, &c, 15.0f, 18.0f); }
+    CHECK(s.clamp == 1, "expected the high clamp");
+    CHECK(s.u_v < 1.0f, "integrator wound up to %.2f V at the clamp", s.u_v);
+
+    /* Initial integrator: 2.5 A x 40 mOhm + 2 x 2 V x 20 ns / 2.5 us. */
+    const float u0 = buck_ccm_u_initial(&c, 2.5f, 0.040f, 2.0f);
+    CHECK(fabsf(u0 - (0.1f + 0.032f)) < 1e-4f, "u0 %.4f", u0);
+}
+
+
+/* ---------------------------------------------------------------------------
+ * Current limit on an averaged plant (switching-averaged, ripple not in it).
+ * Board node: L1 (4.7 uH, 22 mOhm with R5 and the FETs) into five 10 uF X7R
+ * derated to the bias; the output switch path (35 mOhm, 0.5 uH) to a bench
+ * node with c_x of ceramics and a resistor and/or a battery (V_bat + R_bat).
+ * The PID ISR as the firmware runs it: every 50 us, V_out the mean of the
+ * last 45 us at the board node, I the mean inductor current over the
+ * previous cycle's ADC2 IL_MON rank (13.9 to 23.3 us after that ISR began),
+ * the new duty applied 13 us later.  plans/scripts/ccm_buck.py --steps
+ * uses the same ISR timing.
+ * ------------------------------------------------------------------------- */
+static float c_mlcc(float v)   /* 10 uF 50 V X7R under DC bias (loop_model.py) */
+{
+    static const float bv[] = { 0, 2, 5, 10, 15, 20, 25, 28, 30, 36, 40, 48, 50 };
+    static const float bd[] = { 0, 1, -12, -38, -57, -68, -76, -80, -81, -85, -86, -88, -89 };
+    for (int k = 1; k < 13; k++)
+    {
+        if (v <= bv[k])
+        {
+            const float d = bd[k - 1] + (bd[k] - bd[k - 1]) * (v - bv[k - 1]) / (bv[k] - bv[k - 1]);
+            return 10e-6f * (1.0f + d / 100.0f);
+        }
+    }
+    return 10e-6f * 0.11f;
+}
+
+typedef struct
+{
+    float v_ref, v_in, ilim_a;
+    float r_load;          /* ohm, 0: none              */
+    float v_bat, r_bat;    /* battery, r_bat 0: none    */
+    float c_x_uf;          /* bench-node ceramics [uF]  */
+    float t_end_s;
+    /* events */
+    float t_load_s;   float r_load2, v_bat2, r_bat2;   /* load change (t_load_s > 0) */
+    float t_ilim_s;   float ilim2_a;                   /* limit change              */
+    float t_open_s, t_close_s;                         /* output switch open        */
+    bool  battery_from_start;                          /* the battery is there at t = 0 */
+    float il_cap_a;                                    /* per-period bound on the average L1 current (COMP1), 0: none */
+    float v_ref2, t_ref_s;                             /* setpoint change, slewed 4 mV per cycle */
+    bool  meas_ix;                                     /* the limit measures the switch current (ID_MON, R6) */
+    bool  c_x_fixed;                                   /* c_x_uf is not derated with bias (bulk, mixed) */
+    float sw_r0_ohm, sw_tau_us;                        /* Q5/Q6 turn-on: r_sw + r0 exp(-t / tau) after closing */
+    bool  fast;                                        /* voltage law every 10 us on period-synchronous samples */
+    float kp, ki, kd;                                  /* fast-loop gains (ki 0: SIM_GAINS') */
+    float kff_l, kff_r;                                /* load-current feedforward (ID_MON, synchronous) */
+    float rc_tau_us;                                   /* divider RC in front of the synchronous sample (0: none) */
+    float sample_frac;                                 /* where in the period the sample is taken (0: 0.5) */
+    float t_load2_s, r_load3;                          /* a second load change (t_load2_s > 0) */
+    float vx_floor;                                    /* bench node held at or above this while the switch is open */
+    bool  fw_sync;                                     /* the 20 kHz loop measures as the 2026-10-23 firmware does: V_out
+                                                          over the last 9 periods (22.5 us), I_out over the last 8
+                                                          (20 us), both read at the cycle that uses them */
+    int   n_avg;                                       /* fast loop: samples averaged (1-4, 0: 4) */
+    int   fast_div;                                    /* periods per fast update (1-4, 0: 4 = 100 kHz at 400 kHz) */
+    bool  entry;                                       /* CCM enters at t = 0: the integrator starts at u0_v and L1
+                                                          at its average plus il0_off_a (the first period starts from
+                                                          DCM's zero current, not from the CCM ripple's value) */
+    float u0_v, il0_off_a;
+    float v_plant_off;                                 /* extra average switch-node volts (dead-time conduction at light
+                                                          load): the integrator settles at I R - v_plant_off */
+} SimCase;
+
+typedef struct
+{
+    float i_end, v_end, i_sd, il_max, il_max_after_ev, vb_max, vb_min;
+    float lim_share;     /* share of the last 2 ms spent limiting */
+    float t_settle_s;    /* last time |I - I_end| > 5 % of I_end (+50 mA) */
+    float u_end;
+    float t_uvp_s, t_ovp_s;   /* first PID sample under 50 % / over 110 % of V_ref (0: none) */
+    float vx_close;           /* bench node when the switch closed */
+    float vb_after[4];        /* board node 50, 100, 150, 300 us after the switch closed */
+    float w1_min, w1_max, w2_min, w2_max;   /* board node extremes after the 1st / 2nd load change */
+    float w1_settle_s, w2_settle_s;         /* last time |vb - V_ref| > 0.1 V in each window, from its change */
+    float e_max, e_min;                     /* board node extremes in the first 2 ms (entry cases) */
+} SimResult;
+
+static const BuckCcmGains SIM_GAINS = {
+    .ki = 3142.0f, .kp = 0.0f, .kd = 0.0f, .u_min_v = -1.0f, .u_max_v = 2.0f, .dt_s = 50e-6f,
+    .ilim_a = 0.0f, .kl = LIM_KL, .dt_lim_s = 50e-6f,
+};
+
+/** SIM_DUMP: when set, sim() writes "t_us,vb" every 0.5 us inside
+ *  [g_dump_t0, g_dump_t1) and [g_dump_t2, g_dump_t3) (seconds). */
+static FILE *g_dump = NULL;
+static float g_dump_t0, g_dump_t1, g_dump_t2, g_dump_t3;
+static SimResult sim(const SimCase *k)
+{
+    const float dt = 0.02e-6f, L = 4.7e-6f, r_l = 0.022f, r_sw = 0.035f, l_w = 0.5e-6f;
+    const float c_b = 5.0f * c_mlcc(k->v_ref);
+    const float c_x = k->c_x_uf * 1e-6f * (k->c_x_fixed ? 1.0f : (c_mlcc(k->v_ref) / 10e-6f));
+    BuckCcmTimingCfg c = {
+        .period_ns = 2500u, .pulse_start_ns = 260u, .dt_ns = 20u, .refresh_ns = 200u,
+        .refresh_interval_ns = 5000u, .min_on_ns = 100u, .min_q2_end_ns = 60u,
+    };
+    const float r = buck_ccm_refresh_share(&c);
+    BuckCcmGains g = SIM_GAINS;
+    g.ilim_a = k->ilim_a;
+    if (k->fast)
+    {
+        g.dt_s = 2.5e-6f * (float)((k->fast_div > 0) ? k->fast_div : 4);
+        g.kp = k->kp;  g.kd = k->kd;  g.kff_l = k->kff_l;  g.kff_r = k->kff_r;
+        if (k->ki > 0.0f) { g.ki = k->ki; }
+    }
+    const int n_per = (int)(2.5e-6f / dt + 0.5f);   /* one switching period */
+    const int n_avg = (k->n_avg > 0) ? k->n_avg : 4;
+    float vsync[4] = { 0 };  int vsync_n = 0;
+    float isync[4] = { 0 };
+    float vrc = k->v_ref;
+    float r_load = k->r_load, v_bat = k->v_bat, r_bat = k->r_bat;
+    float v_ref = k->v_ref;
+    if (!k->battery_from_start) { r_bat = 0.0f; }
+    /* start regulated at V_ref with the resistor alone */
+    float i0 = (r_load > 0.0f) ? k->v_ref / r_load : 0.0f;
+    float il = i0, vb = k->v_ref + i0 * r_sw, ix = i0, vx = k->v_ref;
+    BuckCcmState s = { 0 };
+    buck_ccm_reset(&s, k->entry ? k->u0_v : i0 * (r_l + r_sw) - k->v_plant_off, k->v_ref, k->v_ref);
+    if (k->entry) { il += k->il0_off_a; }
+    float d = (k->v_ref * (1.0f - r) + s.u_v) / k->v_in, d_next = d;
+    const int n_isr = (int)(50e-6f / dt + 0.5f), n_apply = (int)(13e-6f / dt + 0.5f);
+    const int n_end = (int)(k->t_end_s / dt);
+    double vsum = 0.0, isum = 0.0;  int vcnt = 0, icnt = 0;
+    float i_meas = 0.0f;
+    int apply_at = -1;
+    SimResult res = { 0 };
+    res.vb_min = 1e9f;
+    res.e_min  = 1e9f;
+    const int n_tail = (int)(2e-3f / dt);
+    double tail_i = 0.0, tail_i2 = 0.0;  int tail_n = 0, tail_lim = 0, tail_isr = 0;
+    const int hist_cap = n_end / n_isr + 2;
+    float *hist_i = malloc(sizeof(float) * (size_t)hist_cap), *hist_t = malloc(sizeof(float) * (size_t)hist_cap);
+    int hist_n = 0;
+    for (int n = 0; n < n_end; n++)
+    {
+        const float t = (float)n * dt;
+        const int ph = n % n_isr;
+        if (ph >= n_isr - (int)((k->fw_sync ? 22.5e-6f : 45e-6f) / dt)) { vsum += vb; vcnt++; }
+        if (k->fw_sync ? (ph >= n_isr - (int)(20e-6f / dt))
+                       : (ph >= (int)(13.9e-6f / dt) && ph < (int)(23.3e-6f / dt))) { isum += k->meas_ix ? ix : il; icnt++; }
+        if (ph == 0 && n > 0)
+        {
+            const float v_meas = (float)(vsum / (vcnt ? vcnt : 1));
+            if (k->t_ref_s > 0.0f && t >= k->t_ref_s)
+            {
+                if (v_ref + 0.004f < k->v_ref2) { v_ref += 0.004f; } else if (v_ref > k->v_ref2 + 0.004f) { v_ref -= 0.004f; } else { v_ref = k->v_ref2; }
+            }
+            if (t > 1e-3f && res.t_uvp_s == 0.0f && v_meas < 0.5f * v_ref) { res.t_uvp_s = t; }
+            if (t > 1e-3f && res.t_ovp_s == 0.0f && v_meas > 1.1f * v_ref) { res.t_ovp_s = t; }
+            if (k->fw_sync) { i_meas = (float)(isum / (icnt ? icnt : 1)); }
+            buck_ccm_limit(&s, &g, v_ref, v_meas, i_meas);
+            uint32_t ton = 0u;
+            (void)ton;
+            if (!k->fast)
+            {
+                ton = buck_ccm_update(&s, &g, &c, v_meas, k->v_in);
+                BuckCcmTiming tt;
+                buck_ccm_timing_ticks(&c, s.t_on_ticks, &tt);
+                d_next = (float)(tt.a_cmp2 - tt.a_cmp4) / (float)buck_ccm_ticks(2500u);
+                apply_at = n + n_apply;
+            }
+            if (!k->fw_sync) { i_meas = (float)(isum / (icnt ? icnt : 1)); }   /* read next cycle */
+            vsum = isum = 0.0;  vcnt = icnt = 0;
+            if (n >= n_end - n_tail) { tail_isr++; if (s.limiting) { tail_lim++; } }
+#ifdef SIM_TRACE
+            if (n % (n_isr * 10) == 0) { printf("T %.2f ms v %.3f i %.3f lim %d vl %.4f u %.4f ton %u\n", 1e3f * t, v_meas, i_meas, s.limiting, s.v_lim_v, s.u_v, ton); }
+#endif
+            if (hist_n < hist_cap) { hist_i[hist_n] = i_meas; hist_t[hist_n] = t; hist_n++; }
+        }
+        if (n == apply_at) { d = d_next; }   /* before a new update can move apply_at */
+        if (k->fast)
+        {
+            const int ph_s = (int)(((k->sample_frac > 0.0f) ? k->sample_frac : 0.5f) * (float)n_per);
+            if (n % n_per == ph_s) { isync[vsync_n & 3] = ix; vsync[vsync_n++ & 3] = vrc; }   /* synchronous samples */
+            if (n > 0 && n % (((k->fast_div > 0) ? k->fast_div : 4) * n_per) == 0)
+            {
+                float v_f = 0.0f;
+                for (int j = 0; j < n_avg; j++) { v_f += vsync[(vsync_n - 1 - j) & 3]; }
+                v_f /= (float)n_avg;
+                s.i_out_a = isync[(vsync_n - 1) & 3];
+                (void)buck_ccm_update(&s, &g, &c, v_f, k->v_in);
+                BuckCcmTiming tt;
+                buck_ccm_timing_ticks(&c, s.t_on_ticks, &tt);
+                d_next = (float)(tt.a_cmp2 - tt.a_cmp4) / (float)buck_ccm_ticks(2500u);
+                apply_at = n + n_per;   /* preloaded: the next period boundary */
+            }
+        }
+        if (k->rc_tau_us > 0.0f) { vrc += (vb - vrc) * dt / (k->rc_tau_us * 1e-6f); } else { vrc = vb; }
+        if (k->t_load2_s > 0.0f && n == (int)(k->t_load2_s / dt)) { r_load = k->r_load3; }
+        if (k->t_load_s > 0.0f && t >= k->t_load_s)
+        {
+            const bool w2 = (k->t_load2_s > 0.0f && t >= k->t_load2_s);
+            float *mn = w2 ? &res.w2_min : &res.w1_min, *mx = w2 ? &res.w2_max : &res.w1_max;
+            if (*mn == 0.0f || vb < *mn) { *mn = vb; }
+            if (vb > *mx) { *mx = vb; }
+            if (fabsf(vb - v_ref) > 0.1f)
+            {
+                if (w2) { res.w2_settle_s = t - k->t_load2_s; } else { res.w1_settle_s = t - k->t_load_s; }
+            }
+        }
+        if (k->t_load_s > 0.0f && n == (int)(k->t_load_s / dt))
+        {
+            r_load = k->r_load2; v_bat = k->v_bat2; r_bat = k->r_bat2;
+        }
+        if (k->t_ilim_s > 0.0f && n == (int)(k->t_ilim_s / dt)) { g.ilim_a = k->ilim2_a; }
+        const bool sw_on = !(t >= k->t_open_s && t < k->t_close_s);
+        /* explicit update, small step */
+        const float v_sw = d * k->v_in + r * vb + k->v_plant_off;
+        il += dt * (v_sw - vb - il * r_l) / L;
+        if (k->il_cap_a > 0.0f && il > k->il_cap_a) { il = k->il_cap_a; }
+        float r_sw_t = r_sw;
+        if (k->sw_r0_ohm > 0.0f && t >= k->t_close_s)
+        {
+            r_sw_t += k->sw_r0_ohm * expf(-(t - k->t_close_s) / (k->sw_tau_us * 1e-6f));
+        }
+        if (n == (int)(k->t_close_s / dt)) { res.vx_close = vx; }
+        {
+            static const float after_us[4] = { 50.0f, 100.0f, 150.0f, 300.0f };
+            for (int j = 0; j < 4; j++)
+            {
+                if (n == (int)((k->t_close_s + after_us[j] * 1e-6f) / dt)) { res.vb_after[j] = vb; }
+            }
+        }
+        /* implicit in ix: r_sw_t / l_w is stiff while the switch turns on */
+        if (sw_on) { ix = (ix + dt * (vb - vx) / l_w) / (1.0f + dt * r_sw_t / l_w); } else { ix = 0.0f; }
+        float i_load = (r_load > 0.0f) ? vx / r_load : 0.0f;
+        if (r_bat > 0.0f)
+        {
+            /* the battery is stiff: solve the node with it implicitly */
+            const float a = dt / c_x;
+            vx = (vx + a * (ix - i_load + v_bat / r_bat)) / (1.0f + a / r_bat);
+        }
+        else
+        {
+            vx += dt * (ix - i_load) / c_x;
+        }
+        if (!sw_on && vx < k->vx_floor) { vx = k->vx_floor; }   /* what held VBUS at 3.2 V on the bench */
+        vb += dt * (il - ix) / c_b;
+        if (g_dump != NULL && n % 25 == 0 &&
+            ((t >= g_dump_t0 && t < g_dump_t1) || (t >= g_dump_t2 && t < g_dump_t3)))
+        {
+            fprintf(g_dump, "%.2f,%.5f,%.5f,%.5f\n", 1e6f * t, vb, vx, il);
+        }
+        if (il > res.il_max) { res.il_max = il; }
+        if (t < 2e-3f) { if (vb > res.e_max) { res.e_max = vb; } if (vb < res.e_min) { res.e_min = vb; } }
+        const float t_ev = (k->t_load_s > 0.0f) ? k->t_load_s : ((k->t_close_s > 0.0f) ? k->t_close_s : 0.0f);
+        if (t >= t_ev && il > res.il_max_after_ev) { res.il_max_after_ev = il; }
+        if (t >= t_ev && t > 1e-3f) { if (vb > res.vb_max) { res.vb_max = vb; } if (vb < res.vb_min) { res.vb_min = vb; } }
+        if (n >= n_end - n_tail) { tail_i += il; tail_i2 += (double)il * il; tail_n++; }
+    }
+    res.i_end = (float)(tail_i / tail_n);
+    res.i_sd  = sqrtf((float)fmax(0.0, tail_i2 / tail_n - (tail_i / tail_n) * (tail_i / tail_n)));
+    res.v_end = vb;
+    res.lim_share = tail_isr ? (float)tail_lim / (float)tail_isr : 0.0f;
+    res.u_end = s.u_v;
+    const float band = 0.05f * fabsf(res.i_end) + 0.05f;
+    res.t_settle_s = 0.0f;
+    for (int j = 0; j < hist_n; j++) { if (fabsf(hist_i[j] - res.i_end) > band) { res.t_settle_s = hist_t[j]; } }
+    free(hist_i);
+    free(hist_t);
+    return res;
+}
+
+static void print_res(const char *name, const SimResult *r)
+{
+    printf("  %-38s I %.3f A (sd %.3f) V %.2f  IL max %.2f A  Vb %.2f..%.2f  lim %.0f%%  settled %.1f ms  u %.3f\n",
+           name, r->i_end, r->i_sd, r->v_end, r->il_max, r->vb_min < 1e8f ? r->vb_min : 0.0f, r->vb_max, 100.0f * r->lim_share,
+           1e3f * r->t_settle_s, r->u_end);
+}
+
+static void test_limit(void)
+{
+    printf("current limit, averaged plant (400 kHz, 24 V in, kl %.0f V/(A s)):\n", (double)LIM_KL);
+    /* 1. The bench check: 20 V into 25.3 ohm (0.79 A), limit 0.5 A applied
+     *    at 5 ms: V_out folds to 12.65 V (time constant R / kl) and holds
+     *    without a limit cycle or an overshoot. */
+    {
+        SimCase k = { .v_ref = 20.0f, .v_in = 24.0f, .ilim_a = 0.0f, .r_load = 25.3f, .c_x_uf = 8.0f,
+                      .t_end_s = 400e-3f, .t_ilim_s = 5e-3f, .ilim2_a = 0.5f, .t_open_s = 1.0f, .t_close_s = 1.0f };
+        SimResult r = sim(&k);
+        print_res("20 V, 25.3 ohm, limit 0 -> 0.5 A", &r);
+        CHECK(fabsf(r.i_end - 0.5f) < 0.005f, "limit into 25.3 ohm settled at %.3f A", r.i_end);
+        CHECK(fabsf(r.v_end - 0.5f * 25.3f) < 0.15f, "V_out %.2f V, want 12.65", r.v_end);
+        CHECK(r.i_sd < 0.015f && r.lim_share > 0.99f, "limit cycle: sd %.3f A, limiting %.2f", r.i_sd, r.lim_share);
+        CHECK(r.vb_max < 20.3f, "overshoot to %.2f V on the fold", r.vb_max);
+        CHECK(r.vb_min > 12.4f, "fold undershot to %.2f V", r.vb_min);
+        CHECK(r.t_settle_s < 300e-3f, "settled only at %.1f ms", 1e3f * r.t_settle_s);
+        CHECK(fabsf(r.u_end - 0.016f) < 0.01f, "voltage integrator moved to %.3f V while limiting", r.u_end);
+    }
+    /* 2. Released: the limit goes from 0.5 to 3 A after the fold; V_out
+     *    returns to 20 V without overshooting 5 % and the integrator is intact. */
+    {
+        SimCase k = { .v_ref = 20.0f, .v_in = 24.0f, .ilim_a = 0.5f, .r_load = 25.3f, .c_x_uf = 8.0f,
+                      .t_end_s = 500e-3f, .t_ilim_s = 350e-3f, .ilim2_a = 3.0f, .t_open_s = 1.0f, .t_close_s = 1.0f,
+                      .t_load_s = 300e-3f, .r_load2 = 25.3f };
+        SimResult r = sim(&k);
+        print_res("limit 0.5 -> 3 A (release)", &r);
+        CHECK(fabsf(r.v_end - 20.0f) < 0.05f, "released to %.2f V", r.v_end);
+        CHECK(r.vb_max < 20.0f * 1.05f, "release overshoot to %.2f V", r.vb_max);
+        CHECK(r.lim_share == 0.0f, "still limiting after the release");
+        CHECK(fabsf(r.u_end - 0.015f) < 0.02f, "voltage integrator %.3f V after the release", r.u_end);
+    }
+    /* 3. A battery that is there from the start at the setpoint (4S, 14.8 V,
+     *    no current), then the setpoint slews to 16.8 V as a contract change
+     *    does: the limit holds 2 A without a limit cycle, L1 never far over. */
+    const float rbats[] = { 0.01f, 0.05f, 0.2f };
+    for (int j = 0; j < 3; j++)
+    {
+        SimCase k = { .v_ref = 14.8f, .v_in = 24.0f, .ilim_a = 2.0f, .c_x_uf = 8.0f,
+                      .v_bat = 14.8f, .r_bat = rbats[j], .battery_from_start = true,
+                      .t_end_s = 60e-3f, .t_ref_s = 5e-3f, .v_ref2 = 16.8f,
+                      .t_open_s = 1.0f, .t_close_s = 1.0f };
+        SimResult r = sim(&k);
+        char name[64];  snprintf(name, sizeof name, "battery %.0f mOhm, 14.8 -> 16.8 V, 2 A", 1e3f * rbats[j]);
+        print_res(name, &r);
+        CHECK(fabsf(r.i_end - 2.0f) < 0.02f, "battery current %.3f A, want 2 A", r.i_end);
+        CHECK(r.i_sd < 0.03f, "battery: limit cycle, sd %.3f A", r.i_sd);
+        CHECK(r.il_max < 2.6f, "battery: L1 peaked at %.2f A", r.il_max);
+    }
+    /* 3b. Hot-plugged at 16.8 V (reported: the output capacitors and the
+     *     battery meet before any loop can act; the 9 A comparator is the
+     *     bound there).  It must still settle at the limit. */
+    for (int j = 0; j < 3; j++)
+    {
+        SimCase k = { .v_ref = 16.8f, .v_in = 24.0f, .ilim_a = 2.0f, .c_x_uf = 8.0f,
+                      .t_end_s = 40e-3f, .t_load_s = 5e-3f, .v_bat2 = 14.8f, .r_bat2 = rbats[j],
+                      .t_open_s = 1.0f, .t_close_s = 1.0f };
+        SimResult r = sim(&k);
+        char name[64];  snprintf(name, sizeof name, "battery %.0f mOhm hot-plugged, 2 A", 1e3f * rbats[j]);
+        print_res(name, &r);
+        CHECK(fabsf(r.i_end - 2.0f) < 0.02f && r.i_sd < 0.03f, "hot-plug: %.3f A sd %.3f", r.i_end, r.i_sd);
+        CHECK(r.t_settle_s < 15e-3f, "hot-plug: settled only at %.1f ms", 1e3f * r.t_settle_s);
+    }
+    /* 4. Load step through the limit: 2 -> 4 A at 20 V, limit 3 A. */
+    {
+        SimCase k = { .v_ref = 20.0f, .v_in = 24.0f, .ilim_a = 3.0f, .r_load = 10.0f, .c_x_uf = 8.0f,
+                      .t_end_s = 120e-3f, .t_load_s = 5e-3f, .r_load2 = 5.0f, .t_open_s = 1.0f, .t_close_s = 1.0f };
+        SimResult r = sim(&k);
+        print_res("20 V, 2 -> 4 A load, limit 3 A", &r);
+        CHECK(fabsf(r.i_end - 3.0f) < 0.02f, "step into the limit: %.3f A", r.i_end);
+        CHECK(r.il_max_after_ev < 6.0f, "step into the limit: L1 peaked at %.2f A", r.il_max_after_ev);
+    }
+    /* 5. Under the limit nothing changes: 20 V, 25.3 ohm, limit 3 A. */
+    {
+        SimCase k = { .v_ref = 20.0f, .v_in = 24.0f, .ilim_a = 3.0f, .r_load = 25.3f, .c_x_uf = 8.0f,
+                      .t_end_s = 20e-3f, .t_open_s = 1.0f, .t_close_s = 1.0f };
+        SimResult r = sim(&k);
+        print_res("20 V, 25.3 ohm, limit 3 A (idle)", &r);
+        CHECK(r.lim_share == 0.0f && fabsf(r.v_end - 20.0f) < 0.02f, "limit acted under its level");
+    }
+    /* 6. The 2026-10-20 dump: switch open 20 ms at 20 V with 25.3 ohm on the
+     *    bench node, then reconnected (bench: -5.2 V, then +2.9 V, SW_OVP).
+     *    Reported: the PID-rate limit cannot reach a ring at 10-20 kHz, a
+     *    per-period bound on L1 (COMP1) would. */
+    const float lims[] = { 0.0f, 1.5f, 1.5f, 1.5f };
+    const float caps[] = { 0.0f, 0.0f, 3.0f, 2.0f };
+    for (int j = 0; j < 4; j++)
+    {
+        SimCase k = { .v_ref = 20.0f, .v_in = 24.0f, .ilim_a = lims[j], .r_load = 25.3f, .c_x_uf = 8.0f,
+                      .t_end_s = 40e-3f, .t_open_s = 5e-3f, .t_close_s = 25e-3f, .il_cap_a = caps[j] };
+        SimResult r = sim(&k);
+        char name[64];  snprintf(name, sizeof name, "switch-pulse 20 ms, limit %.1f, L1 cap %.1f", lims[j], caps[j]);
+        print_res(name, &r);
+    }
+}
+
+/* IL_MON clips at 0 A (INA281, unidirectional): the mean of a clipped
+ * triangle, sampled at evenly spread phases, back to the average current. */
+static void test_unclip(void)
+{
+    const float ripples[] = { 0.5f, 1.8f, 3.2f, 6.0f };
+    for (int j = 0; j < 4; j++)
+    {
+        const float dp = ripples[j];
+        for (float i = -0.4f * dp; i <= 3.0f; i += 0.05f)
+        {
+            /* the clipped mean of a triangle from i - dp/2 to i + dp/2 */
+            double m = 0.0;
+            const int n = 4000;
+            for (int k = 0; k < n; k++)
+            {
+                const double x = (double)i - 0.5 * dp + dp * (k + 0.5) / n;
+                m += (x > 0.0) ? x : 0.0;
+            }
+            m /= n;
+            const float back = buck_ccm_unclip_a((float)m, dp);
+            CHECK(fabsf(back - i) < 2e-3f, "unclip ripple %.1f: I %.3f -> m %.4f -> %.4f", dp, i, m, back);
+        }
+    }
+    CHECK(buck_ccm_unclip_a(0.0f, 2.0f) == -1.0f, "a zero reading is the valley at 0");
+    CHECK(buck_ccm_unclip_a(0.7f, 0.0f) == 0.7f, "no ripple, no change");
+    /* the 2026-10-21 bench point: 0.5 A at 12.65 V from 24 V, 400 kHz */
+    const float dp = buck_ccm_ripple_a(24.0f, 12.65f, 1318u, 4.7e-6f);
+    CHECK(fabsf(dp - 3.18f) < 0.02f, "ripple %.3f A", dp);
+}
+
+#ifdef SIM_EXPLORE
+/* Calibrate the reconnect: bench-side C and the Q5/Q6 turn-on against
+ * 2026-10-20 (no bound: about -5.2 / +2.9 V) and 2026-10-21 (3.5 A bound:
+ * board 14.68 / 11.18 / 10.02 V at 50 / 100 / 150 us, SW_UVP). */
+static void explore_reconnect(void)
+{
+    /* firmware options on the plausible plant range */
+    const float cxs[] = { 200.0f, 400.0f };
+    const float taus[] = { 60.0f, 100.0f };
+    const float r0s[] = { 2.0f, 5.0f };
+    const float lims[] = { 0.0f, 3.0f, 1.5f };
+    for (int a = 0; a < 2; a++) for (int b = 0; b < 2; b++) for (int c = 0; c < 2; c++) for (int d = 0; d < 3; d++)
+    {
+        SimCase k = { .v_ref = 20.0f, .v_in = 24.0f, .ilim_a = lims[d], .r_load = 25.3f, .c_x_uf = cxs[a], .c_x_fixed = true,
+                      .t_end_s = 40e-3f, .t_open_s = 5e-3f, .t_close_s = 21e-3f, .meas_ix = true,
+                      .sw_r0_ohm = r0s[c], .sw_tau_us = taus[b] };
+        SimResult r = sim(&k);
+        printf("cx %3.0f tau %3.0f r0 %3.1f lim %.1f | vb 50/100/150/300us %5.2f %5.2f %5.2f %5.2f  min %5.2f max %5.2f  uvp %.2f ovp %.2f ms  end I %.2f V %.2f\n",
+               cxs[a], taus[b], r0s[c], lims[d], r.vb_after[0], r.vb_after[1], r.vb_after[2], r.vb_after[3],
+               r.vb_min, r.vb_max, r.t_uvp_s ? 1e3f * (r.t_uvp_s - k.t_close_s) : -1.0f,
+               r.t_ovp_s ? 1e3f * (r.t_ovp_s - k.t_close_s) : -1.0f, r.i_end, r.v_end);
+    }
+}
+#endif
+
+#ifdef SIM_FAST
+/* Fast-loop gain sweep: 20 V, load step 0.8 -> 2.5 A at 5 ms and back at
+ * 15 ms, across bench-side C; plus the switch-pulse reconnect. */
+typedef struct { float dip, peak, sd, settle_ms; bool ok; } StepMetrics;
+static int g_fast_div = 4;
+static StepMetrics step_case_ff(bool fast, float kp, float ki, float kd, float cx, bool fixed, int n_avg,
+                                float kff_l, float kff_r)
+{
+    StepMetrics m = { 0 };
+    SimCase k = { .v_ref = 20.0f, .v_in = 24.0f, .ilim_a = 0.0f, .r_load = 25.3f, .c_x_uf = cx, .c_x_fixed = fixed,
+                  .t_end_s = 25e-3f, .t_load_s = 5e-3f, .r_load2 = 8.0f, .t_open_s = 1.0f, .t_close_s = 1.0f,
+                  .fast = fast, .kp = kp, .ki = ki, .kd = kd, .n_avg = n_avg, .kff_l = kff_l, .kff_r = kff_r,
+                  .fast_div = g_fast_div };
+    SimResult r = sim(&k);
+    m.dip = r.vb_min - 20.0f;  m.peak = r.vb_max - 20.0f;  m.sd = r.i_sd;
+    m.ok = (r.t_uvp_s == 0.0f && r.t_ovp_s == 0.0f && fabsf(r.v_end - 20.0f) < 0.1f);
+    return m;
+}
+static StepMetrics step_case(bool fast, float kp, float ki, float kd, float cx, bool fixed, int n_avg)
+{
+    return step_case_ff(fast, kp, ki, kd, cx, fixed, n_avg, 0.0f, 0.0f);
+}
+#ifndef SIM_DIV
+#define SIM_DIV 4
+#endif
+static const int g_div_sweep = SIM_DIV;   /* periods per fast update: 4 = 100 kHz at 400 kHz */
+typedef struct { float dip, pk_step, pk_rel, dip_rel, st_ms, rt_ms, sd; bool ok; } StepM2;
+static StepM2 step2(bool fast, int div, float kp, float ki, float kd, float cx, bool fixed, int n_avg)
+{
+    g_fast_div = div;
+    SimCase k = { .v_ref = 20.0f, .v_in = 24.0f, .ilim_a = 0.0f, .r_load = 25.3f, .c_x_uf = cx, .c_x_fixed = fixed,
+                  .t_end_s = 30e-3f, .t_load_s = 5e-3f, .r_load2 = 8.0f, .t_load2_s = 17e-3f, .r_load3 = 25.3f,
+                  .t_open_s = 1.0f, .t_close_s = 1.0f, .fast = fast, .kp = kp, .ki = ki, .kd = kd, .n_avg = n_avg,
+                  .fast_div = div, .rc_tau_us = 0.8f, .sample_frac = 0.5f };
+    SimResult r = sim(&k);
+    StepM2 m = { r.w1_min - 20.0f, r.w1_max - 20.0f, r.w2_max - 20.0f, r.w2_min - 20.0f,
+                 1e3f * r.w1_settle_s, 1e3f * r.w2_settle_s, r.i_sd, false };
+    m.ok = (r.t_uvp_s == 0.0f && r.t_ovp_s == 0.0f && fabsf(r.v_end - 20.0f) < 0.1f && r.i_sd < 0.05f
+            && m.st_ms < 11.0f && m.rt_ms < 11.0f);
+    return m;
+}
+static void explore_fast(void)
+{
+    /* bench-side C: board ceramics only (8 uF of QT Py ceramics), the 55 uF
+     * measured 2026-10-23 (fixed), and 300 uF bulk (fixed) */
+    const float cxs[] = { 8.0f, 55.0f, 300.0f };
+    const bool fixed[] = { false, true, true };
+    printf("divider RC 0.8 us, synchronous samples mid-period; step 0.8 -> 2.5 A at 5 ms, back at 17 ms (20 V)\n");
+    printf("  [cx: step dip / overshoot, settle ms | release peak / undershoot, settle ms]\n");
+    {
+        printf("legacy 20 kHz (ki 3142, 45 us mean):");
+        for (int a = 0; a < 3; a++)
+        {
+            StepM2 m = step2(false, 4, 0, 0, 0, cxs[a], fixed[a], 4);
+            printf("  [%3.0f: %+.2f/%+.2f %.1f | %+.2f/%+.2f %.1f%s]", cxs[a], m.dip, m.pk_step, m.st_ms, m.pk_rel, m.dip_rel, m.rt_ms, m.ok ? "" : " X");
+        }
+        printf("\n");
+    }
+    const float kis[] = { 3142.0f, 6283.0f, 12566.0f, 25133.0f };
+    const float kps[] = { 0.0f, 0.05f, 0.1f, 0.2f };
+    const float kds[] = { 0.0f, 1e-6f, 2e-6f, 3e-6f, 4e-6f };
+    const int navs[] = { 1, 4 };
+    for (int q = 0; q < 2; q++) for (int i = 0; i < 4; i++) for (int p = 0; p < 4; p++) for (int d = 0; d < 5; d++)
+    {
+        bool all = true; char buf[400]; int o = 0;
+        for (int a = 0; a < 3; a++)
+        {
+            StepM2 m = step2(true, g_div_sweep, kps[p], kis[i], kds[d], cxs[a], fixed[a], navs[q]);
+            all = all && m.ok;
+            o += snprintf(buf + o, sizeof buf - o, "  [%3.0f: %+.2f/%+.2f %.1f | %+.2f/%+.2f %.1f]", cxs[a], m.dip, m.pk_step, m.st_ms,
+                          m.pk_rel, m.dip_rel, m.rt_ms);
+        }
+        if (all) { printf("div %d n%d ki %5.0f kp %.2f kd %.0e:%s\n", g_div_sweep, navs[q], kis[i], kps[p], kds[d], buf); }
+    }
+}
+#endif
+
+/** L1's offset when CCM enters from DCM: the first period starts at zero
+ *  current, where CCM's ripple would have it at valley + V t_start / L. */
+static float entry_il_off(float v, float v_in, float i_load)
+{
+    const float L = 4.7e-6f, T = 2.5e-6f, t_start = 0.26e-6f;
+    const float ripple = (v_in - v) * (v / v_in) * T / L;
+    return ripple / 2.0f - i_load - v * t_start / L;
+}
+
+/* Forced CCM entry at light load, 25.3 ohm, the fitted 55 uF VBUS side, a
+ * plant offset that makes the integrator measured at 400 kHz (2026-10-21/23)
+ * and L1's entry offset.  The first entry in a band starts from the fit
+ * (regulator_config.h CCM_U0_*); the old formula start (I R + 2 V_sd dt / T)
+ * latched SW_OVP at 5 V on the bench (5.05 -> 5.74 V). */
+static void test_entry(void)
+{
+    printf("entry (25.3 ohm, 55 uF):\n");
+    const float vs[] = { 5.0f, 9.0f, 15.0f, 20.0f }, um[] = { -0.18f, -0.23f, -0.33f, -0.42f };
+    for (int j = 0; j < 4; j++)
+    {
+        const float i = vs[j] / 25.3f;
+        const float u_fit = -(0.016f * vs[j] + 0.100f), u_formula = 0.04f * i + 2.0f * 2.0f * 20.0f / 2500.0f;
+        const float u0s[2] = { u_fit, u_formula };
+        float hi[2], lo[2];
+        for (int a = 0; a < 2; a++)
+        {
+            SimCase k = { .v_ref = vs[j], .v_in = 24.0f, .r_load = 25.3f, .c_x_uf = 55.0f, .c_x_fixed = true,
+                          .t_end_s = 10e-3f, .t_open_s = 1.0f, .t_close_s = 1.0f, .fw_sync = true,
+                          .entry = true, .u0_v = u0s[a], .il0_off_a = entry_il_off(vs[j], 24.0f, i),
+                          .v_plant_off = i * (0.022f + 0.035f) - um[j] };
+            const SimResult r = sim(&k);
+            hi[a] = r.e_max - vs[j];  lo[a] = r.e_min - vs[j];
+        }
+        printf("  %4.1f V (L1 %+.2f A): fit u0 %+.3f V -> %+.3f / %+.3f V, formula u0 %+.3f V -> %+.3f / %+.3f V\n",
+               vs[j], entry_il_off(vs[j], 24.0f, i), u_fit, hi[0], lo[0], u_formula, hi[1], lo[1]);
+        /* inside the doubled skip band (2 x 200 mV, 2 x 1.5 %) and PD's 5 % */
+        CHECK(hi[0] < 0.25f && lo[0] > -0.05f * vs[j], "entry %.0f V: %+.3f / %+.3f V", vs[j], hi[0], lo[0]);
+    }
+}
+
+#ifdef SIM_DUMP
+/* Traces behind plan 9.4's table: 9 CSVs (C x loop), V_out at the board
+ * node around the 0.8 -> 2.5 A step (5 ms) and the release (17 ms). */
+static void dump_traces(const char *dir)
+{
+    const float cxs[] = { 8.0f, 55.0f, 300.0f };
+    const bool fixed[] = { false, true, true };
+    struct { const char *name; bool fast; int div; float kp, ki, kd; } loops[3] = {
+        { "20k",  false, 4, 0.0f, 0.0f,     0.0f },
+        { "100k", true,  4, 0.0f, 3142.0f,  1e-6f },
+        { "400k", true,  1, 0.2f, 12566.0f, 4e-6f },
+    };
+    g_dump_t0 = 4.9e-3f; g_dump_t1 = 6.5e-3f; g_dump_t2 = 16.9e-3f; g_dump_t3 = 18.5e-3f;
+    for (int a = 0; a < 3; a++) for (int l = 0; l < 3; l++)
+    {
+        char path[256];
+        snprintf(path, sizeof path, "%s/trace_cx%.0f_%s.csv", dir, cxs[a], loops[l].name);
+        g_dump = fopen(path, "w");
+        if (g_dump == NULL) { printf("cannot write %s\n", path); return; }
+        fprintf(g_dump, "t_us,vb,vx,il\n");
+        SimCase k = { .v_ref = 20.0f, .v_in = 24.0f, .r_load = 25.3f, .c_x_uf = cxs[a], .c_x_fixed = fixed[a],
+                      .t_end_s = 19e-3f, .t_load_s = 5e-3f, .r_load2 = 8.0f, .t_load2_s = 17e-3f, .r_load3 = 25.3f,
+                      .t_open_s = 1.0f, .t_close_s = 1.0f, .fast = loops[l].fast, .fast_div = loops[l].div,
+                      .n_avg = 1, .kp = loops[l].kp, .ki = loops[l].ki, .kd = loops[l].kd, .rc_tau_us = 0.8f,
+                      .sample_frac = 0.5f };
+        SimResult r = sim(&k);
+        fclose(g_dump);
+        g_dump = NULL;
+        printf("%s: step min %+.2f, release max %+.2f\n", path, r.w1_min - 20.0f, r.w2_max - 20.0f);
+    }
+}
+#endif
+
+#ifdef SIM_REPLAY
+/* 2026-10-23 bench replay: switch-pulse at 20 V forced CCM 400 kHz into 25.3 ohm,
+ * 55 uF VBUS side held at >= 3.2 V while open, the 3 A limit on the switch
+ * current, today's 20 kHz loop.  argv: r0 tau_us open_ms vx_floor out.csv */
+static float g_close_shift_us = 0.0f;   /* where in the 50 us PID cycle the switch closes */
+static void replay(float r0, float tau, float open_ms, float floor_v, float il_cap, float cx_uf, const char *out)
+{
+    const float t_close = 30e-3f + g_close_shift_us * 1e-6f;
+    SimCase k = { .v_ref = 20.0f, .v_in = 24.0f, .ilim_a = 3.0f, .r_load = 25.3f, .c_x_uf = cx_uf, .c_x_fixed = true,
+                  .t_end_s = 40e-3f, .t_open_s = t_close - open_ms * 1e-3f, .t_close_s = t_close, .meas_ix = true,
+                  .sw_r0_ohm = r0, .sw_tau_us = tau, .vx_floor = floor_v, .fw_sync = true, .il_cap_a = il_cap };
+    g_dump_t0 = t_close - 200e-6f; g_dump_t1 = t_close + 6e-3f; g_dump_t2 = 1.0f; g_dump_t3 = 1.0f;
+    g_dump = fopen(out, "w");
+    fprintf(g_dump, "t_us,vb,vx,il\n");
+    SimResult r = sim(&k);
+    fclose(g_dump); g_dump = NULL;
+    printf("cap %.1f r0 %.1f tau %.0f: vx0 %.2f  vb 50/100/150/300 us %.2f %.2f %.2f %.2f  vb min %.2f max %.2f  IL max %.2f  uvp %d ovp %d\n",
+           il_cap, r0, tau, r.vx_close, r.vb_after[0], r.vb_after[1], r.vb_after[2], r.vb_after[3], r.vb_min, r.vb_max,
+           r.il_max_after_ev, r.t_uvp_s > 0, r.t_ovp_s > 0);
+}
+#endif
+
+
+/* Boost CCM (buck_ccm.h): plays the program tick by tick and checks every
+ * edge on both legs, then runs the duty law on an averaged boost plant.
+ *   Q1 TA1  reset Timer A period, set Timer A CMP4
+ *   Q2 TA2  set Timer A CMP2, reset Timer A CMP3
+ *   Q4 TB2  set Timer B period, reset Timer B CMP2
+ *   Q3 TB1  set Timer B CMP3, reset Timer B CMP4                            */
+static void boost_play(const BuckCcmTimingCfg *c, const BoostCcmTiming *t, bool band)
+{
+    const uint32_t per = buck_ccm_ticks(c->period_ns), dt = buck_ccm_ticks(c->dt_ns);
+    CHECK(t->a_cmp2 >= BUCK_CCM_MIN_COMPARE && t->b_cmp4 < per && t->b_cmp3 < t->b_cmp4,
+          "compares a2 %u b3 %u b4 %u per %u", t->a_cmp2, t->b_cmp3, t->b_cmp4, per);
+    int q1 = 1, q2 = 0, q3 = 0, q4 = 0;
+    uint32_t off1 = 0, off2 = 0, off3 = 0, off4 = 0, q4_on_at = 0, q2_on_at = 0, q2_off_at = 0;
+    bool q2_seen = false;
+    for (uint32_t n = 0; n < 3u * per; n++)
+    {
+        const uint32_t k = n % per;
+        int n1 = q1, n2 = q2, n3 = q3, n4 = q4;
+        if (k == 0u)        { n1 = 0; n4 = 1; }
+        if (k == t->a_cmp2) { n2 = 1; }
+        if (k == t->a_cmp3) { n2 = 0; }
+        if (k == t->a_cmp4) { n1 = 1; }
+        if (k == t->b_cmp2) { n4 = 0; }
+        if (k == t->b_cmp3) { n3 = 1; }
+        if (k == t->b_cmp4) { n3 = 0; }
+        if (n >= per)
+        {
+            if (n1 && !q1) { CHECK(n - off2 >= dt, "Q1 on %u ticks after Q2 off", n - off2); }
+            if (n2 && !q2) { CHECK(n - off1 >= dt, "Q2 on %u ticks after Q1 off", n - off1); q2_on_at = k; q2_seen = true; }
+            if (n3 && !q3) { CHECK(n - off4 >= dt, "Q3 on %u ticks after Q4 off", n - off4); }
+            if (n4 && !q4) { CHECK(n - off3 >= dt, "Q4 on %u ticks after Q3 off", n - off3); q4_on_at = n; }
+            if (!n2 && q2) { q2_off_at = k; CHECK(band || n4, "refresh ends with Q4 off (k %u)", k); }
+            if (n2 && !band) { CHECK(n4, "Q2 on while Q4 is off (k %u): L1 would see -V_out", k); }
+        }
+        if (!n1 && q1) { off1 = n; }
+        if (!n2 && q2) { off2 = n; }
+        if (!n3 && q3) { off3 = n; }
+        if (!n4 && q4) { off4 = n; CHECK(n < per || n - q4_on_at == t->b_cmp2, "Q4 pulse"); }
+        CHECK(!(n1 && n2) && !(n3 && n4), "shoot-through at %u: %d%d %d%d", n, n1, n2, n3, n4);
+        q1 = n1; q2 = n2; q3 = n3; q4 = n4;
+    }
+    CHECK(q2_seen && q2_off_at - q2_on_at == buck_ccm_ticks(c->refresh_ns), "refresh %u ticks", q2_off_at - q2_on_at);
+}
+
+typedef struct { float v_min, v_max, v_end, il_max, u_end; int clamps; } BoostSim;
+
+/* Averaged boost from 'v0' at V_ref with a load step r1 -> r2 at 10 ms. */
+static const BuckCcmTimingCfg *boost_sim_cfg;   /* NULL: boost at 200 kHz */
+static BoostSim boost_sim(float v_in, float v_ref, float v0, float r1, float r2, float c_uf, float ilim)
+{
+    BuckCcmTimingCfg c = { .period_ns = 5000u, .pulse_start_ns = 360u, .dt_ns = 20u, .refresh_ns = 300u,
+                           .refresh_interval_ns = 5000u, .min_on_ns = 100u, .min_q2_end_ns = 60u };
+    if (boost_sim_cfg) { c = *boost_sim_cfg; }
+    const BuckCcmGains g = { .ki = 3142.0f, .kp = 0.0f, .u_min_v = -1.0f, .u_max_v = 2.0f, .dt_s = 50e-6f,
+                             .ilim_a = ilim, .kl = 400.0f, .dt_lim_s = 50e-6f };
+    BuckCcmState s = { 0 };
+    buck_ccm_reset(&s, 0.0f, v_ref, v0);
+    const float l = 4.7e-6f, cc = c_uf * 1e-6f, rs = 0.03f,
+                rp = (float)(c.refresh_ns + 2u * c.dt_ns) / (float)c.period_ns;   /* Q1's off window */
+    float v = v0, il = v0 / r1 / (v_in / v0), d = 1.0f - v_in * (1.0f - rp) / v0, vmeas = v0;
+    BoostSim r = { 1e9f, -1e9f, 0, 0, 0, 0 };
+    const float h = 0.25e-6f;
+    for (int cyc = 0; cyc < 400; cyc++)               /* 20 ms */
+    {
+        const float rl = (cyc < 200) ? r1 : r2;
+        float io = vmeas / rl;
+        buck_ccm_limit(&s, &g, v_ref, vmeas, io);
+        boost_ccm_update(&s, &g, &c, vmeas, v_in);
+        if (s.clamp) { r.clamps++; }
+        BoostCcmTiming t;
+        boost_ccm_timing_ticks(&c, s.t_on_ticks, &t);
+        const float dn = (float)t.t_on_ns / 5000.0f;
+        float acc = 0; int na = 0;
+        for (int k = 0; k < 200; k++)                 /* 50 us; the new duty lands 13 us in */
+        {
+            if (k == 52) { d = dn; }
+            const float vl = v_in * (1.0f - rp) - v * (1.0f - d) - il * rs;
+            il += vl / l * h;
+            v  += (il * (1.0f - d) - v / rl) / cc * h;
+            if (cyc > 2) { if (v < r.v_min) { r.v_min = v; } if (v > r.v_max) { r.v_max = v; } }
+            if (il > r.il_max) { r.il_max = il; }
+            if (k >= 20) { acc += v; na++; }
+        }
+        vmeas = acc / (float)na;
+    }
+    r.v_end = v; r.u_end = s.u_v;
+    return r;
+}
+
+static void test_boost(void)
+{
+    printf("boost CCM:\n");
+    for (uint32_t dtn = 20u; dtn <= 40u; dtn += 20u)
+    {
+        BuckCcmTimingCfg c = { .period_ns = 5000u, .pulse_start_ns = 300u + 2u * dtn + 20u, .dt_ns = dtn,
+                               .refresh_ns = 300u, .refresh_interval_ns = 5000u, .min_on_ns = 100u,
+                               .min_q2_end_ns = 60u };
+        CHECK(boost_ccm_cfg_valid(&c), "cfg dt %u", dtn);
+        for (uint32_t on = 0u; on <= 5000u; on += 37u)
+        {
+            BoostCcmTiming t;
+            boost_ccm_timing_ticks(&c, buck_ccm_ticks(on), &t);
+            CHECK(t.t_on_ns >= boost_ccm_min_on_ns(&c) - 1u && t.t_on_ns <= boost_ccm_max_on_ns(&c) + 1u,
+                  "on %u -> %u", on, t.t_on_ns);
+            boost_play(&c, &t, false);
+        }
+    }
+    BuckCcmTimingCfg bad = { .period_ns = 2500u, .pulse_start_ns = 360u, .dt_ns = 20u, .refresh_ns = 300u,
+                             .refresh_interval_ns = 5000u, .min_on_ns = 100u, .min_q2_end_ns = 60u };
+    CHECK(!boost_ccm_cfg_valid(&bad), "400 kHz with a 5 us refresh interval must be refused");
+    bad.period_ns = 5000u; bad.dt_ns = 10u; bad.pulse_start_ns = 340u;
+    CHECK(!boost_ccm_cfg_valid(&bad), "10 ns dead time (CMP2 under the minimum) must be refused");
+
+    const struct { float vin, vref, r1, r2; } pts[] = {
+        { 24.9f, 28.0f, 25.3f, 25.3f }, { 24.9f, 28.0f, 25.3f, 9.0f }, { 24.9f, 28.0f, 9.0f, 25.3f },
+        { 15.0f, 20.0f, 25.3f, 5.0f }, { 10.0f, 20.0f, 20.0f, 6.7f }, { 10.0f, 28.0f, 25.3f, 9.3f },
+        { 20.0f, 20.5f, 25.3f, 25.3f },
+    };
+    for (unsigned j = 0; j < sizeof pts / sizeof pts[0]; j++)
+    {
+        const BoostSim r = boost_sim(pts[j].vin, pts[j].vref, pts[j].vref, pts[j].r1, pts[j].r2, 55.0f, 0.0f);
+        printf("  %4.1f -> %4.1f V, %5.1f -> %5.1f ohm: V %6.3f..%6.3f end %6.3f, IL max %5.2f A, u %+.3f, clamps %d\n",
+               pts[j].vin, pts[j].vref, pts[j].r1, pts[j].r2, r.v_min, r.v_max, r.v_end, r.il_max, r.u_end, r.clamps);
+        CHECK(fabsf(r.v_end - pts[j].vref) < 0.05f * pts[j].vref, "boost %.1f->%.1f end %.3f",
+              pts[j].vin, pts[j].vref, r.v_end);
+        CHECK(r.v_max < 1.1f * pts[j].vref, "boost overshoot %.3f", r.v_max);
+    }
+    /* The limit folds a boost output only down to boost_ccm_v_min (about
+     * V_in): below that the current is the load's, at the shortest pulse. */
+    BuckCcmTimingCfg c0 = { .period_ns = 5000u, .pulse_start_ns = 360u, .dt_ns = 20u, .refresh_ns = 300u,
+                            .refresh_interval_ns = 5000u, .min_on_ns = 100u, .min_q2_end_ns = 60u };
+    const float vmin = boost_ccm_v_min(&c0, 24.9f);
+    const BoostSim lim = boost_sim(24.9f, 28.0f, 28.0f, 25.3f, 9.0f, 55.0f, 2.9f);
+    const BoostSim floor = boost_sim(24.9f, 28.0f, 28.0f, 25.3f, 9.0f, 55.0f, 1.5f);
+    printf("  limit 2.9 A, 28 V into 9 ohm: end %.3f V (I %.2f A); limit 1.5 A: end %.3f V, floor %.3f V\n",
+           lim.v_end, lim.v_end / 9.0f, floor.v_end, vmin);
+    /* R / kl = 22 ms into 9 ohm: 10 ms after the step it is still folding */
+    CHECK(lim.v_end < 27.5f && lim.v_end / 9.0f > 2.9f, "boost limit 2.9 A end %.3f", lim.v_end);
+    CHECK(floor.v_end > vmin - 0.5f && floor.v_end < vmin + 0.5f, "boost limit floor end %.3f", floor.v_end);
+}
+
+/* Band CCM (buck_ccm.h): the boost program with Q1's off window widened to
+ * 640 ns + 2 dt and Q4 pulses down to 150 ns, ending inside it. */
+static void test_band(void)
+{
+    printf("band CCM:\n");
+    const BuckCcmTimingCfg c = { .period_ns = 5000u, .pulse_start_ns = 150u, .dt_ns = 20u, .refresh_ns = 640u,
+                                 .refresh_interval_ns = 5000u, .min_on_ns = 100u, .min_q2_end_ns = 60u };
+    CHECK(band_ccm_cfg_valid(&c), "band cfg");
+    CHECK(!boost_ccm_cfg_valid(&c), "boost must refuse a Q4 pulse shorter than the window");
+    for (uint32_t on = 0u; on <= 5000u; on += 23u)
+    {
+        BoostCcmTiming t;
+        boost_ccm_timing_ticks(&c, buck_ccm_ticks(on), &t);
+        boost_play(&c, &t, true);
+    }
+    printf("  V_out range at 24.9 V in: %.2f..%.2f V\n", boost_ccm_v_min(&c, 24.9f), boost_ccm_v_max(&c, 24.9f));
+    CHECK(boost_ccm_v_min(&c, 24.9f) < 0.92f * 24.9f, "band reaches 0.92 V_in");
+    boost_sim_cfg = &c;
+    const struct { float vin, vref, r1, r2; } pts[] = {
+        { 24.9f, 24.0f, 25.3f, 25.3f }, { 24.9f, 24.0f, 25.3f, 9.0f }, { 24.9f, 24.0f, 9.0f, 25.3f },
+        { 24.9f, 25.5f, 25.3f, 9.0f }, { 20.0f, 19.0f, 25.3f, 7.0f }, { 10.0f, 9.5f, 25.3f, 4.0f },
+    };
+    for (unsigned j = 0; j < sizeof pts / sizeof pts[0]; j++)
+    {
+        const BoostSim r = boost_sim(pts[j].vin, pts[j].vref, pts[j].vref, pts[j].r1, pts[j].r2, 55.0f, 0.0f);
+        printf("  %4.1f -> %4.1f V, %5.1f -> %5.1f ohm: V %6.3f..%6.3f end %6.3f, IL max %5.2f A, u %+.3f, clamps %d\n",
+               pts[j].vin, pts[j].vref, pts[j].r1, pts[j].r2, r.v_min, r.v_max, r.v_end, r.il_max, r.u_end, r.clamps);
+        CHECK(fabsf(r.v_end - pts[j].vref) < 0.02f * pts[j].vref, "band %.1f->%.1f end %.3f",
+              pts[j].vin, pts[j].vref, r.v_end);
+        CHECK(r.v_max < 1.08f * pts[j].vref, "band overshoot %.3f", r.v_max);
+    }
+    boost_sim_cfg = NULL;
+}
+
+/* CCM handover (buck_ccm.h, 2026-11-06), switch-level with a stiff V_out at
+ * 200 kHz: L1 per period from the programmed edges (0 V while Q4 refreshes,
+ * V_in - V_out while Q1 is on, -V_out otherwise).  Entry: from DCM's 0 A, one
+ * period at t_on + buck_ccm_handover_ticks(I_v) must land on the steady
+ * valley; exit: from the valley, one period at t_on + ticks(-I_v) must end
+ * at 0 A.  Both within 5 % of the ripple. */
+static float handover_period(const BuckCcmTimingCfg *c, uint32_t t_on_ticks, float i0, float v_in, float v_out,
+                             float v_fw, float *mean)
+{
+    const float L = 4.7e-6f, tick = 1e-6f / (float)BUCK_CCM_TICKS_PER_US;
+    BuckCcmTiming t;
+    buck_ccm_timing_ticks(c, t_on_ticks, &t);
+    const float T = (float)c->period_ns * 1e-9f, t_ref = (float)t.b_cmp3 * tick;
+    const float t1 = (float)t.a_cmp4 * tick, t2 = (float)t.a_cmp2 * tick;
+    /* segments: [0, t_ref) flat, [t_ref, t1) -V_out, [t1, t2) V_in - V_out, [t2, T) -V_out */
+    const float seg_t[4] = { t_ref, t1 - t_ref, t2 - t1, T - t2 };
+    const float seg_v[4] = { 0.0f, -(v_out + v_fw), v_in - v_out, -(v_out + v_fw) };
+    float i = i0, area = 0.0f;
+    for (int k = 0; k < 4; k++)
+    {
+        const float i1 = i + seg_v[k] * seg_t[k] / L;
+        area += 0.5f * (i + i1) * seg_t[k];
+        i = i1;
+    }
+    if (mean) { *mean = area / T; }
+    return i;
+}
+
+static void test_handover(void)
+{
+    printf("CCM handover (200 kHz, stiff V_out, 24.4 V in):\n");
+    const BuckCcmTimingCfg c = { .period_ns = 5000u, .pulse_start_ns = 360u, .dt_ns = 20u, .refresh_ns = 300u,
+                                 .refresh_interval_ns = 5000u, .min_on_ns = 100u, .min_q2_end_ns = 60u };
+    const float L = 4.7e-6f, v_in = 24.4f, tick = 1e-6f / (float)BUCK_CCM_TICKS_PER_US;
+    const float vs[] = { 5.0f, 9.0f, 15.0f, 20.0f };
+    for (int j = 0; j < 8; j++)
+    {
+        for (int q = 0; q < 2; q++)
+        {
+            /* the second half with a 0.8 V freewheel drop (CCM_HANDOVER_VFW_MV) */
+            const float v = vs[j % 4], vfw = (j < 4) ? 0.0f : 0.8f, i_load = q ? 2.0f : v / 25.3f;
+            /* steady on-time: volt-second balance over the period */
+            BuckCcmTiming t0;
+            buck_ccm_timing(&c, 1000u, &t0);
+            const float T = 5e-6f, t_ref = (float)t0.b_cmp3 * tick;
+            const uint32_t ton = buck_ccm_ticks((uint32_t)(1e9f * (v + vfw) * (T - t_ref) / (v_in + vfw) + 0.5f));
+            float m0;
+            (void)handover_period(&c, ton, 0.0f, v_in, v, vfw, &m0);
+            const float iv_true = i_load - m0;                /* steady valley for this mean */
+            float ms;
+            const float drift = handover_period(&c, ton, iv_true, v_in, v, vfw, &ms) - iv_true;
+            BuckCcmTiming tt;
+            buck_ccm_timing_ticks(&c, ton, &tt);
+            const float di = (v_in - v) * (float)tt.t_on_ns * 1e-9f / L;
+            const float iv = buck_ccm_boundary_a(&c, &tt, i_load, v, vfw, L);
+            const int32_t de = buck_ccm_handover_ticks(iv, v_in, L), dx = buck_ccm_handover_ticks(-iv, v_in, L);
+            const float i_entry = handover_period(&c, (uint32_t)((int32_t)ton + de), 0.0f, v_in, v, vfw, NULL);
+            const float i_exit  = handover_period(&c, (uint32_t)((int32_t)ton + dx), iv_true, v_in, v, vfw, NULL);
+            printf("  %4.1f V %4.2f A fw %.1f V: ripple %.2f A, valley %+.3f A (model %+.3f), entry dt %+5.0f ns -> %+.3f A "
+                   "(none: 0 A, off %+.3f), exit dt %+5.0f ns -> %+.3f A\n",
+                   v, i_load, vfw, di, iv_true, iv, (float)de * tick * 1e9f, i_entry, -iv_true,
+                   (float)dx * tick * 1e9f, i_exit);
+            CHECK(fabsf(drift) < 0.01f * di, "handover %.0f V: steady drift %.3f A", v, drift);
+            CHECK(fabsf(i_entry - iv_true) < 0.05f * di, "handover entry %.0f V %.2f A: %.3f vs %.3f", v, i_load, i_entry, iv_true);
+            CHECK(fabsf(i_exit) < 0.05f * di, "handover exit %.0f V %.2f A: %.3f", v, i_load, i_exit);
+        }
+    }
+}
+
+/* No-reverse floor (BuckCcmState.v_floor_v, the battery-load build): a pack on
+ * VBUS behind a small series resistance with the reference 2 V under it.  The
+ * duty law alone drives L1's average current negative (power back into V_in);
+ * with the floor at the pack voltage it stays at 0 A or above.  Averaged
+ * plant, 1 us steps: buck L di/dt = n - r1 V_out, boost L di/dt =
+ * vin_r (1 - V_out / n), with V_out = V_pack + I R.  L is 50 x L1: the
+ * averaged plant updated once per 50 us PID cycle is not stable at 4.7 uH and
+ * 0.1 ohm, and this checks the sign of the current, not its dynamics. */
+static float floor_sim(bool boost, float v_floor)
+{
+    const BuckCcmTimingCfg c = boost
+        ? (BuckCcmTimingCfg){ .period_ns = 5000u, .pulse_start_ns = 360u, .dt_ns = 20u, .refresh_ns = 300u,
+                              .refresh_interval_ns = 5000u, .min_on_ns = 100u, .min_q2_end_ns = 60u }
+        : cfg(5000u, 20u);
+    const BuckCcmGains g = { .ki = 3142.0f, .kp = 0.1f, .u_min_v = -2.0f, .u_max_v = 2.0f, .dt_s = 50e-6f,
+                             .dt_lim_s = 50e-6f };
+    const float v_in = 24.4f, v_pack = boost ? 26.0f : 15.0f, r = 0.1f, l = 50.0f * 4.7e-6f;
+    const float r1 = 1.0f - buck_ccm_refresh_share(&c);
+    BuckCcmState s = { 0 };
+    buck_ccm_reset(&s, 0.0f, v_pack - 2.0f, v_pack);
+    float i = 0.0f, i_min = 0.0f;
+    for (int k = 0; k < 2000; k++)   /* 100 ms */
+    {
+        const float v_out = v_pack + i * r;
+        buck_ccm_limit(&s, &g, v_pack - 2.0f, v_out, i);
+        s.v_floor_v = v_floor;
+        const uint32_t ton = boost ? boost_ccm_update(&s, &g, &c, v_out, v_in)
+                                   : buck_ccm_update(&s, &g, &c, v_out, v_in);
+        const float d = (float)ton / (float)c.period_ns;
+        for (int j = 0; j < 50; j++)
+        {
+            const float vo = v_pack + i * r;
+            const float vl = boost ? v_in * r1 - (1.0f - d) * vo : d * v_in - r1 * vo;
+            i += vl / l * 1e-6f;
+            if (i < i_min) { i_min = i; }
+        }
+    }
+    return i_min;
+}
+
+/* The floor against a forward overshoot: L1 at 5 A into the pack, the ceiling
+ * 1 V over the pack.  At the pack voltage the floor lets the limit pull the
+ * current down; at V_out filtered over 16 PID cycles (the first battery
+ * build) it holds L1 near where it is, since V_out = V_pack + I R follows the
+ * current (SW_OCP at a 2 A setting, bench 2026-11-09 section 9).  offset_v is
+ * what the plant makes over the model at a given duty (the board: about
+ * +0.5 V at 15.5 V, section 11), u0_v the integrator at the start (CCM_U0_*:
+ * -0.35 V at 15.5 V).  Returns the mean I_L over the last 10 ms of 100 ms and
+ * the lowest I_L in *i_min. */
+static float floor_overshoot_sim_from(bool boost, bool track_v_out, float ilim_a, float offset_v, float u0_v,
+                                      float i0_a, float above_v, float *i_min)
+{
+    const BuckCcmTimingCfg c = boost
+        ? (BuckCcmTimingCfg){ .period_ns = 5000u, .pulse_start_ns = 360u, .dt_ns = 20u, .refresh_ns = 300u,
+                              .refresh_interval_ns = 5000u, .min_on_ns = 100u, .min_q2_end_ns = 60u }
+        : cfg(5000u, 20u);
+    const BuckCcmGains g = { .ki = 3142.0f, .kp = 0.1f, .u_min_v = -2.0f, .u_max_v = 2.0f, .dt_s = 50e-6f,
+                             .ilim_a = ilim_a, .kl = 400.0f, .dt_lim_s = 50e-6f };
+    const float v_in = 24.4f, v_pack = boost ? 26.0f : 15.0f, r = 0.24f, l = 50.0f * 4.7e-6f;
+    const float r1 = 1.0f - buck_ccm_refresh_share(&c);
+    BuckCcmState s = { 0 };
+    float i = i0_a, v_filt = v_pack + i * r, i_sum = 0.0f, i_lo = i;
+    buck_ccm_reset(&s, u0_v, v_pack + above_v, v_filt);
+    for (int k = 0; k < 2000; k++)   /* 100 ms */
+    {
+        const float v_out = v_pack + i * r;
+        v_filt += (v_out - v_filt) / 16.0f;
+        buck_ccm_limit(&s, &g, v_pack + above_v, v_out, i);
+        s.v_floor_v = track_v_out ? v_filt : v_pack;
+        const uint32_t ton = boost ? boost_ccm_update(&s, &g, &c, v_out, v_in)
+                                   : buck_ccm_update(&s, &g, &c, v_out, v_in);
+        const float d = (float)ton / (float)c.period_ns;
+        for (int j = 0; j < 50; j++)
+        {
+            const float vo = v_pack + i * r;
+            const float vl = boost ? v_in * r1 - (1.0f - d) * (vo - offset_v) : d * v_in - r1 * (vo - offset_v);
+            i += vl / l * 1e-6f;
+            if (i < i_lo) { i_lo = i; }
+        }
+        if (k >= 1800) { i_sum += i; }
+    }
+    if (i_min) { *i_min = i_lo; }
+    return i_sum / 200.0f;
+}
+
+static float floor_overshoot_sim(bool boost, bool track_v_out, float ilim_a, float offset_v, float u0_v,
+                                 float *i_min)
+{
+    return floor_overshoot_sim_from(boost, track_v_out, ilim_a, offset_v, u0_v, 5.0f, 1.0f, i_min);
+}
+
+/* The pack plant for the limit models below, at its real values (the floor sims above scale L by 50 and check
+ * only the current's sign): L1 4.7 uH into C_int 50 uF (V_out, what VD_MON reads), R to the pack.  The
+ * plant makes offset_v over the averaged model (the board).  Steps of 0.1 us, ten a call; returns the
+ * current into the pack (what ID_MON reads, after C_int). */
+typedef struct { float il, vc; } PackPlant;
+static float pack_plant_us(PackPlant *p, float d, float v_in, float r1, float offset_v, float v_pack, float r)
+{
+    const float l = 4.7e-6f, c = 50e-6f, dt = 0.1e-6f;
+    float i = 0.0f;
+    for (int n = 0; n < 10; n++)
+    {
+        i = (p->vc - v_pack) / r;
+        p->il += (d * v_in - r1 * (p->vc - offset_v)) / l * dt;
+        p->vc += (p->il - i) / c * dt;
+    }
+    return i;
+}
+
+/* The limit's current through ADC2 as the board converts it (adc_monitor.h): a scan every 560 us whose ID_MON
+ * result is the mean over its last 114 us; the limit reads the mean of the newest `scans` results.  Buck, the
+ * board case of section 15 (from 0 A, ceiling 0.5 V over the pack, plant +0.5 V, u0 -0.627 V, limit 2 A) into
+ * 0.17 ohm.  Returns the mean of I_L over the last 20 ms; *i_pp its peak to peak there, *i_min the lowest. */
+static float ilim_lag_sim(uint32_t scans, float kl, float r, float *i_pp, float *i_min)
+{
+    const BuckCcmTimingCfg c = cfg(5000u, 20u);
+    const BuckCcmGains g = { .ki = 3142.0f, .kp = 0.0f, .u_min_v = -2.0f, .u_max_v = 2.0f, .dt_s = 50e-6f,
+                             .ilim_a = 2.0f, .kl = kl, .dt_lim_s = 50e-6f };
+    const float v_in = 24.4f, v_pack = 15.0f, offset_v = 0.5f, above_v = 0.5f;
+    const float r1 = 1.0f - buck_ccm_refresh_share(&c);
+    enum { SCAN_US = 560, ID_US = 114, RING = 32, CYCLES = 4000, TAIL = 400 };
+    float ring[RING] = { 0 }, acc = 0.0f, i = 0.0f, i_lo = 0.0f, i_hi_t = -1e9f, i_lo_t = 1e9f, i_sum = 0.0f;
+    uint32_t head = 0u, t_us = 0u;
+    PackPlant p = { 0.0f, v_pack };
+    BuckCcmState s = { 0 };
+    buck_ccm_reset(&s, -0.627f, v_pack + above_v, v_pack);
+    for (int k = 0; k < CYCLES; k++)
+    {
+        float i_meas = 0.0f;
+        for (uint32_t n = 0u; n < scans; n++) { i_meas += ring[(head + RING - 1u - n) % RING]; }
+        i_meas /= (float)scans;
+        buck_ccm_limit(&s, &g, v_pack + above_v, p.vc, i_meas);
+        s.v_floor_v = v_pack;
+        const float d = (float)buck_ccm_update(&s, &g, &c, p.vc, v_in) / (float)c.period_ns;
+        for (int j = 0; j < 50; j++, t_us++)
+        {
+            i = pack_plant_us(&p, d, v_in, r1, offset_v, v_pack, r);
+            if (i < i_lo) { i_lo = i; }
+            const uint32_t ph = t_us % SCAN_US;
+            if (ph >= SCAN_US - ID_US) { acc += i; }
+            if (ph == SCAN_US - 1u) { ring[head] = acc / (float)ID_US; head = (head + 1u) % RING; acc = 0.0f; }
+        }
+        if (k >= CYCLES - TAIL)
+        {
+            i_sum += i;
+            if (i > i_hi_t) { i_hi_t = i; }
+            if (i < i_lo_t) { i_lo_t = i; }
+        }
+    }
+    *i_pp = i_hi_t - i_lo_t;
+    *i_min = i_lo;
+    return i_sum / (float)TAIL;
+}
+
+/* A CCM entry as on the bench (2026-11-09 section 17): from DCM at 2 A into the pack, ceiling 0.8 V over it,
+ * plant 0.5 V over the model with u0 as regulator.c presets it (u_base -0.627 V plus the V_out - reference
+ * term), the limit on ADC2's newest scan (as ilim_lag_sim) at kl 100.  ramp: buck_ccm_limit_from at the entry,
+ * as regulator.c does.  Returns the true peak of L1; *meas_pk the highest scan, *i_min the lowest L1 after the
+ * entry, *i_end the mean of the last 20 ms of 100 ms. */
+static float ilim_entry_sim(bool ramp, float ilim_a, float r, float *meas_pk, float *i_min, float *i_end)
+{
+    const BuckCcmTimingCfg c = cfg(5000u, 20u);
+    const BuckCcmGains g = { .ki = 3142.0f, .kp = 0.0f, .u_min_v = -2.0f, .u_max_v = 2.0f, .dt_s = 50e-6f,
+                             .ilim_a = ilim_a, .kl = 100.0f, .dt_lim_s = 50e-6f };
+    const float v_in = 24.4f, v_pack = 15.5f, offset_v = 0.5f, v_ref = v_pack + 0.8f;
+    const float r1 = 1.0f - buck_ccm_refresh_share(&c);
+    enum { SCAN_US = 560, ID_US = 114, RING = 32, CYCLES = 2000, TAIL = 400 };
+    float ring[RING], acc = 0.0f, i = 2.0f, pk = i, lo = i, mpk = 0.0f, i_sum = 0.0f;
+    for (int k = 0; k < RING; k++) { ring[k] = i; }
+    uint32_t head = 0u, t_us = 0u;
+    PackPlant p = { i, v_pack + i * r };
+    BuckCcmState s = { 0 }, lim = { 0 };
+    buck_ccm_reset(&lim, 0.0f, v_ref, p.vc);
+    if (ramp) { buck_ccm_limit_from(&lim, v_ref, p.vc); }
+    const float u0 = -0.627f + (p.vc - lim.v_cmd_v) * r1;
+    buck_ccm_reset(&s, u0, v_ref, p.vc);
+    for (int k = 0; k < CYCLES; k++)
+    {
+        if (k > 0) { buck_ccm_limit(&lim, &g, v_ref, p.vc, ring[(head + RING - 1u) % RING]); }
+        s.v_cmd_v = lim.v_cmd_v; s.v_lim_v = lim.v_lim_v; s.limiting = lim.limiting; s.ramp = lim.ramp;
+        s.v_floor_v = v_pack;
+        const float d = (float)buck_ccm_update(&s, &g, &c, p.vc, v_in) / (float)c.period_ns;
+        lim.clamp = s.clamp;
+        for (int j = 0; j < 50; j++, t_us++)
+        {
+            i = pack_plant_us(&p, d, v_in, r1, offset_v, v_pack, r);
+            if (i > pk) { pk = i; }
+            if (i < lo) { lo = i; }
+            const uint32_t ph = t_us % SCAN_US;
+            if (ph >= SCAN_US - ID_US) { acc += i; }
+            if (ph == SCAN_US - 1u)
+            {
+                ring[head] = acc / (float)ID_US;
+                if (ring[head] > mpk) { mpk = ring[head]; }
+                head = (head + 1u) % RING; acc = 0.0f;
+            }
+        }
+        if (k >= CYCLES - TAIL) { i_sum += i; }
+    }
+    *meas_pk = mpk; *i_min = lo; *i_end = i_sum / (float)TAIL;
+    return pk;
+}
+
+static void test_ilim_entry(void)
+{
+    /* From V_ref (the entry before 2026-11-11) the voltage law drives the whole 0.8 V at once and the limit
+     * acts only once a scan reads over it.  From V_out (buck_ccm_limit_from) the peak must stay within 0.3 A
+     * of the limit.  The dip just after the entry is u0's error (0.13 V low here: -0.627 V against the
+     * plant's 0.5 V) over R; it must not reach 0.3 A. */
+    printf("CCM entry from DCM at 2 A into the pack, ceiling +0.8 V, kl 100, newest scan, 100 ms:\n");
+    const float lims[] = { 2.0f, 2.5f, 3.0f, 3.5f };
+    const float rs[] = { 0.10f, 0.13f, 0.17f };
+    for (int a = 0; a < 3; a++)
+    {
+        for (int b = 0; b < 4; b++)
+        {
+            float pk_off, m_off, lo_off, e_off, pk_on, m_on, lo_on, e_on;
+            pk_off = ilim_entry_sim(false, lims[b], rs[a], &m_off, &lo_off, &e_off);
+            pk_on  = ilim_entry_sim(true,  lims[b], rs[a], &m_on,  &lo_on,  &e_on);
+            printf("  %.2f ohm, limit %.1f A: from V_ref L1 peak %.2f (scan %.2f) low %.2f end %.2f A | "
+                   "from V_out peak %.2f (scan %.2f) low %.2f end %.2f A\n", (double)rs[a], (double)lims[b],
+                   pk_off, m_off, lo_off, e_off, pk_on, m_on, lo_on, e_on);
+            CHECK(pk_on < lims[b] + 0.3f, "%.2f ohm, limit %.1f A: entry from V_out peaked at %.2f A",
+                  (double)rs[a], (double)lims[b], pk_on);
+            CHECK(fabsf(e_on - lims[b]) < 0.1f, "%.2f ohm, limit %.1f A: entry from V_out ended at %.2f A",
+                  (double)rs[a], (double)lims[b], e_on);
+            CHECK(lo_on > 0.3f, "%.2f ohm, limit %.1f A: entry from V_out dipped to %.2f A",
+                  (double)rs[a], (double)lims[b], lo_on);
+        }
+    }
+}
+
+static void test_ilim_lag(void)
+{
+    printf("current limit through ADC2's lag, buck into the pack, limit 2 A, 200 ms:\n");
+    /* The board as it was (kl 400, 8-scan mean, 0.17 ohm): must oscillate, as section 15 did (there it grew
+     * until SW_VIN_RISE; this linear plant settles into a limit cycle). */
+    {
+        float pp, lo;
+        const float m = ilim_lag_sim(8u, 400.0f, 0.17f, &pp, &lo);
+        printf("  kl 400, 8-scan mean, 0.17 ohm: I_L %.2f A, last 20 ms p-p %.2f A, lowest %.2f A\n", m, pp, lo);
+        CHECK(pp > 1.0f, "the 8-scan mean should reproduce the oscillation (p-p %.2f A)", pp);
+    }
+    /* The fix: the newest scan and CCM_ILIM_KL_CCM_DEFAULT (100).  Steady at 2 A from 0.05 to 0.17 ohm (the
+     * bench path is about 0.13).  At 0.05 ohm the start (1 V over the pack with the plant's 0.5 V) dips the
+     * current negative for a moment: printed, reverse checked only at 0.13 and 0.17 ohm. */
+    const float rs[] = { 0.05f, 0.10f, 0.13f, 0.17f };
+    for (int j = 0; j < 4; j++)
+    {
+        float pp, lo;
+        const float m = ilim_lag_sim(1u, 100.0f, rs[j], &pp, &lo);
+        printf("  kl 100, newest scan, %.2f ohm: I_L %.2f A, last 20 ms p-p %.2f A, lowest %.2f A\n",
+               (double)rs[j], m, pp, lo);
+        CHECK(fabsf(m - 2.0f) < 0.1f && pp < 0.2f, "kl 100 at %.2f ohm: I_L %.2f A, p-p %.2f A", (double)rs[j], m, pp);
+        if (rs[j] > 0.12f) { CHECK(lo > -0.05f, "kl 100 at %.2f ohm: L1 reversed to %.2f A", (double)rs[j], lo); }
+    }
+    /* The margin: kl 400 on the newest scan holds at 0.08 ohm and oscillates at 0.05. */
+    const float r400[] = { 0.08f, 0.05f };
+    for (int j = 0; j < 2; j++)
+    {
+        float pp, lo;
+        const float m = ilim_lag_sim(1u, 400.0f, r400[j], &pp, &lo);
+        printf("  kl 400, newest scan, %.2f ohm: I_L %.2f A, last 20 ms p-p %.2f A\n", (double)r400[j], m, pp);
+    }
+}
+
+/* Boost into an 8S pack (plans/lipo-load.md, the 8S step): a forced-CCM entry from DCM at i0 into the pack, as
+ * ilim_entry_sim but with the boost law and plant: L1 4.7 uH, c_int the five output ceramics under bias (about
+ * 9 uF at 30 V, not buck's 50 uF), r to the pack, the limit on ADC2's newest scan at kl 100, the reference from
+ * V_out at the entry and the integrator preset as regulator.c does for boost (u0_v plus V_out - reference).
+ * The plant makes offset_v over the model: the board settled u at -0.39 to -0.49 V in boost CCM at 28 V into
+ * 25.3 ohm (bench 2026-11-03, sweep_*.jsonl), so it makes about 0.44 V more than the law expects.  meas_gain
+ * scales what the limit reads (ID_MON read 0.7x in boost CCM that day).  Averaged over the period: the 200 kHz
+ * ripple (4.9 A p-p in L1 at 30 V from 24.4 V) is not in it.  Returns the highest pack current; *lo the lowest
+ * after the entry, *end the mean and *pp the peak to peak of the last 20 ms of 200 ms. */
+static float boost_pack_sim(float v_pack, float r, float ilim_a, float meas_gain, float i0, float above_v,
+                            float offset_v, float u0_v, float *lo, float *end, float *pp)
+{
+    const BuckCcmTimingCfg c = { .period_ns = 5000u, .pulse_start_ns = 360u, .dt_ns = 20u, .refresh_ns = 300u,
+                                 .refresh_interval_ns = 5000u, .min_on_ns = 100u, .min_q2_end_ns = 60u };
+    const BuckCcmGains g = { .ki = 3142.0f, .kp = 0.0f, .u_min_v = -2.0f, .u_max_v = 2.0f, .dt_s = 50e-6f,
+                             .ilim_a = ilim_a, .kl = 100.0f, .dt_lim_s = 50e-6f };
+    const float v_in = 24.4f, v_ref = v_pack + above_v, l = 4.7e-6f, cc = 9e-6f, dt = 0.1e-6f;
+    const float r1 = 1.0f - buck_ccm_refresh_share(&c);
+    enum { SCAN_US = 560, ID_US = 114, RING = 32, CYCLES = 4000, TAIL = 400 };
+    float ring[RING], acc = 0.0f, i = i0, pk = i0, low = i0, i_sum = 0.0f, hi_t = -1e9f, lo_t = 1e9f;
+    for (int k = 0; k < RING; k++) { ring[k] = i0 * meas_gain; }
+    uint32_t head = 0u, t_us = 0u;
+    float vc = v_pack + i0 * r, il = i0 * vc / (v_in * r1);   /* power balance at the entry */
+    BuckCcmState s = { 0 }, lim = { 0 };
+    buck_ccm_reset(&lim, 0.0f, v_ref, vc);
+    buck_ccm_limit_from(&lim, v_ref, vc);
+    buck_ccm_reset(&s, u0_v + (vc - lim.v_cmd_v), v_ref, vc);
+    for (int k = 0; k < CYCLES; k++)
+    {
+        if (k > 0) { buck_ccm_limit(&lim, &g, v_ref, vc, ring[(head + RING - 1u) % RING]); }
+        s.v_cmd_v = lim.v_cmd_v; s.v_lim_v = lim.v_lim_v; s.limiting = lim.limiting; s.ramp = lim.ramp;
+        s.v_floor_v = v_pack;
+        const float d = (float)boost_ccm_update(&s, &g, &c, vc, v_in) / (float)c.period_ns;
+        lim.clamp = s.clamp;
+        for (int j = 0; j < 50; j++, t_us++)
+        {
+            for (int n = 0; n < 10; n++)
+            {
+                i = (vc - v_pack) / r;
+                il += (v_in * r1 - (1.0f - d) * (vc - offset_v)) / l * dt;
+                vc += ((1.0f - d) * il - i) / cc * dt;
+            }
+            if (i > pk)  { pk = i; }
+            if (i < low) { low = i; }
+            const uint32_t ph = t_us % SCAN_US;
+            if (ph >= SCAN_US - ID_US) { acc += i * meas_gain; }
+            if (ph == SCAN_US - 1u) { ring[head] = acc / (float)ID_US; head = (head + 1u) % RING; acc = 0.0f; }
+        }
+        if (k >= CYCLES - TAIL)
+        {
+            i_sum += i;
+            if (i > hi_t) { hi_t = i; }
+            if (i < lo_t) { lo_t = i; }
+        }
+    }
+    *lo = low; *end = i_sum / (float)TAIL; *pp = hi_t - lo_t;
+    return pk;
+}
+
+static void test_boost_pack(void)
+{
+    const float u0 = -0.44f, plant = 0.44f, i0 = 0.5f, above = 0.8f;   /* CCM_BOOST_U0_MV and the board */
+    printf("boost CCM entry into an 8S pack from 24.4 V at 0.5 A, ceiling +0.8 V, kl 100, newest scan, 200 ms "
+           "(averaged model):\n");
+    /* The preset before 2026-11-12 (+0.1 V, from the loss model) against the board's 0.44 V: the first duty
+     * makes 0.54 V over the pack's V_out, 4 A over the entry current into 0.13 ohm, until u runs it off
+     * (1 / ki = 0.32 ms).  The limit's scan (0.56 ms) is too slow to act on it. */
+    {
+        float lo, end, pp;
+        const float pk = boost_pack_sim(30.0f, 0.13f, 1.0f, 1.0f, i0, above, plant, 0.1f, &lo, &end, &pp);
+        printf("  preset +0.10 V (old), 30.0 V, 0.13 ohm, limit 1.0 A: peak %.2f A, end %.2f A\n", pk, end);
+        CHECK(pk > 3.5f, "the old preset should overshoot at the entry (peak %.2f A)", pk);
+    }
+    /* With the preset at the board's value, and the board 0.1 V either side of it: steady at the limit (or at
+     * what the ceiling allows, above / r), no limit cycle, and the entry step bounded by the 0.1 V error over
+     * r.  At 26.4-33 V (3.3-4.1 V a cell) and 0.13-0.30 ohm (the 4S path was about 0.13; an 8S pack or a
+     * series resistor adds to it).  A preset 0.1 V under the board dips the current by 0.1 V / r, below 0 at
+     * 0.13 ohm from 0.5 A: printed, and bounded. */
+    const float packs[] = { 26.4f, 30.0f, 33.0f };
+    const float rs[] = { 0.13f, 0.20f, 0.30f };
+    const float lims[] = { 0.5f, 1.0f, 2.0f, 3.0f };
+    const float errs[] = { -0.1f, 0.0f, 0.1f };
+    for (int a = 0; a < 3; a++)
+    {
+        for (int b = 0; b < 3; b++)
+        {
+            for (int k = 0; k < 4; k++)
+            {
+                for (int o = 0; o < 3; o++)
+                {
+                    float lo, end, pp;
+                    const float pk = boost_pack_sim(packs[a], rs[b], lims[k], 1.0f, i0, above, plant + errs[o], u0,
+                                                    &lo, &end, &pp);
+                    const float want = (lims[k] < above / rs[b]) ? lims[k] : above / rs[b];
+                    const float step = 0.1f / rs[b];
+                    if (a == 1 && b == 0)
+                    {
+                        printf("  preset -0.44 V, board %+.2f V, 30.0 V, 0.13 ohm, limit %.1f A: peak %.2f low %.2f "
+                               "end %.2f A, p-p %.3f A\n", (double)(plant + errs[o]), (double)lims[k], pk, lo, end, pp);
+                    }
+                    CHECK(fabsf(end - want) < 0.1f && pp < 0.1f, "%.1f V %.2f ohm limit %.1f A err %+.1f: end "
+                          "%.2f A (want %.2f), p-p %.2f A", (double)packs[a], (double)rs[b], (double)lims[k],
+                          (double)errs[o], end, want, pp);
+                    CHECK(pk < ((want > i0) ? want : i0) + ((errs[o] > 0.0f) ? step : 0.0f) + 0.3f,
+                          "%.1f V %.2f ohm limit %.1f A err %+.1f: peak %.2f A", (double)packs[a], (double)rs[b],
+                          (double)lims[k], (double)errs[o], pk);
+                    CHECK(lo > i0 - ((errs[o] < 0.0f) ? step : 0.0f) - 0.15f,
+                          "%.1f V %.2f ohm limit %.1f A err %+.1f: low %.2f A", (double)packs[a], (double)rs[b],
+                          (double)lims[k], (double)errs[o], lo);
+                }
+            }
+        }
+    }
+    /* What a low reading does: with ID_MON at 0.7x the loop is as stable and holds limit / 0.7 in the pack,
+     * while the ceiling leaves room for it. */
+    {
+        float lo, end, pp;
+        const float pk = boost_pack_sim(30.0f, 0.13f, 2.0f, 0.7f, i0, above, plant, u0, &lo, &end, &pp);
+        printf("  30.0 V, 0.13 ohm, limit 2.0 A read at 0.7x, ceiling +0.8 V: peak %.2f end %.2f A, p-p %.3f A\n",
+               pk, end, pp);
+        CHECK(fabsf(end - 2.0f / 0.7f) < 0.1f && pp < 0.1f, "0.7x reading: end %.2f A, p-p %.2f A", end, pp);
+        /* The ceiling bounds it: 0.25 V over the pack into 0.13 ohm cannot pass 1.93 A however low the reading. */
+        const float pk2 = boost_pack_sim(30.0f, 0.13f, 2.0f, 0.35f, i0, 0.25f, plant, u0, &lo, &end, &pp);
+        printf("  30.0 V, 0.13 ohm, limit 2.0 A read at 0.35x, ceiling +0.25 V: peak %.2f end %.2f A\n", pk2, end);
+        CHECK(end < 0.25f / 0.13f + 0.1f && pk2 < 0.25f / 0.13f + 0.3f, "ceiling bound: end %.2f A, peak %.2f A",
+              end, pk2);
+    }
+}
+
+/* The 5 A forced entry into the 8S pack (bench 2026-11-12: SW_OCP 7.4 ms after a 1.1 -> 5 A entry, the
+ * input side read about 6.5 A).  boost_pack_sim with the plant fitted to the board's traces: a series loss
+ * r_s in L1's path (the offset V_out - v_cmd - u fell 0.635 -> 0.150 V from 0.3 to 4 A, ~0.1 ohm, 0.687 V
+ * at 0 A), ID_MON clipped at its full scale (5.45 A), and SW_OCP on the 1.6 ms filter of the newest scan
+ * over ocp_a for 20 cycles.  Ceramics only (9 uF under bias, 2026-11-13: no bulk C).  r is the path over
+ * milliseconds: in this model only 0.03-0.04 ohm reproduces the trip, the 0.13-0.17 ohm slow fit does not.
+ * slew_a_s > 0 enters through buck_ccm_limit_slew_from as regulator.c does (CCM_ILIM_SLEW_MA_MS_DEFAULT). */
+typedef struct { float pk, lo, lo_late, end, pp, trip_ms; uint8_t slewing; float step_hi, step_lo; } EntryRes;
+/* bias_v: what VD_MON reads over V_out once in CCM, against the DCM reading the entry latches (bench 2026-11-13:
+ * about +0.3 V within 0.1 ms of the entry); u0_err: the entry's guess of u off by this much; blind: the
+ * open-loop window in PID cycles (0: none), as regulator.c runs it.  lo_late: the lowest after 2 ms. */
+/* A limit schedule mid-run: from sched[k][0] ms on, the limit is sched[k][1] A (NULL: ilim_a throughout).
+ * Results after the last step go to the step_* fields: the peak over / low under the new limit, and the low. */
+static const float (*g_sched)[2] = NULL;
+static int g_nsched = 0;
+static EntryRes boost_entry_sim_x(float r, float ilim_a, float i0, float slew_a_s, int cycles, float bias_v,
+                                  float u0_err, int blind)
+{
+    const BuckCcmTimingCfg c = { .period_ns = 5000u, .pulse_start_ns = 360u, .dt_ns = 20u, .refresh_ns = 300u,
+                                 .refresh_interval_ns = 5000u, .min_on_ns = 100u, .min_q2_end_ns = 60u };
+    BuckCcmGains g = { .ki = 3142.0f, .kp = 0.0f, .u_min_v = -2.0f, .u_max_v = 2.0f, .dt_s = 50e-6f,
+                       .ilim_a = ilim_a, .kl = 100.0f, .dt_lim_s = 50e-6f, .slew_a_s = slew_a_s };
+    const float v_pack = 31.2f, above_v = 1.6f, offset_v = 0.687f, r_s = 0.10f, u0_v = -0.44f;
+    const float clip_a = 5.45f, ocp_a = 5.305f;   /* ID_MON full scale; SW_OCP at it less 150 mA (5c) */
+    const float v_in = 24.4f, v_ref = v_pack + above_v, l = 4.7e-6f, cc = 9e-6f, dt = 0.1e-6f;
+    const float r1 = 1.0f - buck_ccm_refresh_share(&c);
+    enum { SCAN_US = 560, ID_US = 114, RING = 32, TAIL = 400 };
+    float ring[RING], acc = 0.0f, i = i0, filt = i0, sum = 0.0f, hi_t = -1e9f, lo_t = 1e9f;
+    for (int k = 0; k < RING; k++) { ring[k] = i0; }
+    uint32_t head = 0u, t_us = 0u;
+    int over = 0;
+    float vc = v_pack + i0 * r, d = 0.2f;
+    for (int it = 0; it < 50; it++) { d = 1.0f - (v_in * r1 - r_s * i0 / (1.0f - d)) / (vc - offset_v); }
+    float il = i0 / (1.0f - d);   /* steady at i0 with the series loss */
+    EntryRes R = { i0, i0, i0, 0.0f, 0.0f, -1.0f, 0u, 0.0f, 0.0f };
+    BuckCcmState s = { 0 }, lim = { 0 };
+    buck_ccm_reset(&lim, 0.0f, v_ref, vc);   /* the entry: the DCM reading, no bias */
+    buck_ccm_limit_from(&lim, v_ref, vc);
+    if (slew_a_s > 0.0f && lim.limiting && blind == 0) { buck_ccm_limit_slew_from(&lim, ring[(head + RING - 1u) % RING]); }
+    buck_ccm_reset(&s, u0_v + u0_err + (vc - lim.v_cmd_v), v_ref, vc);
+    if (blind > 0) { buck_ccm_blind_begin(&s, vc); }
+    int blind_left = blind;
+    for (int k = 0; k < cycles; k++)
+    {
+        for (int q = 0; q < g_nsched; q++)
+        {
+            if ((float)k * 0.05f >= g_sched[q][0]) { g.ilim_a = g_sched[q][1]; }
+        }
+        if (g_nsched > 0 && (float)k * 0.05f >= g_sched[g_nsched - 1][0])
+        {
+            if (k * 0.05f < g_sched[g_nsched - 1][0] + 0.05f) { R.step_hi = -9.0f; R.step_lo = 9.0f; }
+        }
+        const float meas = ring[(head + RING - 1u) % RING];
+        const float v_read = vc + bias_v;   /* VD_MON in CCM */
+        bool end_now = false;
+        if (blind_left > 0 && (--blind_left == 0 || meas > ((ilim_a > i0) ? ilim_a : i0) + 0.5f))   /* the guard */
+        {
+            /* regulator.c step 5d: re-seat the limit on the reading, slew from the current */
+            blind_left = 0;
+            end_now = true;
+            if (lim.limiting) { buck_ccm_limit_from(&lim, v_ref, v_read); }
+            if (slew_a_s > 0.0f && lim.limiting) { buck_ccm_limit_slew_from(&lim, meas); }
+        }
+        if (k > 0 && blind_left == 0)
+        {
+            buck_ccm_limit(&lim, &g, v_ref, v_read, meas);
+            s.u_v += lim.du_v;   /* regulator.c step 5d */
+            lim.du_v = 0.0f;
+        }
+        s.v_cmd_v = lim.v_cmd_v; s.v_lim_v = lim.v_lim_v; s.limiting = lim.limiting; s.ramp = lim.ramp;
+        s.v_floor_v = v_pack;
+        if (end_now) { buck_ccm_blind_end(&s, &g, &c, true, v_read); }
+        d = (float)boost_ccm_update(&s, &g, &c, v_read, v_in) / (float)c.period_ns;
+        lim.clamp = s.clamp;
+        filt += (meas - filt) / 32.0f;   /* POWER_FILTER_SHIFT 5 */
+        if (filt > ocp_a) { if (++over >= 20 && R.trip_ms < 0.0f) { R.trip_ms = (float)k * 0.05f; } }
+        else              { over = 0; }
+        for (int j = 0; j < 50; j++, t_us++)
+        {
+            for (int n = 0; n < 10; n++)
+            {
+                i = (vc - v_pack) / r;
+                il += (v_in * r1 - r_s * il - (1.0f - d) * (vc - offset_v)) / l * dt;
+                vc += ((1.0f - d) * il - i) / cc * dt;
+            }
+            if (i > R.pk) { R.pk = i; }
+            if (i < R.lo) { R.lo = i; }
+            if (k >= 40 && i < R.lo_late) { R.lo_late = i; }
+            if (g_nsched > 0 && (float)k * 0.05f >= g_sched[g_nsched - 1][0])
+            {
+                if (i - g.ilim_a > R.step_hi) { R.step_hi = i - g.ilim_a; }
+                if (i < R.step_lo)            { R.step_lo = i; }
+            }
+            const uint32_t ph = t_us % SCAN_US;
+            if (ph >= SCAN_US - ID_US) { acc += (i < clip_a) ? i : clip_a; }
+            if (ph == SCAN_US - 1u) { ring[head] = acc / (float)ID_US; head = (head + 1u) % RING; acc = 0.0f; }
+        }
+        if (k >= cycles - TAIL)
+        {
+            sum += i;
+            if (i > hi_t) { hi_t = i; }
+            if (i < lo_t) { lo_t = i; }
+        }
+    }
+    R.end = sum / (float)TAIL; R.pp = hi_t - lo_t; R.slewing = lim.slewing;
+    return R;
+}
+static EntryRes boost_entry_sim(float r, float ilim_a, float i0, float slew_a_s, int cycles)
+{
+    return boost_entry_sim_x(r, ilim_a, i0, slew_a_s, cycles, 0.0f, 0.0f, 0);
+}
+
+static void test_boost_entry_slew(void)
+{
+    printf("boost CCM forced entry into 31.2 V from 1.1 A, board-fitted plant (r_s 0.1 ohm, ID_MON clip, "
+           "SW_OCP), ceramics only, kl 100, 300 ms:\n");
+    /* The bench failure, reproduced: stepped to 5 A over a stiff path, SW_OCP trips. */
+    {
+        const EntryRes R = boost_entry_sim(0.03f, 5.0f, 1.1f, 0.0f, 6000);
+        printf("  no slew, 0.03 ohm, limit 5.0 A: peak %.2f A, SW_OCP %s %.1f ms\n", R.pk,
+               R.trip_ms < 0.0f ? "no" : "at", R.trip_ms < 0.0f ? 0.0 : (double)R.trip_ms);
+        CHECK(R.pk > 6.0f && R.trip_ms > 0.0f, "unslewed 5 A entry should overshoot and trip (peak %.2f A)", R.pk);
+    }
+    /* Slewed at 50 A/s: within 0.15 A of the limit at its peak, no SW_OCP, settled at the limit, no limit
+     * cycle, and the slew over, for any path 0.01-0.30 ohm and limits 3-5 A; from 0.4 A too (auto entry). */
+    const float rs[] = { 0.01f, 0.02f, 0.03f, 0.05f, 0.10f, 0.17f, 0.30f };
+    const float lims[] = { 3.0f, 4.0f, 4.5f, 5.0f };
+    const float i0s[] = { 1.1f, 0.4f };
+    float worst = -1.0f;
+    for (int a = 0; a < 2; a++)
+    {
+        for (int b = 0; b < 7; b++)
+        {
+            for (int k = 0; k < 4; k++)
+            {
+                const EntryRes R = boost_entry_sim(rs[b], lims[k], i0s[a], 50.0f, 6000);
+                if (R.pk - lims[k] > worst) { worst = R.pk - lims[k]; }
+                if (a == 0 && k == 3)
+                {
+                    printf("  slew 50 A/s, %.2f ohm, limit 5.0 A: peak %.2f low %.2f end %.2f A, p-p %.3f A, "
+                           "SW_OCP %s\n", (double)rs[b], R.pk, R.lo, R.end, R.pp, R.trip_ms < 0.0f ? "no" : "YES");
+                }
+                CHECK(R.pk < lims[k] + 0.15f && R.trip_ms < 0.0f, "slew from %.1f A, %.2f ohm limit %.1f A: peak "
+                      "%.2f A, trip %.1f ms", (double)i0s[a], (double)rs[b], (double)lims[k], R.pk, (double)R.trip_ms);
+                CHECK(fabsf(R.end - lims[k]) < 0.05f && R.pp < 0.1f && !R.slewing, "slew from %.1f A, %.2f ohm "
+                      "limit %.1f A: end %.2f A, p-p %.2f A, slewing %u", (double)i0s[a], (double)rs[b],
+                      (double)lims[k], R.end, R.pp, R.slewing);
+            }
+        }
+    }
+    printf("  slew 50 A/s: worst peak over the limit %.3f A (paths 0.01-0.30 ohm, limits 3-5 A, from 1.1 and "
+           "0.4 A)\n", (double)worst);
+}
+
+static void test_boost_entry_blind(void)
+{
+    printf("boost CCM entry with the open-loop window (blind, 20 PID cycles = 1 ms), VD_MON's CCM reading off the "
+           "DCM one by bias, the entry's u0 off by err, slew 50 A/s, 300 ms:\n");
+    /* Without the window, a +0.3 V jump in the reading (bench 2026-11-13) drives u to its floor at the entry and
+     * the current far under the entry's (the bench's ID_MON, which reads no negative current, showed ~0 A for
+     * 8 ms, then a ring to 3.3 A). */
+    {
+        const EntryRes R = boost_entry_sim_x(0.03f, 5.0f, 0.6f, 50.0f, 6000, 0.3f, 0.0f, 0);
+        printf("  no window, bias +0.3 V, 0.03 ohm, from 0.6 A: lowest after 2 ms %.2f A\n", R.lo_late);
+        CHECK(R.lo_late < 0.0f, "no window: the reading jump should dip the current (lowest %.2f A)", R.lo_late);
+    }
+    /* With it, whatever the jump (-0.3..+0.3 V) and a 0.1 V error in the guess either way: no more than 0.15 A
+     * over the limit, never 0.4 A under the entry current, no SW_OCP, settled at the limit or the ceiling
+     * ((above - bias) / r), no limit cycle. */
+    const float rs[] = { 0.01f, 0.02f, 0.03f, 0.05f, 0.10f, 0.17f, 0.30f };
+    const float bs[] = { -0.3f, 0.0f, 0.3f }, es[] = { -0.1f, 0.0f, 0.1f }, ls[] = { 3.0f, 5.0f }, is[] = { 0.6f, 1.1f };
+    float wpk = -9.0f, wlo = 9.0f;
+    for (int b = 0; b < 3; b++)
+    for (int e = 0; e < 3; e++)
+    for (int p = 0; p < 7; p++)
+    for (int l = 0; l < 2; l++)
+    for (int a = 0; a < 2; a++)
+    {
+        const EntryRes R = boost_entry_sim_x(rs[p], ls[l], is[a], 50.0f, 6000, bs[b], es[e], 20);
+        const float ceil_a = (1.6f - bs[b]) / rs[p];
+        const float want = (ls[l] < ceil_a) ? ls[l] : ceil_a;
+        if (R.pk - ls[l] > wpk) { wpk = R.pk - ls[l]; }
+        if (R.lo - is[a] < wlo) { wlo = R.lo - is[a]; }
+        CHECK(R.pk < ls[l] + 0.15f && R.lo > is[a] - 0.4f && R.trip_ms < 0.0f,
+              "window: bias %+.1f err %+.1f %.2f ohm limit %.0f from %.1f A: peak %.2f low %.2f trip %.1f",
+              (double)bs[b], (double)es[e], (double)rs[p], (double)ls[l], (double)is[a], R.pk, R.lo, (double)R.trip_ms);
+        CHECK(fabsf(R.end - want) < 0.05f && R.pp < 0.1f,
+              "window: bias %+.1f err %+.1f %.2f ohm limit %.0f from %.1f A: end %.2f (want %.2f) p-p %.2f",
+              (double)bs[b], (double)es[e], (double)rs[p], (double)ls[l], (double)is[a], R.end, want, R.pp);
+    }
+    printf("  window: worst peak over the limit %.3f A, worst low under the entry current %.2f A (bias -0.3..+0.3 V, "
+           "err -0.1..+0.1 V, 0.01-0.30 ohm, limits 3 and 5 A, from 0.6 and 1.1 A)\n", (double)wpk, (double)wlo);
+}
+
+static void test_boost_limit_steps(void)
+{
+    printf("boost CCM into the pack, limit steps mid-run (entry from 0.6 A with the window, VD_MON +0.3 V in CCM, "
+           "slew 50 A/s, step at 200 ms, 300 ms after):\n");
+    /* Up: the slewed climb with u running from a re-seat (buck_ccm_limit du_v); down: the limit falls at
+     * once and v_lim walks the current down.  Within 0.15 A over the new limit after a step up, not under it
+     * by more than 0.15 A after a step down, settled, no limit cycle, no SW_OCP; 0.01-0.30 ohm. */
+    const float steps[][2] = { { 1.0f, 5.0f }, { 5.0f, 1.0f }, { 3.0f, 5.0f }, { 5.0f, 3.0f }, { 2.0f, 4.0f },
+                               { 4.0f, 2.0f }, { 5.0f, 0.3f }, { 0.3f, 5.0f } };
+    const float rs[] = { 0.01f, 0.02f, 0.03f, 0.05f, 0.10f, 0.17f, 0.30f };
+    for (unsigned k = 0; k < sizeof steps / sizeof steps[0]; k++)
+    {
+        float sched[1][2] = { { 200.0f, steps[k][1] } };
+        g_sched = (const float (*)[2])sched;
+        g_nsched = 1;
+        float hi = -9.0f, lo = 9.0f;
+        for (int p = 0; p < 7; p++)
+        {
+            const EntryRes R = boost_entry_sim_x(rs[p], steps[k][0], 0.6f, 50.0f, 10000, 0.3f, 0.0f, 20);
+            const float ceil_a = (1.6f - 0.3f) / rs[p];
+            const float want = (steps[k][1] < ceil_a) ? steps[k][1] : ceil_a;
+            const bool up = steps[k][1] > steps[k][0];
+            if (up && R.step_hi > hi) { hi = R.step_hi; }
+            if (R.step_lo < lo)       { lo = R.step_lo; }
+            CHECK(R.trip_ms < 0.0f && fabsf(R.end - want) < 0.05f && R.pp < 0.1f,
+                  "step %.1f->%.1f A, %.2f ohm: trip %.1f end %.2f (want %.2f) p-p %.2f", (double)steps[k][0],
+                  (double)steps[k][1], (double)rs[p], (double)R.trip_ms, R.end, want, R.pp);
+            CHECK(!up || R.step_hi < 0.15f, "step %.1f->%.1f A, %.2f ohm: %.2f A over", (double)steps[k][0],
+                  (double)steps[k][1], (double)rs[p], R.step_hi);
+            CHECK(R.step_lo > ((up ? steps[k][0] : want) - 0.15f), "step %.1f->%.1f A, %.2f ohm: low %.2f A",
+                  (double)steps[k][0], (double)steps[k][1], (double)rs[p], R.step_lo);
+        }
+        if (steps[k][1] > steps[k][0])
+        {
+            printf("  %.1f -> %.1f A: worst %+.3f A over the new limit, lowest after the step %.2f A\n",
+                   (double)steps[k][0], (double)steps[k][1], (double)hi, (double)lo);
+        }
+        else
+        {
+            printf("  %.1f -> %.1f A: lowest after the step %.2f A\n", (double)steps[k][0], (double)steps[k][1],
+                   (double)lo);
+        }
+    }
+    g_sched = NULL;
+    g_nsched = 0;
+    /* An entry above the limit (DCM at 0.6 A, limit 0.3 A).  The excursion is the entry's guess: here u0
+     * (-0.44 V) is about 0.14 V over what the model's plant needs at 0.6 A, so the first duty puts ~0.75 A on
+     * top until the guard (0.5 A over the larger of the limit and the entry current) ends the window at
+     * the next scan (0.6 ms); the limit then walks it down in ~5 ms.  Bounded under 1.5 A, settled. */
+    float pk = 0.0f;
+    for (int p = 0; p < 7; p++)
+    {
+        const EntryRes R = boost_entry_sim_x(rs[p], 0.3f, 0.6f, 50.0f, 4000, 0.3f, 0.0f, 20);
+        if (R.pk > pk) { pk = R.pk; }
+        CHECK(R.pk < 1.5f && R.lo > 0.15f && fabsf(R.end - 0.3f) < 0.05f, "entry 0.6 A into 0.3 A, %.2f ohm: "
+              "peak %.2f low %.2f end %.2f", (double)rs[p], R.pk, R.lo, R.end);
+    }
+    printf("  entry from 0.6 A into a 0.3 A limit: peak %.2f A\n", (double)pk);
+}
+
+/* A laptop on 48 V (2026-11-13: the target, a Framework at 48 V / 5 A): boost CCM from 24.4 V holding 48 V on
+ * the board's ceramics only (c_out, under 48 V of bias), a cable (r_c, l_c) to the laptop's input capacitance
+ * c_l and its sink current: standby 0.2 A, from T1 up to i_hi (edge a_per_ms; 0 = a step), from T2 back to 0
+ * at the same edge (release, still plugged) or with the cable gone at once (unplug).  PD's settings: the
+ * limit at ilim on ID_MON's newest scan (clipped 5.45 A) at kl 100, no slew, no window; the law reads V_out
+ * as the mean over the last PID cycle.  Not modelled: DCM (the start from 0 V runs in DCM up to the CCM
+ * entry), CCM's exit to DCM over the band, SW_OVP (3 PID cycles over 110 %), the ripple.
+ * vb_*: the board's V_out; vl_*: the laptop's; ib_max: the cable current; pp: V_out p-p in the 10 ms
+ * before T2 (a limit cycle shows here). */
+typedef struct { float vb_max, vl_min, vl_max, ib_max, pp, after_max; } LapRes;
+static LapRes laptop_sim(float c_out_uf, float c_l_uf, float l_c_uh, float r_c, float i_hi, float a_per_ms,
+                         float ilim, bool unplug)
+{
+    const BuckCcmTimingCfg c = { .period_ns = 5000u, .pulse_start_ns = 360u, .dt_ns = 20u, .refresh_ns = 300u,
+                                 .refresh_interval_ns = 5000u, .min_on_ns = 100u, .min_q2_end_ns = 60u };
+    const BuckCcmGains g = { .ki = 3142.0f, .kp = 0.0f, .u_min_v = -1.0f, .u_max_v = 2.0f, .dt_s = 50e-6f,
+                             .ilim_a = ilim, .kl = 100.0f, .dt_lim_s = 50e-6f, .slew_a_s = 0.0f };
+    const float v_in = 24.4f, v_ref = 48.0f, l = 4.7e-6f, offset_v = 0.687f, r_s = 0.10f, dt = 0.1e-6f;
+    const float cb = c_out_uf * 1e-6f, cl = c_l_uf * 1e-6f, lc = l_c_uh * 1e-6f, i_sb = 0.2f;
+    const float r1 = 1.0f - buck_ccm_refresh_share(&c);
+    const float T1 = 30.0f, T2 = 60.0f, TEND = 90.0f;
+    enum { SCAN_US = 560, ID_US = 114, RING = 32 };
+    float ring[RING], acc = 0.0f;
+    for (int k = 0; k < RING; k++) { ring[k] = i_sb; }
+    uint32_t head = 0u, t_us = 0u;
+    float d = 0.5f;
+    for (int it = 0; it < 60; it++) { d = 1.0f - (v_in * r1 - r_s * i_sb / (1.0f - d)) / (v_ref - offset_v); }
+    float il = i_sb / (1.0f - d), vb = v_ref, vl = v_ref - r_c * i_sb, ic = i_sb, i_out = i_sb, v_acc = vb;
+    BuckCcmState s = { 0 }, lim = { 0 };
+    buck_ccm_reset(&lim, 0.0f, v_ref, vb);
+    buck_ccm_reset(&s, v_in * r1 / (1.0f - d) - v_ref, v_ref, vb);   /* steady at 48 V */
+    LapRes R = { vb, vl, vl, 0.0f, 0.0f, vb };
+    float hi_t = -1e9f, lo_t = 1e9f;
+    bool plugged = true;
+    for (int k = 0; k < (int)(TEND / 0.05f); k++)
+    {
+        const float tm = (float)k * 0.05f;
+        buck_ccm_limit(&lim, &g, v_ref, v_acc, ring[(head + RING - 1u) % RING]);
+        s.v_cmd_v = lim.v_cmd_v; s.v_lim_v = lim.v_lim_v; s.limiting = lim.limiting; s.ramp = lim.ramp;
+        d = (float)boost_ccm_update(&s, &g, &c, v_acc, v_in) / (float)c.period_ns;
+        lim.clamp = s.clamp;
+        float vsum = 0.0f;
+        for (int j = 0; j < 50; j++, t_us++)
+        {
+            for (int n = 0; n < 10; n++)
+            {
+                const float t = tm + (float)(j * 10 + n) * dt * 1e3f;
+                float isink = i_sb;
+                if (t >= T1)
+                {
+                    isink = (a_per_ms <= 0.0f) ? i_hi : fminf(i_hi, i_sb + a_per_ms * (t - T1));
+                }
+                if (t >= T2)
+                {
+                    if (unplug) { plugged = false; }
+                    else        { isink = (a_per_ms <= 0.0f) ? 0.0f : fmaxf(0.0f, i_hi - a_per_ms * (t - T2)); }
+                }
+                il += (v_in * r1 - r_s * il - (1.0f - d) * (vb - offset_v)) / l * dt;
+                if (plugged)
+                {
+                    ic += (vb - vl - r_c * ic) / lc * dt;
+                    vl += (ic - isink) / cl * dt;
+                    i_out = ic;
+                }
+                else { i_out = 0.0f; }
+                vb += ((1.0f - d) * il - i_out) / cb * dt;
+            }
+            vsum += vb;
+            if (tm < T2)
+            {
+                if (vb > R.vb_max) { R.vb_max = vb; }
+                if (vl < R.vl_min) { R.vl_min = vl; }
+                if (vl > R.vl_max) { R.vl_max = vl; }
+                if (i_out > R.ib_max) { R.ib_max = i_out; }
+            }
+            else if ((unplug ? vb : vl) > R.after_max) { R.after_max = unplug ? vb : vl; }
+            const uint32_t ph = t_us % SCAN_US;
+            if (ph >= SCAN_US - ID_US) { acc += fminf(i_out, 5.45f); }
+            if (ph == SCAN_US - 1u) { ring[head] = acc / (float)ID_US; head = (head + 1u) % RING; acc = 0.0f; }
+        }
+        v_acc = vsum / 50.0f;
+        if (tm >= T2 - 10.0f && tm < T2) { if (vb > hi_t) { hi_t = vb; } if (vb < lo_t) { lo_t = vb; } }
+    }
+    R.pp = hi_t - lo_t;
+    return R;
+}
+
+static void test_laptop_48v(void)
+{
+    printf("a laptop on 48 V, boost CCM from 24.4 V, ceramics only, PD settings (limit 5.25 A, no slew, no "
+           "window), cable 0.05 ohm (model; not run on the bench):\n");
+    const float cos_[] = { 4.0f, 9.0f, 15.0f }, cls[] = { 10.0f, 47.0f, 100.0f }, lcs[] = { 0.3f, 1.0f };
+    const float edges[] = { 1.0f, 10.0f, 0.0f };
+    const char *names[] = { "1 A/ms", "10 A/ms", "a step" };
+    for (int e = 0; e < 3; e++)
+    {
+        float lmin = 99.0f, lmax = 0.0f, rmax = 0.0f, umax = 0.0f, ppmax = 0.0f, imax = 0.0f;
+        for (int a = 0; a < 3; a++)
+        for (int b = 0; b < 3; b++)
+        for (int q = 0; q < 2; q++)
+        {
+            const LapRes R = laptop_sim(cos_[a], cls[b], lcs[q], 0.05f, 5.0f, edges[e], 5.25f, false);
+            const LapRes U = laptop_sim(cos_[a], cls[b], lcs[q], 0.05f, 5.0f, edges[e], 5.25f, true);
+            lmin = fminf(lmin, R.vl_min); lmax = fmaxf(lmax, R.vl_max); rmax = fmaxf(rmax, R.after_max);
+            umax = fmaxf(umax, U.after_max); ppmax = fmaxf(ppmax, R.pp); imax = fmaxf(imax, R.ib_max);
+            /* What holds: a load that moves at 10 A/ms or slower stays within 48 V +-5 % at the laptop,
+             * through 0.2 -> 5 -> 0 A, without a limit cycle. */
+            if (edges[e] > 0.0f && edges[e] <= 10.0f)
+            {
+                CHECK(R.vl_min > 45.6f && R.vl_max < 50.4f && R.after_max < 50.4f && R.pp < 0.1f,
+                      "48 V, %s, C_out %.0f uF, C_laptop %.0f uF, cable %.1f uH: laptop %.2f..%.2f V, release "
+                      "max %.2f V, p-p %.3f V", names[e], (double)cos_[a], (double)cls[b], (double)lcs[q],
+                      R.vl_min, R.vl_max, R.after_max, R.pp);
+            }
+        }
+        printf("  0.2 -> 5 A at %-7s: laptop %.2f..%.2f V, cable current max %.2f A, p-p at 5 A max %.3f V; "
+               "release max %.2f V; unplug: board max %.2f V\n", names[e], (double)lmin, (double)lmax,
+               (double)imax, (double)ppmax, (double)rmax, (double)umax);
+    }
+    /* Known gaps, printed, not checked (C_out 4-15 uF, C_laptop 10-100 uF, cable 0.3-1 uH): a hard step
+     * puts the laptop 3-7 V under 48 V and, at 47 uF behind 1 uH, the limit cycles at about 1 V p-p;
+     * an unplug at 5 A takes the board's V_out to 53-60 V before SW_OVP's 3 PID cycles. */
+}
+
+/* The DCM restart at a CCM exit (buck_ccm_exit_seed_ma), from the bench trace of 2026-11-15 21:41 (15 V, power
+ * bank): the per-cycle current fell 2021 -> 13 mA in about 1 ms, the filtered one still read about 1.06 A at the
+ * exit, and DCM restarted at 1586 mA; one PID cycle later V_out was 16.97 V (+1.97 V, so about 40 uF at 15 V).
+ * Check: with no load, one PID cycle at the seed stays under SW_OVP's 110 % at 5, 9 and 15 V, even with the
+ * largest learned offset (400 mA), and a steady load still restarts at the load plus the learned offset.
+ * A single-cycle bound: the loop's own correction in the cycles after is not modelled. */
+static void test_exit_seed(void)
+{
+    const float c_f = 40e-6f, t_pid = 50e-6f, i_max = 3000.0f;
+    printf("CCM exit seed: bench 1586 mA -> %+.2f V in one PID cycle at 40 uF\n", (double)(1.586f * t_pid / c_f));
+    const float vs[] = { 5.0f, 9.0f, 15.0f }, table[] = { 169.0f, 150.0f, 83.0f };
+    for (int k = 0; k < 3; k++)
+    {
+        const float i0 = buck_ccm_exit_seed_ma(1060.0f, 13.0f, true, 400.0f, table[k], 0.3f * i_max, i_max);
+        const float dv = (i0 - 13.0f) * 1e-3f * t_pid / c_f;
+        printf("  %2.0f V, load 2.02 A -> 13 mA, learned add 400 mA: seed %4.0f mA, %+.2f V in one PID cycle\n",
+               (double)vs[k], (double)i0, (double)dv);
+        CHECK(vs[k] + dv < 1.10f * vs[k], "exit seed at %.0f V: %.0f mA, V_out %.2f V over 110 %%",
+              (double)vs[k], (double)i0, (double)(vs[k] + dv));
+    }
+    /* A steady light load: newest and filtered agree; the seed is the load plus the learned add, as before. */
+    CHECK(fabsf(buck_ccm_exit_seed_ma(900.0f, 905.0f, true, 300.0f, 83.0f, 900.0f, i_max) - 1200.0f) < 0.5f,
+          "steady load: seed should be 900 + 300 mA");
+    /* No learned add (other setpoint): the table's. */
+    CHECK(fabsf(buck_ccm_exit_seed_ma(900.0f, 905.0f, true, -1.0f, 83.0f, 900.0f, i_max) - 983.0f) < 0.5f,
+          "no learned add: seed should be 900 + 83 mA");
+    /* A load that rose since the filter: the filtered value bounds it (as before). */
+    CHECK(fabsf(buck_ccm_exit_seed_ma(900.0f, 1400.0f, true, 300.0f, 83.0f, 900.0f, i_max) - 1200.0f) < 0.5f,
+          "rising load: seed should stay at the filtered 900 + 300 mA");
+    /* No handover: the 30 % floor still applies; clamps at 0 and the ceiling. */
+    CHECK(fabsf(buck_ccm_exit_seed_ma(1060.0f, 13.0f, false, -1.0f, 83.0f, 900.0f, i_max) - 900.0f) < 0.5f,
+          "no handover: floor");
+    CHECK(buck_ccm_exit_seed_ma(-50.0f, -80.0f, true, -1.0f, 0.0f, 0.0f, i_max) == 0.0f, "seed below 0");
+    CHECK(buck_ccm_exit_seed_ma(5000.0f, 5000.0f, true, 400.0f, 83.0f, 0.0f, i_max) == i_max, "seed over the ceiling");
+}
+
+static void test_floor(void)
+{
+    const float buck_off = floor_sim(false, 0.0f), buck_on = floor_sim(false, 15.0f);
+    const float boost_off = floor_sim(true, 0.0f), boost_on = floor_sim(true, 26.0f);
+    printf("no-reverse floor, reference 2 V under the pack: min I_L buck %.2f A (off) %.2f A (on), "
+           "boost %.2f A (off) %.2f A (on)\n", buck_off, buck_on, boost_off, boost_on);
+    CHECK(buck_off < -1.0f, "buck without the floor should reverse (min %.2f A)", buck_off);
+    CHECK(buck_on > -0.05f, "buck floor let L1 reverse to %.2f A", buck_on);
+    CHECK(boost_off < -1.0f, "boost without the floor should reverse (min %.2f A)", boost_off);
+    CHECK(boost_on > -0.05f, "boost floor let L1 reverse to %.2f A", boost_on);
+
+    const float buck_pack = floor_overshoot_sim(false, false, 2.0f, 0.0f, 0.0f, NULL);
+    const float buck_track = floor_overshoot_sim(false, true, 2.0f, 0.0f, 0.0f, NULL);
+    const float boost_pack = floor_overshoot_sim(true, false, 2.0f, 0.0f, 0.0f, NULL);
+    const float boost_track = floor_overshoot_sim(true, true, 2.0f, 0.0f, 0.0f, NULL);
+    printf("no-reverse floor, L1 from 5 A, limit 2 A: I_L after 100 ms buck %.2f A (floor at the pack) "
+           "%.2f A (at V_out), boost %.2f A / %.2f A\n", buck_pack, buck_track, boost_pack, boost_track);
+    CHECK(fabsf(buck_pack - 2.0f) < 0.1f, "buck floor at the pack: the limit should hold 2 A (%.2f A)", buck_pack);
+    CHECK(fabsf(boost_pack - 2.0f) < 0.1f, "boost floor at the pack: the limit should hold 2 A (%.2f A)", boost_pack);
+
+    /* The plant makes 0.5 V over the model (the board), u0 -0.35 V; and the
+     * other way, no offset with the same u0 (u0 0.35 V on the unsafe side).
+     * Limit 1 A: the floor must not set the current.  The floor is off while
+     * the limit acts (section 15), so the limit's undershoot on the way down
+     * from 5 A is not caught: L1 dips to -0.07..-0.21 A for part of a
+     * millisecond in this averaged model; steady state is 1 A.  Bound on the
+     * dip: -0.25 A. */
+    for (int b = 0; b < 2; b++)
+    {
+        for (int k = 0; k < 2; k++)
+        {
+            const float off = k ? 0.0f : 0.5f;
+            float lo;
+            const float i_end = floor_overshoot_sim(b != 0, false, 1.0f, off, -0.35f, &lo);
+            printf("  %s, plant %+.1f V over the model, u0 -0.35 V, limit 1 A: I_L %.2f A, lowest %.2f A\n",
+                   b ? "boost" : "buck", off, i_end, lo);
+            CHECK(fabsf(i_end - 1.0f) < 0.1f, "%s offset %.1f V: the limit should hold 1 A (%.2f A)",
+                  b ? "boost" : "buck", off, i_end);
+            CHECK(lo > -0.25f, "%s offset %.1f V: L1 reversed to %.2f A", b ? "boost" : "buck", off, lo);
+        }
+    }
+
+    /* The board (2026-11-09 section 15): from 0 A, ceiling 0.5 V over the
+     * pack, plant 0.5 V over the model, u0 -0.627 V.  Under the limit the
+     * integrator runs and winds u up; once the limit acts u holds, and a
+     * floor at the pack then kept V_out at pack + 0.5 V, 3 A at a 2 A limit. */
+    for (int b = 0; b < 2; b++)
+    {
+        float lo;
+        const float i_end = floor_overshoot_sim_from(b != 0, false, 2.0f, 0.5f, -0.627f, 0.0f, 0.5f, &lo);
+        printf("  %s, from 0 A, ceiling 0.5 V over the pack, plant +0.5 V, u0 -0.627 V, limit 2 A: I_L %.2f A, "
+               "lowest %.2f A\n", b ? "boost" : "buck", i_end, lo);
+        CHECK(fabsf(i_end - 2.0f) < 0.1f, "%s from 0 A: the limit should hold 2 A (%.2f A)", b ? "boost" : "buck", i_end);
+        CHECK(lo > -0.05f, "%s from 0 A: L1 reversed to %.2f A", b ? "boost" : "buck", lo);
+    }
+}
+
+int main(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+#ifdef SIM_REPLAY
+    if (argc == 9) { g_close_shift_us = (float)atof(argv[8]); argc = 8; }
+    if (argc == 8) { replay((float)atof(argv[1]), (float)atof(argv[2]), (float)atof(argv[3]), (float)atof(argv[4]),
+                            (float)atof(argv[5]), (float)atof(argv[6]), argv[7]); return 0; }
+#endif
+    test_timing();
+    test_law();
+#ifdef SIM_EXPLORE
+    explore_reconnect();
+    return 0;
+#endif
+#ifdef SIM_FAST
+    explore_fast();
+    return 0;
+#endif
+#ifdef SIM_DUMP
+    dump_traces(SIM_DUMP);
+    return 0;
+#endif
+    test_unclip();
+    test_limit();
+    test_entry();
+    test_handover();
+    test_exit_seed();
+    test_boost();
+    test_band();
+    test_floor();
+    test_ilim_lag();
+    test_ilim_entry();
+    test_boost_pack();
+    test_boost_entry_slew();
+    test_boost_entry_blind();
+    test_boost_limit_steps();
+    test_laptop_48v();
+    if (failures) { printf("%d failure(s)\n", failures); return 1; }
+    printf("buck_ccm: all checks passed\n");
+    return 0;
+}

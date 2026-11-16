@@ -1,0 +1,114 @@
+{
+ "u28_p3000_ac": {
+  "load_pout_mw_telemetry": 3007,
+  "load_vin_mv": 28168,
+  "hold": {
+   "fast_rms_mv": 60.3,
+   "fast_pp_mv": 1114,
+   "dips_over_100mv_per_s": 78.0,
+   "dips_over_200mv_per_s": 15.6,
+   "deepest_dip_mv": 423
+  },
+  "release": {
+   "t_s": 4.2361,
+   "peak_mv": 666,
+   "peak_pct_of_28v": 2.38,
+   "peak_at_ms": 3.5,
+   "above_90pct_of_peak_ms": 7.1,
+   "within_1pct_after_ms": 25.6,
+   "within_0p5pct_after_ms": 99.4
+  }
+ },
+ "u28_p500_ac_vinfix": {
+  "load_pout_mw_telemetry": 498,
+  "load_vin_mv": 28254,
+  "hold": {
+   "fast_rms_mv": 13.3,
+   "fast_pp_mv": 173,
+   "dips_over_100mv_per_s": 0.0,
+   "dips_over_200mv_per_s": 0.0,
+   "deepest_dip_mv": 0
+  },
+  "release": {
+   "t_s": 4.1396,
+   "peak_mv": 418,
+   "peak_pct_of_28v": 1.49,
+   "peak_at_ms": 0.95,
+   "above_90pct_of_peak_ms": 1.4,
+   "within_1pct_after_ms": 3.2,
+   "within_0p5pct_after_ms": 7.5,
+   "fit": {
+    "model": "overdamped",
+    "zeta": 3.46,
+    "fn_hz": 175.6,
+    "residual_rms_mv": 10.2,
+    "params": [
+     0.515,
+     162.9153,
+     7476.4137,
+     -0.0224
+    ]
+   }
+  }
+ },
+ "u28_p1000_ac_vinfix": {
+  "load_pout_mw_telemetry": 1001,
+  "load_vin_mv": 28251,
+  "hold": {
+   "fast_rms_mv": 17.0,
+   "fast_pp_mv": 196,
+   "dips_over_100mv_per_s": 0.4,
+   "dips_over_200mv_per_s": 0.0,
+   "deepest_dip_mv": 103
+  },
+  "release": {
+   "t_s": 4.1247,
+   "peak_mv": 520,
+   "peak_pct_of_28v": 1.86,
+   "peak_at_ms": 0.52,
+   "above_90pct_of_peak_ms": 2.8,
+   "within_1pct_after_ms": 6.4,
+   "within_0p5pct_after_ms": 10.1
+  }
+ },
+ "u28_p2000_ac_vinfix": {
+  "load_pout_mw_telemetry": 1996,
+  "load_vin_mv": 28261,
+  "hold": {
+   "fast_rms_mv": 16.8,
+   "fast_pp_mv": 227,
+   "dips_over_100mv_per_s": 1.6,
+   "dips_over_200mv_per_s": 0.0,
+   "deepest_dip_mv": 133
+  },
+  "release": {
+   "t_s": 4.1379,
+   "peak_mv": 609,
+   "peak_pct_of_28v": 2.17,
+   "peak_at_ms": 0.52,
+   "above_90pct_of_peak_ms": 5.1,
+   "within_1pct_after_ms": 15.8,
+   "within_0p5pct_after_ms": 19.6
+  }
+ },
+ "u28_p3000_ac_vinfix": {
+  "load_pout_mw_telemetry": 3000,
+  "load_vin_mv": 28257,
+  "hold": {
+   "fast_rms_mv": 14.9,
+   "fast_pp_mv": 180,
+   "dips_over_100mv_per_s": 0.0,
+   "dips_over_200mv_per_s": 0.0,
+   "deepest_dip_mv": 0
+  },
+  "release": {
+   "t_s": 4.1351,
+   "peak_mv": 666,
+   "peak_pct_of_28v": 2.38,
+   "peak_at_ms": 1.54,
+   "above_90pct_of_peak_ms": 8.3,
+   "within_1pct_after_ms": 21.8,
+   "within_0p5pct_after_ms": 25.6
+  }
+ }
+}

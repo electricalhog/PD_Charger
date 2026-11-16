@@ -1,0 +1,530 @@
+/**
+ * @file    pd_vbus.c
+ * @brief   BSP_USBPD_PWR_* on this board's regulator and output switch.
+ *
+ * See pd_vbus.h.  Compiled to nothing unless PD_OWNS_VBUS; the CMake option
+ * PD_VBUS_PATH_CHARGER also drops the X-NUCLEO-SRC1M1 BSP from the link, so
+ * these strong definitions replace the __weak stubs in usbpd_pwr_user.c.
+ *
+ * Contexts: VBUSOn/Off run in the CAD and PE tasks, SetVoltage_* and
+ * pd_vbus_wait_in_range in the PE task, pd_vbus_poll in the default task.
+ * regulator_start() blocks for up to INPUT_PGOOD_TIMEOUT_MS + 2 ms
+ * (HAL_Delay), as it already did when DPM_SetupNewPower called it.
+ */
+
+#include "pd_vbus.h"
+
+#if PD_OWNS_VBUS
+
+#include "pd_bench_config.h"
+#include "pd_policy.h"
+#include "regulator.h"
+#include "regulator_config.h"
+#include "adc_monitor.h"
+#include "main.h"
+#include "cmsis_os.h"
+#include "usbpd_core.h"
+#include "usbpd_dpm_core.h"
+#include "usbpd_dpm_user.h"
+#include "usbpd_pwr_user.h"
+
+/* Bench dry run (CMake option PD_BENCH_DRY_RUN): the PD stack is told VBUS
+ * follows the contract, but the regulator never starts and the output
+ * switch stays open.  For protocol tests (VCONN, SOP' cable discovery, EPR
+ * messages) while nothing can or should take power: 2026-10-05, a sink whose
+ * TCPP02 sat unconfigured showed only its dead-battery Rd, and the source
+ * started VBUS 1355 times (about every 6 s, ending in a light-load SW_OVP)
+ * with nobody answering on SOP.                                           */
+#if defined(PD_BENCH_DRY_RUN) && (PD_BENCH_DRY_RUN)
+#define DRY_RUN 1u
+#else
+#define DRY_RUN 0u
+#endif
+/* Read by `bu pd status`. */
+__attribute__((used)) const volatile uint32_t pd_bench_dry_run = DRY_RUN;
+/* Dry run: the VBUS the stack is told about [mV], 0 when off. */
+static volatile uint32_t dry_vbus_mv;
+
+/* HAL tick at which the output switch was last seen opening. */
+static volatile uint32_t vbus_off_tick;
+static volatile bool     vbus_seen_on;
+static bool              fault_reset_sent;
+/* Bench time cap (PD_BENCH_HIGH_V_MAX_MS): tick at which the contract went
+ * above PD_BENCH_HIGH_V_MV, and the Hard Resets it has sent (bu mem read). */
+static uint32_t          high_v_since_tick;
+static bool              high_v_active;
+__attribute__((used)) volatile uint32_t pd_bench_high_v_resets;
+/* Regulation lost after PS_RDY (PD_VBUS_LOST_MS): since when, and how many
+ * Hard Resets it has sent (bu mem read). */
+static uint32_t          vbus_lost_since_tick;
+static bool              vbus_lost_active;
+__attribute__((used)) volatile uint32_t pd_vbus_lost_resets;
+/* PPS contract (plans/pps.md): the current limit it replaced, and the
+ * vPpsShutdown timer. */
+static volatile bool     pps_active;
+static uint16_t          pps_saved_ilim_ma;
+static uint32_t          pps_low_since_tick;
+static bool              pps_low_active;
+
+/* PPS: the contract's Current Limit, and the UVP floor the fold needs.  The
+ * CCM setting stays (auto by default): the limit acts in CCM and DCM alike,
+ * and a fast drop in V_out needs DCM (regulator.c step 5d).  Entered from
+ * SetVoltage_APDO (PE task). */
+static void pps_enter(uint32_t cl_ma)
+{
+    if (!pps_active)
+    {
+        pps_saved_ilim_ma    = regulator_ccm_ilim_ma;
+        pps_active           = true;
+    }
+    regulator_ccm_ilim_ma = (uint16_t)cl_ma;
+    regulator_cl_uvp_mv   = (uint16_t)(PD_PPS_MIN_MV * PD_PPS_UVP_PERMILLE / 1000u);
+    pd_status.contract_pps = 1u;
+    pd_status.pps_cl_ma    = cl_ma;
+}
+
+/* Back to the fixed-contract settings: a fixed request, VBUS off (detach,
+ * Hard Reset). */
+static void pps_leave(void)
+{
+    if (!pps_active)
+    {
+        return;
+    }
+    pps_active            = false;
+    pps_low_active        = false;
+    regulator_cl_uvp_mv   = 0u;
+    regulator_ccm_ilim_ma = pps_saved_ilim_ma;
+    pd_status.contract_pps = 0u;
+    pd_status.pps_cl_ma    = 0u;
+}
+
+static bool output_switch_closed(void)
+{
+    return (PIN_OUTPUT_EN_PORT->ODR & PIN_OUTPUT_EN_PIN) != 0u;
+}
+
+uint32_t pd_vbus_get_mv(void)
+{
+    if (DRY_RUN)
+    {
+        return dry_vbus_mv;
+    }
+    if (output_switch_closed() || vbus_seen_on)
+    {
+        /* vbus_seen_on: open, but pd_vbus_poll (10 ms) has not seen it yet,
+         * so vbus_off_tick is stale; a regulator SWITCH_PULSE can be shorter
+         * than a poll. */
+        return adc_measurements.v_out_mv;
+    }
+    /* Switch open: OUTPUT_DIS discharges the VBUS side, which no ADC sees. */
+    return ((HAL_GetTick() - vbus_off_tick) >= PD_VBUS_DISCHARGE_MS)
+               ? 0u : adc_measurements.v_out_mv;
+}
+
+uint32_t pd_vbus_wait_in_range(uint32_t target_mv, uint32_t timeout_ms)
+{
+    const uint32_t tol_mv = target_mv * PD_VBUS_TOLERANCE_PCT / 100u;
+    const uint32_t start  = HAL_GetTick();
+    uint32_t in_range = 0u;
+
+    if (DRY_RUN)
+    {
+        (void)timeout_ms;
+        return (dry_vbus_mv + tol_mv >= target_mv && dry_vbus_mv <= target_mv + tol_mv) ? 0u : UINT32_MAX;
+    }
+
+    for (;;)
+    {
+        uint32_t elapsed = HAL_GetTick() - start;
+        if (regulator_get_state() != REGULATOR_STATE_RUNNING)
+        {
+            return UINT32_MAX;
+        }
+        uint32_t v = adc_measurements.v_out_mv;
+        /* The ramp must be done, not just passing through the window: a
+         * 28 V ramp into 25 ohm reached 27.3 V, got PS_RDY, then sagged
+         * (2026-10-15). */
+        /* PPS: or in Current Limit, where V_out is wherever the load
+         * folds it (R3.2 7.1.4.2.1). */
+        bool ok = output_switch_closed() && regulator_commanded_mv == target_mv &&
+                  ((v + tol_mv >= target_mv && v <= target_mv + tol_mv) ||
+                   (pps_active && regulator_ccm_limiting));
+        in_range = ok ? in_range + 1u : 0u;
+        if (in_range >= 5u)              /* 5 consecutive 2 ms samples */
+        {
+            return elapsed;
+        }
+        if (elapsed >= timeout_ms)
+        {
+            return UINT32_MAX;
+        }
+        osDelay(2);
+    }
+}
+
+void pd_vbus_poll(void)
+{
+    if (pd_bench_dry_run)   /* the read keeps the symbol in the link */
+    {
+        return;     /* no output switch, no regulator faults to act on */
+    }
+    bool closed = output_switch_closed();
+    if (vbus_seen_on && !closed)
+    {
+        vbus_off_tick = HAL_GetTick();
+    }
+    vbus_seen_on = closed;
+
+    if (PD_BENCH_HIGH_V_MAX_MS != 0u)
+    {
+        bool high = DPM_Params[USBPD_PORT_0].PE_Power == USBPD_POWER_EXPLICITCONTRACT &&
+                    pd_status.contract_mv > PD_BENCH_HIGH_V_MV;
+        if (!high)
+        {
+            high_v_active = false;
+        }
+        else if (!high_v_active)
+        {
+            high_v_active     = true;
+            high_v_since_tick = HAL_GetTick();
+        }
+        else if ((HAL_GetTick() - high_v_since_tick) >= PD_BENCH_HIGH_V_MAX_MS)
+        {
+            high_v_active = false;   /* re-armed by the next contract above */
+            pd_bench_high_v_resets++;
+            pd_status_event(PD_EV_HIGH_V_CAP);
+            (void)USBPD_DPM_RequestHardReset(USBPD_PORT_0);
+        }
+    }
+
+    {
+        const uint32_t set = regulator_commanded_mv;
+        const uint32_t v   = adc_measurements.v_out_mv;
+        const uint32_t tol = set * PD_VBUS_LOST_PCT / 100u;
+        /* PPS in Current Limit: the fold is the contract, vPpsShutdown below
+         * is the floor. */
+        const bool cl = pps_active && regulator_ccm_limiting;
+        bool lost = DPM_Params[USBPD_PORT_0].PE_Power == USBPD_POWER_EXPLICITCONTRACT &&
+                    regulator_get_state() == REGULATOR_STATE_RUNNING && closed && !cl &&
+                    v + tol < set;   /* low side only: above is OVP's (and a
+                                        down-slew without reverse flow lags) */
+        if (!lost)
+        {
+            vbus_lost_active = false;
+        }
+        else if (!vbus_lost_active)
+        {
+            vbus_lost_active     = true;
+            vbus_lost_since_tick = HAL_GetTick();
+        }
+        else if ((HAL_GetTick() - vbus_lost_since_tick) >= PD_VBUS_LOST_MS)
+        {
+            vbus_lost_active = false;
+            pd_vbus_lost_resets++;
+            pd_status_event(PD_EV_VBUS_LOST);
+            (void)USBPD_DPM_RequestHardReset(USBPD_PORT_0);
+        }
+
+        bool low = DPM_Params[USBPD_PORT_0].PE_Power == USBPD_POWER_EXPLICITCONTRACT &&
+                   regulator_get_state() == REGULATOR_STATE_RUNNING && closed && cl &&
+                   v < PD_PPS_MIN_MV * PD_PPS_SHUTDOWN_PERMILLE / 1000u;
+        if (!low)
+        {
+            pps_low_active = false;
+        }
+        else if (!pps_low_active)
+        {
+            pps_low_active     = true;
+            pps_low_since_tick = HAL_GetTick();
+        }
+        else if ((HAL_GetTick() - pps_low_since_tick) >= PD_PPS_SHUTDOWN_MS)
+        {
+            pps_low_active = false;
+            pd_status.pps_shutdown_resets++;
+            pd_status_event(PD_EV_PPS_SHUTDOWN);
+            (void)USBPD_DPM_RequestHardReset(USBPD_PORT_0);
+        }
+    }
+
+    RegulatorState state = regulator_get_state();
+    if (state != REGULATOR_STATE_FAULT)
+    {
+        fault_reset_sent = false;
+    }
+    else if (!fault_reset_sent &&
+             DPM_Params[USBPD_PORT_0].PE_Power == USBPD_POWER_EXPLICITCONTRACT)
+    {
+        /* The FAULT stays latched (only `bu regulator clear-fault` releases
+         * it), so the Hard Reset ends with VBUS off rather than a retry.  */
+        fault_reset_sent = true;
+        pd_status.fault_hard_resets++;
+        pd_status_event(PD_EV_FAULT_HARDRESET);
+        (void)USBPD_DPM_RequestHardReset(USBPD_PORT_0);
+    }
+}
+
+/* =========================================================================
+ * BSP_USBPD_PWR_* (prototypes in usbpd_pwr_user.h)
+ * =========================================================================*/
+
+int32_t BSP_USBPD_PWR_Init(uint32_t Instance)
+{
+    return (Instance < USBPD_PWR_INSTANCES_NBR) ? BSP_ERROR_NONE : BSP_ERROR_WRONG_PARAM;
+}
+
+int32_t BSP_USBPD_PWR_Deinit(uint32_t Instance)
+{
+    return BSP_USBPD_PWR_Init(Instance);
+}
+
+int32_t BSP_USBPD_PWR_SetRole(uint32_t Instance, USBPD_PWR_PowerRoleTypeDef Role)
+{
+    if (Instance >= USBPD_PWR_INSTANCES_NBR) { return BSP_ERROR_WRONG_PARAM; }
+    return (Role == POWER_ROLE_SOURCE) ? BSP_ERROR_NONE : BSP_ERROR_FEATURE_NOT_SUPPORTED;
+}
+
+int32_t BSP_USBPD_PWR_SetPowerMode(uint32_t Instance, USBPD_PWR_PowerModeTypeDef PwrMode)
+{
+    (void)PwrMode;
+    return BSP_USBPD_PWR_Init(Instance);
+}
+
+int32_t BSP_USBPD_PWR_GetPowerMode(uint32_t Instance, USBPD_PWR_PowerModeTypeDef *PwrMode)
+{
+    if (Instance >= USBPD_PWR_INSTANCES_NBR || PwrMode == NULL) { return BSP_ERROR_WRONG_PARAM; }
+    *PwrMode = USBPD_PWR_MODE_NORMAL;
+    return BSP_ERROR_NONE;
+}
+
+int32_t BSP_USBPD_PWR_VBUSInit(uint32_t Instance)
+{
+    return BSP_USBPD_PWR_Init(Instance);
+}
+
+int32_t BSP_USBPD_PWR_VBUSDeInit(uint32_t Instance)
+{
+    return BSP_USBPD_PWR_Init(Instance);
+}
+
+int32_t BSP_USBPD_PWR_VBUSOn(uint32_t Instance)
+{
+    if (Instance >= USBPD_PWR_INSTANCES_NBR) { return BSP_ERROR_WRONG_PARAM; }
+
+    if (DRY_RUN)
+    {
+        dry_vbus_mv = 5000u;
+        return BSP_ERROR_NONE;
+    }
+
+    /* Attach or the end of a Hard Reset: vSafe5V. */
+    pd_interface_notify_voltage_contract(5000u);
+    if (regulator_get_state() == REGULATOR_STATE_IDLE)
+    {
+        regulator_start();
+    }
+    if (regulator_get_state() != REGULATOR_STATE_RUNNING)
+    {
+        pd_status.vbus_on_failures++;
+        pd_status_event(PD_EV_VBUS_ON_FAILED);
+        return BSP_ERROR_COMPONENT_FAILURE;
+    }
+    return BSP_ERROR_NONE;
+}
+
+int32_t BSP_USBPD_PWR_VBUSOff(uint32_t Instance)
+{
+    if (Instance >= USBPD_PWR_INSTANCES_NBR) { return BSP_ERROR_WRONG_PARAM; }
+
+    if (DRY_RUN)
+    {
+        dry_vbus_mv = 0u;
+        return BSP_ERROR_NONE;
+    }
+    pd_interface_notify_disconnect();   /* target 0, regulator_stop(): switch open, OUTPUT_DIS on */
+    pps_leave();
+    vbus_off_tick = HAL_GetTick();
+    vbus_seen_on  = false;
+    return BSP_ERROR_NONE;
+}
+
+int32_t BSP_USBPD_PWR_VBUSIsOn(uint32_t Instance, uint8_t *pState)
+{
+    if (Instance >= USBPD_PWR_INSTANCES_NBR || pState == NULL) { return BSP_ERROR_WRONG_PARAM; }
+    *pState = DRY_RUN ? (dry_vbus_mv != 0u) : (output_switch_closed() ? 1u : 0u);
+    return BSP_ERROR_NONE;
+}
+
+int32_t BSP_USBPD_PWR_VBUSSetVoltage_Fixed(uint32_t Instance,
+                                           uint32_t VbusTargetInmv,
+                                           uint32_t OperatingCurrent,
+                                           uint32_t MaxOperatingCurrent)
+{
+    (void)OperatingCurrent;
+    (void)MaxOperatingCurrent;
+    if (Instance >= USBPD_PWR_INSTANCES_NBR) { return BSP_ERROR_WRONG_PARAM; }
+
+    /* Never set anything the PDO table does not offer. */
+    if (VbusTargetInmv < 5000u || VbusTargetInmv > pd_policy_max_offered_mv())
+    {
+        return BSP_ERROR_WRONG_PARAM;
+    }
+    if (DRY_RUN)
+    {
+        dry_vbus_mv = VbusTargetInmv;
+        return BSP_ERROR_NONE;
+    }
+    pps_leave();
+    pd_interface_notify_voltage_contract(VbusTargetInmv);
+    return BSP_ERROR_NONE;
+}
+
+/* PPS: OperatingCurrent is the Current Limit (pd_policy_pps_cl_ma). */
+int32_t BSP_USBPD_PWR_VBUSSetVoltage_APDO(uint32_t Instance,
+                                          uint32_t VbusTargetInmv,
+                                          uint32_t OperatingCurrent,
+                                          int32_t Delta)
+{
+    (void)Delta;
+    if (Instance >= USBPD_PWR_INSTANCES_NBR) { return BSP_ERROR_WRONG_PARAM; }
+    if (pd_policy_pps_position() == 0u ||
+        VbusTargetInmv < PD_PPS_MIN_MV || VbusTargetInmv > PD_PPS_MAX_MV ||
+        OperatingCurrent == 0u || OperatingCurrent > PD_PPS_MAX_MA)
+    {
+        return BSP_ERROR_WRONG_PARAM;
+    }
+    if (DRY_RUN)
+    {
+        dry_vbus_mv = VbusTargetInmv;
+        return BSP_ERROR_NONE;
+    }
+    pps_enter(OperatingCurrent);
+    pd_interface_notify_voltage_contract(VbusTargetInmv);
+    return BSP_ERROR_NONE;
+}
+
+bool pd_vbus_pps_active(void)
+{
+    return pps_active;
+}
+
+int32_t BSP_USBPD_PWR_VBUSGetVoltage(uint32_t Instance, uint32_t *pVoltage)
+{
+    if (Instance >= USBPD_PWR_INSTANCES_NBR || pVoltage == NULL) { return BSP_ERROR_WRONG_PARAM; }
+    *pVoltage = pd_vbus_get_mv();
+    return BSP_ERROR_NONE;
+}
+
+int32_t BSP_USBPD_PWR_VBUSGetCurrent(uint32_t Instance, int32_t *pCurrent)
+{
+    if (Instance >= USBPD_PWR_INSTANCES_NBR || pCurrent == NULL) { return BSP_ERROR_WRONG_PARAM; }
+    *pCurrent = (!DRY_RUN && output_switch_closed()) ? (int32_t)adc_measurements.i_out_ma : 0;
+    return BSP_ERROR_NONE;
+}
+
+int32_t BSP_USBPD_PWR_SetVBUSDisconnectionThreshold(uint32_t Instance, uint32_t VoltageThreshold)
+{
+    (void)VoltageThreshold;
+    return BSP_USBPD_PWR_Init(Instance);
+}
+
+int32_t BSP_USBPD_PWR_RegisterVBUSDetectCallback(uint32_t Instance,
+                                                 USBPD_PWR_VBUSDetectCallbackFunc *pfnVBUSDetectCallback)
+{
+    (void)pfnVBUSDetectCallback;        /* source only: no VBUS detection */
+    return BSP_USBPD_PWR_Init(Instance);
+}
+
+void BSP_USBPD_PWR_EventCallback(uint32_t Instance)
+{
+    (void)Instance;                     /* no TCPP03 FLGn line */
+}
+
+/* -------------------------------------------------------------------------
+ * VCONN
+ * -------------------------------------------------------------------------*/
+
+#if PD_VCONN_ENABLE
+static bool vconn_gpio_ready;
+
+static void vconn_gpio_init(void)
+{
+    GPIO_InitTypeDef init = {0};
+    HAL_GPIO_WritePin(PD_VCONN_CC1_PORT, PD_VCONN_CC1_PIN, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(PD_VCONN_CC2_PORT, PD_VCONN_CC2_PIN, GPIO_PIN_RESET);
+    init.Mode  = GPIO_MODE_OUTPUT_PP;
+    init.Pull  = GPIO_NOPULL;
+    init.Speed = GPIO_SPEED_FREQ_LOW;
+    init.Pin   = PD_VCONN_CC1_PIN;
+    HAL_GPIO_Init(PD_VCONN_CC1_PORT, &init);
+    init.Pin   = PD_VCONN_CC2_PIN;
+    HAL_GPIO_Init(PD_VCONN_CC2_PORT, &init);
+    vconn_gpio_ready = true;
+}
+
+static int32_t vconn_set(uint32_t CCPinId, GPIO_PinState level)
+{
+    if (!vconn_gpio_ready) { vconn_gpio_init(); }
+    /* Never both: VCONN on the other line would sit on the PD (CC) wire. */
+    if (CCPinId == USBPD_PWR_TYPE_C_CC1)
+    {
+        if (level == GPIO_PIN_SET) { HAL_GPIO_WritePin(PD_VCONN_CC2_PORT, PD_VCONN_CC2_PIN, GPIO_PIN_RESET); }
+        HAL_GPIO_WritePin(PD_VCONN_CC1_PORT, PD_VCONN_CC1_PIN, level);
+    }
+    else if (CCPinId == USBPD_PWR_TYPE_C_CC2)
+    {
+        if (level == GPIO_PIN_SET) { HAL_GPIO_WritePin(PD_VCONN_CC1_PORT, PD_VCONN_CC1_PIN, GPIO_PIN_RESET); }
+        HAL_GPIO_WritePin(PD_VCONN_CC2_PORT, PD_VCONN_CC2_PIN, level);
+    }
+    else
+    {
+        return BSP_ERROR_WRONG_PARAM;
+    }
+    return BSP_ERROR_NONE;
+}
+
+int32_t BSP_USBPD_PWR_VCONNInit(uint32_t Instance, uint32_t CCPinId)
+{
+    (void)CCPinId;
+    if (Instance >= USBPD_PWR_INSTANCES_NBR) { return BSP_ERROR_WRONG_PARAM; }
+    if (!vconn_gpio_ready) { vconn_gpio_init(); }
+    return BSP_ERROR_NONE;
+}
+
+int32_t BSP_USBPD_PWR_VCONNDeInit(uint32_t Instance, uint32_t CCPinId)
+{
+    return BSP_USBPD_PWR_VCONNOff(Instance, CCPinId);
+}
+
+int32_t BSP_USBPD_PWR_VCONNOn(uint32_t Instance, uint32_t CCPinId)
+{
+    if (Instance >= USBPD_PWR_INSTANCES_NBR) { return BSP_ERROR_WRONG_PARAM; }
+    return vconn_set(CCPinId, GPIO_PIN_SET);
+}
+
+int32_t BSP_USBPD_PWR_VCONNOff(uint32_t Instance, uint32_t CCPinId)
+{
+    if (Instance >= USBPD_PWR_INSTANCES_NBR) { return BSP_ERROR_WRONG_PARAM; }
+    return vconn_set(CCPinId, GPIO_PIN_RESET);
+}
+
+int32_t BSP_USBPD_PWR_VCONNIsOn(uint32_t Instance, uint32_t CCPinId, uint8_t *pState)
+{
+    if (Instance >= USBPD_PWR_INSTANCES_NBR || pState == NULL) { return BSP_ERROR_WRONG_PARAM; }
+    if (CCPinId == USBPD_PWR_TYPE_C_CC1)
+    {
+        *pState = (PD_VCONN_CC1_PORT->ODR & PD_VCONN_CC1_PIN) ? 1u : 0u;
+    }
+    else if (CCPinId == USBPD_PWR_TYPE_C_CC2)
+    {
+        *pState = (PD_VCONN_CC2_PORT->ODR & PD_VCONN_CC2_PIN) ? 1u : 0u;
+    }
+    else
+    {
+        return BSP_ERROR_WRONG_PARAM;
+    }
+    return BSP_ERROR_NONE;
+}
+#endif /* PD_VCONN_ENABLE */
+
+#endif /* PD_OWNS_VBUS */

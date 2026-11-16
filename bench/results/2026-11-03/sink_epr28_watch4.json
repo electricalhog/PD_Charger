@@ -1,0 +1,120 @@
+{
+ "ok": true,
+ "port": "/dev/ttyACM2",
+ "command": "status",
+ "reply": [
+  {
+   "kind": "STATUS",
+   "attached": "CC1",
+   "epr_mode": 1,
+   "target_mv": 28000,
+   "target_ma": 3000,
+   "contract_pos": 8,
+   "contract_mv": 28000,
+   "contract_ma": 3000,
+   "contracts": 15,
+   "hard_resets": 4,
+   "epr_failures": 0,
+   "vbus_mv": 0,
+   "vbus_sat": 0,
+   "tcpp_ok": 1,
+   "tcpp_fault": 0,
+   "tcpp_flags": "0x80",
+   "tcpp_ack": "0x18",
+   "hold": 0
+  }
+ ],
+ "events": [
+  {
+   "kind": "EVT",
+   "last_tx": "0x008d",
+   "tx_age_ms": 1,
+   "last_rx": "0x93b0",
+   "rx_age_ms": 385,
+   "event": "hard_reset_tx"
+  },
+  {
+   "kind": "EVT",
+   "event": "hard_reset"
+  },
+  {
+   "kind": "EVT",
+   "event": "detach"
+  },
+  {
+   "kind": "EVT",
+   "cc": "CC1",
+   "event": "attach"
+  },
+  {
+   "kind": "EVT",
+   "epr_mode": 0,
+   "n": 5,
+   "event": "caps"
+  },
+  {
+   "kind": "EVT",
+   "pos": 1,
+   "type": "fixed",
+   "mv": 5000,
+   "ma": 3000,
+   "epr_capable": 1,
+   "event": "pdo"
+  },
+  {
+   "kind": "EVT",
+   "pos": 2,
+   "type": "fixed",
+   "mv": 9000,
+   "ma": 3000,
+   "event": "pdo"
+  },
+  {
+   "kind": "EVT",
+   "pos": 3,
+   "type": "fixed",
+   "mv": 15000,
+   "ma": 3000,
+   "event": "pdo"
+  },
+  {
+   "kind": "EVT",
+   "pos": 4,
+   "type": "fixed",
+   "mv": 20000,
+   "ma": 3000,
+   "event": "pdo"
+  },
+  {
+   "kind": "EVT",
+   "pos": 5,
+   "type": "fixed",
+   "mv": 24000,
+   "ma": 3000,
+   "event": "pdo"
+  },
+  {
+   "kind": "EVT",
+   "target_mv": 28000,
+   "event": "warn",
+   "text": "not offered, requesting 5000"
+  },
+  {
+   "kind": "EVT",
+   "pos": 1,
+   "mv": 5000,
+   "ma": 3000,
+   "epr_request": 0,
+   "event": "request"
+  },
+  {
+   "kind": "EVT",
+   "pos": 1,
+   "mv": 5000,
+   "ma": 3000,
+   "epr_mode": 0,
+   "event": "contract"
+  }
+ ],
+ "seconds": 290.07
+}

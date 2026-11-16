@@ -1,0 +1,186 @@
+{
+ "p0_before": {
+  "reads": 57,
+  "cycles": 29184,
+  "duration_s": 5.0,
+  "skip_transitions": 2,
+  "i_cmd_ma_mean": 196.0,
+  "on_time_ns_mean": 254.9,
+  "v_in": {
+   "median_mv": 24450.0,
+   "sd_mv": 107.8,
+   "min_mv": 20055.0,
+   "max_mv": 27182.0,
+   "pct_0.1_99.9_mv": [
+    23689.928,
+    25176.889000000047
+   ],
+   "cycles_off_median": {
+    ">500mV": {
+     "high": 53,
+     "low": 54
+    },
+    ">1000mV": {
+     "high": 19,
+     "low": 19
+    },
+    ">2000mV": {
+     "high": 5,
+     "low": 4
+    },
+    ">3000mV": {
+     "high": 0,
+     "low": 3
+    }
+   }
+  },
+  "v_out": {
+   "median_mv": 28005.0,
+   "sd_mv": 22.0,
+   "min_mv": 27848.0,
+   "max_mv": 28302.0,
+   "pct_0.1_99.9_mv": [
+    27918.0,
+    28127.0
+   ]
+  }
+ },
+ "p3000_before": {
+  "reads": 102,
+  "cycles": 52224,
+  "duration_s": 9.0,
+  "skip_transitions": 22,
+  "i_cmd_ma_mean": 494.6,
+  "on_time_ns_mean": 409.0,
+  "v_in": {
+   "median_mv": 24433.0,
+   "sd_mv": 182.7,
+   "min_mv": 19105.0,
+   "max_mv": 27623.0,
+   "pct_0.1_99.9_mv": [
+    23231.791,
+    25417.0
+   ],
+   "cycles_off_median": {
+    ">500mV": {
+     "high": 108,
+     "low": 280
+    },
+    ">1000mV": {
+     "high": 52,
+     "low": 65
+    },
+    ">2000mV": {
+     "high": 22,
+     "low": 22
+    },
+    ">3000mV": {
+     "high": 3,
+     "low": 12
+    }
+   }
+  },
+  "v_out": {
+   "median_mv": 27988.0,
+   "sd_mv": 91.6,
+   "min_mv": 26992.0,
+   "max_mv": 28407.0,
+   "pct_0.1_99.9_mv": [
+    27166.0,
+    28250.0
+   ]
+  }
+ },
+ "p0_after": {
+  "reads": 57,
+  "cycles": 29184,
+  "duration_s": 5.0,
+  "skip_transitions": 0,
+  "i_cmd_ma_mean": 177.2,
+  "on_time_ns_mean": 257.1,
+  "v_in": {
+   "median_mv": 24060.0,
+   "sd_mv": 43.9,
+   "min_mv": 23636.0,
+   "max_mv": 24382.0,
+   "pct_0.1_99.9_mv": [
+    23805.0,
+    24280.0
+   ],
+   "cycles_off_median": {
+    ">500mV": {
+     "high": 0,
+     "low": 0
+    },
+    ">1000mV": {
+     "high": 0,
+     "low": 0
+    },
+    ">2000mV": {
+     "high": 0,
+     "low": 0
+    },
+    ">3000mV": {
+     "high": 0,
+     "low": 0
+    }
+   }
+  },
+  "v_out": {
+   "median_mv": 28005.0,
+   "sd_mv": 20.9,
+   "min_mv": 27830.0,
+   "max_mv": 28092.0,
+   "pct_0.1_99.9_mv": [
+    27918.0,
+    28075.0
+   ]
+  }
+ },
+ "p3000_after": {
+  "reads": 102,
+  "cycles": 52224,
+  "duration_s": 9.0,
+  "skip_transitions": 32,
+  "i_cmd_ma_mean": 447.8,
+  "on_time_ns_mean": 411.3,
+  "v_in": {
+   "median_mv": 24026.0,
+   "sd_mv": 38.4,
+   "min_mv": 23636.0,
+   "max_mv": 24365.0,
+   "pct_0.1_99.9_mv": [
+    23771.0,
+    24263.0
+   ],
+   "cycles_off_median": {
+    ">500mV": {
+     "high": 0,
+     "low": 0
+    },
+    ">1000mV": {
+     "high": 0,
+     "low": 0
+    },
+    ">2000mV": {
+     "high": 0,
+     "low": 0
+    },
+    ">3000mV": {
+     "high": 0,
+     "low": 0
+    }
+   }
+  },
+  "v_out": {
+   "median_mv": 28005.0,
+   "sd_mv": 26.4,
+   "min_mv": 27795.0,
+   "max_mv": 28110.0,
+   "pct_0.1_99.9_mv": [
+    27900.0,
+    28075.0
+   ]
+  }
+ }
+}

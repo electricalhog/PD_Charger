@@ -1,0 +1,1 @@
+{"ok": false, "result": "OUT_OF_RANGE", "explanation": "outside the firmware's SETPOINT_MIN_MV..SETPOINT_MAX_MV", "battery": {"ceiling_mv": 8000, "pack_mv": 0, "keepalive": 883, "vin_start_mv": 24518, "keepalive_stops": 0, "ilim_ma": 1500}, "step_mv": 2}

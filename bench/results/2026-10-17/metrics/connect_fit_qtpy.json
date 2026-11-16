@@ -1,0 +1,21 @@
+{
+ "c_bench_uf": 120.0,
+ "v_bench_start_v": 3.38,
+ "switch_ramp_us": 5000,
+ "g": 3.0,
+ "integrator_start_a": -0.193,
+ "t_c_us": -109,
+ "rms_error_mv": 137.4,
+ "low_measured_v": 3.15,
+ "low_model_v": 3.47,
+ "at_5ms_measured_v": 4.38,
+ "at_5ms_model_v": 4.3,
+ "fixed": {
+  "c_board_uf": 44.0,
+  "kp_a_per_v": 0.1885,
+  "ki_a_per_v_s": 29.61,
+  "delay_us": 63.0,
+  "r_load_ohm": 25.3,
+  "i_qtpy_a": 0.073
+ }
+}

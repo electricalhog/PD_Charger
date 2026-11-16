@@ -1,0 +1,108 @@
+{
+ "phase": "pack",
+ "ccm": "forced",
+ "started": "2026-11-12 23:34:14",
+ "args": {
+  "phase": "pack",
+  "steps": [
+   5000
+  ],
+  "ccm": "forced",
+  "rate": 100,
+  "hold": 5.0,
+  "go": true,
+  "seconds": 20.0,
+  "settle": 5.0,
+  "idle": 8.0,
+  "ilim": 2000,
+  "r_ohm": 25.3,
+  "cells": 8,
+  "path_mohm": 170,
+  "above_mv": null,
+  "scope": false,
+  "scope_tdiv": 2e-05,
+  "trace": "error:800",
+  "trace_at": 1.0,
+  "trace_post": 1536,
+  "no_prompt": false,
+  "selftest": false
+ },
+ "steps": [
+  {
+   "step": 5000,
+   "pack_read_mv": 31200,
+   "above_mv": 1500,
+   "ceiling_mv": 32700,
+   "ilim_ma": 5000,
+   "abort_ma": 7500,
+   "run": {
+    "ok": false,
+    "start": "OK",
+    "abort": null,
+    "interrupted": false,
+    "end_state": "FAULT",
+    "end_fault": [
+     "SW_OCP"
+    ],
+    "battery": {
+     "ceiling_mv": 32700,
+     "pack_mv": 31183,
+     "keepalive": 2,
+     "vin_start_mv": 24634,
+     "keepalive_stops": 0,
+     "ilim_ma": 5000
+    },
+    "extra": null,
+    "trace": {
+     "armed": null,
+     "armed_at_s": 1.0,
+     "trigger": "error",
+     "threshold_mv": 800,
+     "post": 1536
+    }
+   },
+   "tail": {
+    "n": 0
+   },
+   "rows": [
+    {
+     "t": 0.22,
+     "state": "FAULT",
+     "fault": [
+      "SW_OCP"
+     ],
+     "mode": "BUCK_BOOST",
+     "ccm": 0,
+     "kind": 0,
+     "lim": 1,
+     "target_mv": 32700,
+     "commanded_mv": 32700,
+     "v_out_mv": 32442,
+     "v_in_mv": 24309,
+     "id_raw_ma": 5163,
+     "id_cal_ma": 5360,
+     "id_lim_ma": 5441,
+     "i_in_ma": 8696,
+     "i_bound_ma": 6516.0,
+     "u_mv": 269.4107,
+     "on_ns": 1460,
+     "fsw_khz": 200,
+     "skip": 0,
+     "switch": 0,
+     "dis": 0,
+     "ilim_ma": 5000,
+     "ocp_fs_ma": 5305,
+     "skip_events": 4
+    }
+   ]
+  }
+ ],
+ "ocp_fs_ma": 5305,
+ "summary": {
+  "id_gain_permille_now": 991,
+  "id_offset_ma_now": 4
+ },
+ "stopped": "FAULT or not IDLE after the step: FAULT ['SW_OCP'] (not cleared; read `bu regulator status`)",
+ "interrupted": false,
+ "ended": "2026-11-12 23:34:16"
+}

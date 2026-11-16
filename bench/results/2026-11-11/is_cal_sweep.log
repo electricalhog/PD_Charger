@@ -1,0 +1,7 @@
+  15:52:35  idle 8 s before the first step (read the idle draw)
+
+==================================================================
+  15:52:43  STEP: ceiling 2 mV, limit 1500 mA  -- read the input ammeter now (20 s)
+==================================================================
+  done: ok False end None None ccm_frac None lim_frac None tail None
+  NOT IDLE after the step: stopping the sweep

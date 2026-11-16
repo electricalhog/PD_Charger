@@ -8,8 +8,6 @@
     },
     "cmake.sourceDirectory": "/home/daniel/GitHub/PD_Charger/STM32CubeIDE/final",
     "makefile.makefilePath": "STM32CubeIDE/final/Makefile",
-    "C_Cpp.default.includePath": [
-        "jkhg"
-    ],
-    "C_Cpp.default.intelliSenseMode": "gcc-arm",
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/STM32CubeIDE/final/build/Debug/compile_commands.json",
+    "C_Cpp.default.intelliSenseMode": "gcc-arm"
 }
