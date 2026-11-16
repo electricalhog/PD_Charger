@@ -3,17 +3,25 @@
 Passive only: `tw trace on` (PD packets on the console) and `tw vbus` (its INA: VBUS mV and mA) about 8 times a
 second, with the G474's regulator status twice a second.  No CC, sink or inject command is sent.
 
-  uv run --quiet --project tools/bringup python bench/results/2026-11-15/scripts/twonkie_log.py [SECONDS]
-Output: bench/results/2026-11-15/twonkie_<time>.jsonl (one object per line: tw = a console line, reg = a status).
+With TRACE_MV (second argument) the regulator trace is armed on |PID error| > TRACE_MV, 1000 samples (50 ms) after
+the trigger and 1048 before.  It is read out and armed again whenever it completes, and read once at a regulator
+fault (the ring then holds the last 102 ms before the fault, triggered or not) together with the fault snapshot.
+The fault is never cleared.
+
+  uv run --quiet --project tools/bringup python bench/results/2026-11-15/scripts/twonkie_log.py [SECONDS [TRACE_MV]]
+Output: bench/results/2026-11-15/twonkie_<time>.jsonl (one object per line: tw = a console line, reg = a status,
+trace = a trace read out to traces/twonkie_<time>_<n>.csv).
 """
-import json, re, sys, threading, time
+import json, re, shutil, sys, threading, time
 from pathlib import Path
 import serial
-from bringup import regulator
-from bringup.config import load_config
+from bringup import probe, regulator
+from bringup.config import REPO_ROOT, load_config
 
 secs = float(sys.argv[1]) if len(sys.argv) > 1 else 180.0
-out = Path(__file__).resolve().parent.parent / f"twonkie_{time.strftime('%Y%m%d_%H%M%S')}.jsonl"
+trace_mv = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+stamp = time.strftime('%Y%m%d_%H%M%S')
+out = Path(__file__).resolve().parent.parent / f"twonkie_{stamp}.jsonl"
 cfg, t0, lock = load_config(), time.monotonic(), threading.Lock()
 f = out.open("w")
 
@@ -23,16 +31,42 @@ def put(kind, **kw):
         f.write(json.dumps({"t": round(time.monotonic() - t0, 3), "k": kind, **kw}) + "\n"); f.flush()
 
 
+def arm():
+    r = regulator.command(cfg, "trace-arm", 3.0, arg=regulator.trace_arg("error", 1000, trace_mv))
+    put("trace_arm", result=r.get("result"))
+
+
+def trace_out(n, why):
+    r = regulator.trace_read(cfg)
+    dst = out.parent / "traces" / f"twonkie_{stamp}_{n}.csv"
+    dst.parent.mkdir(exist_ok=True)
+    shutil.copyfile(Path(REPO_ROOT) / r["file"], dst)
+    put("trace", why=why, file=dst.name, **{k: r.get(k) for k in ("state", "samples", "count", "trigger_sample",
+                                                                   "v_out_mv", "ccm_samples", "switch_edges_ms")})
+
+
 def reg():
+    n, fault_done = 0, False
+    if trace_mv:
+        arm()
     while time.monotonic() - t0 < secs:
         try:
             st = regulator.status(cfg); c, a = st["control"], st["adc"]
             put("reg", state=st["state"], fault=st["fault_source"], target_mv=c.get("target_mv"), mode=c.get("mode"),
                 ccm=c.get("ccm_active"), v_out_mv=a.get("v_out_mv"), v_in_mv=a.get("v_in_mv"),
                 i_out_ma=c.get("ccm_i_avg_ma"), i_in_ma=c.get("i_in_filt_ma"))
+            if trace_mv and st["state"] == "FAULT" and not fault_done:
+                fault_done = True
+                trace_out(n, "fault"); n += 1
+                put("fault", snapshot=probe.mem_read(cfg, "regulator_fault_snapshot", dtype="u32", count=6)["values"],
+                    vd_raw=probe.mem_read(cfg, "regulator_fault_trace", dtype="u16", count=64)["values"])
+            elif trace_mv and st["state"] != "FAULT":
+                if probe.mem_read(cfg, "regulator_trace_ctl", dtype="u32", count=1)["values"][0] == 3:
+                    trace_out(n, "done"); n += 1
+                    arm()
         except Exception as e:
             put("reg_error", e=str(e)[:100])
-        time.sleep(0.5)
+        time.sleep(0.3 if trace_mv else 0.5)
 
 
 threading.Thread(target=reg, daemon=True).start()

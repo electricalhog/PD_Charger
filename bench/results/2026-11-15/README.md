@@ -135,3 +135,48 @@ it is was not recorded here.
   The source kept answering attaches without VBUS: by 21:39 its counters read 22 VBUS-on failures, 7 Hard Resets
   and 7 transition time-outs since the 20:47 reset. The device kept sending requests with VBUS at 0, so it has its
   own supply (inference).
+
+## 21:41 — power bank again, firmware trace armed: the SW_OVP is the CCM exit after a fast load drop
+
+The device is an Anker MagGo 10k power bank (Dan); it renegotiates when a wireless-charging load is added. Log
+`twonkie_20261115_214107.jsonl` (600 s, `twonkie_log.py 600 1500`: trace on |PID error| > 1.5 V, read out and armed
+again by the logger; traces `traces/twonkie_20261115_214107_<n>.csv`).
+
+| Time in log | What |
+|---|---|
+| 18.3 s | 15 V contract, 2.1 A, CCM from 19.3 s |
+| 36.8 s | **SW_OVP** at 15 V (trace 1, snapshot V_out 16919 mV, setpoint 15000 mV) |
+| 130 s | fault cleared (not by this session: Dan) |
+| 295.3 s | 15 V, 2.07 A, CCM; 306.5 s detach, no fault |
+| 307.7 s | 9 V, 2.2–2.6 A, CCM, held 138 s |
+| 445.9 s | **SW_OVP** at 9 V (snapshot V_out 10193 mV, setpoint 9000 mV; no trace: the logger only saved the first fault's) |
+| 490 s | fault cleared (Dan) |
+| 494.3 s | 15 V, 2.03 A; 499.6 s detach, no fault; 500.95 s 9 V, 2.5 A, running at the end of the log |
+
+**The 15 V fault, trace 1 (20 kHz samples, t from the trace trigger):**
+- 0.00 ms: one sample at 12711 mV, the next 15574 mV, back inside 15.0–15.2 V within 0.3 ms; CCM stays on, ID_MON
+  2.03 A. (This is what fired the trigger. What the power bank did there is not known.)
+- 2.60–3.70 ms: the per-cycle current falls 2021 → 1962 → 502 → 13 mA (the power bank stops drawing). CCM follows:
+  V_out peaks at 15384 mV and is back at 15.00 V by 3.70 ms, on-time 2909 → 2756 ns.
+- 4.10 ms: CCM exits. The DCM loop restarts with a current command of 1586 mA and an on-time of 2284 ns, with the
+  load at 13 mA.
+- 4.20 ms: V_out 16971 mV, one PID cycle later (+1.95 V). Pulse skipping is on but nothing discharges the output.
+  16.97 V is over 110 % of 15 V for 3 cycles: SW_OVP.
+- **Why 1586 mA (code, `regulator.c` at the CCM exit):** the DCM integrator is seeded with
+  `regulator_ccm_i_avg_ma`, the filtered CCM current, plus DCM's offset. The light-load exit fires when that filtered
+  value falls under half the ceiling, so after a fast drop it still reads about 1.06 A (the status read at the fault)
+  while the newest per-cycle value is 13 mA.
+- The 9 V fault has the same signature (+13 % at a 2 A load that went to 0, `ccm_i_avg_ma` 1071 mA in the frozen
+  status); without a trace that it is the same path is inference.
+- A slow taper does not do it: one LIGHT_LOAD exit overnight (exits 12 → 13 by 05:55), no fault.
+
+**Every attach (traces 0, 3, 4, 5, 6; output switch already on, 5 V, no load):** V_out falls from 5.2 V to
+2.55–2.79 V within one 50 µs sample, and is back at 5.0 V after 2.1–2.3 ms (DCM, command up to 480 mA), no overshoot
+in four of five; trace 5 ends in the start of the ramp to 15 V. On the Twonkie each attach shows VBUS on, off, on
+again before the contract. Inference: the power bank connects a discharged input capacitance about as large as the
+board's own output capacitance at 5 V, sees VBUS collapse, drops off and retries.
+
+**Not explained:** the first fault at 21:35 (V_out 5.2 → 7.5 V at a 5 V setpoint and 0 A, no CCM).
+
+**Overnight (Dan):** the phone charged from the power bank all night. 05:55: RUNNING at the 9 V contract since
+21:49, 0.09–0.11 A, no fault, no new attach, detach or Hard Reset.
