@@ -317,6 +317,42 @@ _Static_assert(HRTIM_PERIOD_COUNTS >= 5440u && HRTIM_PERIOD_COUNTS <= 54400u,
                "HRTIM_PERIOD_COUNTS out of valid range [5440, 54400]");
 
 /**
+ * PCMC_RAMP_STEP_TICKS — DAC3 CH1 sawtooth step interval (Timer E CMP2 in
+ * dual-channel-DAC mode, plans/peak-current-mode.md).
+ * 425 ticks = 78.1 ns: 64 steps per 200 kHz period, 32 per 400 kHz (both
+ * periods divide exactly, so the last step coincides with the roll-over and
+ * is dropped, RM0440 Table 255).  Above DAC3's update limit (HFSEL = 10 at
+ * 170 MHz: 7 AHB cycles, 41 ns).
+ */
+#define PCMC_RAMP_STEP_TICKS 425u
+
+/**
+ * PCMC_DCM_DEFAULT — regulator_pcmc_dcm at boot: 1 = COMP1 ends DCM pulses
+ * (regulator.c step 6a); 0 = the predicted on-time ends them, COMP1 at
+ * PEAK_PROTECT only (as before 2026-11-22).
+ * 0: on the bench (2026-11-22, bench/results/2026-11-22/pcmc) IL_MON (the
+ * AD8410A adapter) does not follow L1's current during Q1's on-time: it
+ * holds for ~1 us (DCM) to ~1.9 us (CCM) after turn-on and catches up near
+ * turn-off, so COMP1 never trips before the CMP2 backstop.  It does follow
+ * the discharge (SW1 low, SW2 steady).
+ */
+#ifndef PCMC_DCM_DEFAULT
+#define PCMC_DCM_DEFAULT 0u
+#endif
+
+/**
+ * PCMC_DELAY_NS — IL crossing the threshold to the inductor current
+ * stopping its rise: AD8410A, COMP1, HRTIM, gate driver, FET.  Assumed
+ * 200 ns (Dan to confirm on the bench); the threshold is set this much
+ * current below the peak (regulator_pcmc_delay_ns at runtime).
+ */
+#ifndef PCMC_DELAY_NS
+#define PCMC_DELAY_NS 200u
+#endif
+_Static_assert((HRTIM_PERIOD_COUNTS % PCMC_RAMP_STEP_TICKS) == 0u,
+               "sawtooth steps must divide the period");
+
+/**
  * HRTIM_BLANKING_NS_BUCK / HRTIM_BLANKING_NS_BOOST / BOOTSTRAP_REFRESH_NS
  * Source time-domain constants for blanking window and bootstrap pulse.
  * Adjust empirically using an oscilloscope on IL_MON and the switching nodes.

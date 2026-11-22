@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import signal
+import struct
 import time
 
 from . import probe, regulator
@@ -48,6 +49,34 @@ def _row(s: dict, t0: float) -> dict:
             "switch": s["lines"]["OUTPUT_EN_PC8"], "dis": s["lines"]["OUTPUT_DIS_PC9"]}
 
 
+def _watch_spec(syms: dict, watch: list[str] | None) -> list[tuple[str, str, tuple[int, int]]]:
+    """``name`` or ``name:type`` (u8 u16 u32 i8 i16 i32 f32; default: unsigned of the symbol's size)."""
+    out = []
+    for w in watch or []:
+        name, _, typ = w.partition(":")
+        if name not in syms:
+            raise ToolError(f"--watch: no symbol {name} in the flashed ELF")
+        addr, size = syms[name]
+        typ = typ or {1: "u8", 2: "u16", 4: "u32"}.get(size, "u32")
+        if typ not in ("u8", "u16", "u32", "i8", "i16", "i32", "f32"):
+            raise ToolError(f"--watch: type {typ} not supported")
+        out.append((name, typ, (addr, int(typ[1:]) // 8)))
+    return out
+
+
+def _watch_read(cfg: dict, spec: list) -> dict:
+    if not spec:
+        return {}
+    data = probe.read_regions(cfg, [r for _, _, r in spec])
+    vals = {}
+    for (name, typ, _), d in zip(spec, data):
+        if typ == "f32":
+            vals[name] = round(struct.unpack("<f", d[:4])[0], 3)
+        else:
+            vals[name] = int.from_bytes(d, "little", signed=typ.startswith("i"))
+    return vals
+
+
 def status(cfg: dict) -> dict:
     syms = _battery_syms(cfg)
     s = regulator.status(cfg)
@@ -65,8 +94,11 @@ def measure_pack(cfg: dict, syms: dict) -> int:
 
 
 def run(cfg: dict, ceiling_mv: int | None, ilim_ma: int, seconds: float, interval: float = 0.2,
-        above_pack_mv: int | None = None) -> dict:
+        above_pack_mv: int | None = None, watch: list[str] | None = None) -> dict:
+    """``watch``: extra symbols logged with every sample, in the same probe sessions as the keepalive (a second
+    ``bu mem read`` while this runs collides with it on the ST-LINK and ends the run)."""
     syms = _battery_syms(cfg)
+    wspec = _watch_spec(syms, watch)
     if not 0 < ilim_ma <= ILIM_MAX_MA:
         raise ToolError(f"--ilim-ma must be 1..{ILIM_MAX_MA}")
     if regulator.status(cfg)["state"] != "IDLE":
@@ -99,6 +131,8 @@ def run(cfg: dict, ceiling_mv: int | None, ilim_ma: int, seconds: float, interva
             ka = (ka + 1) & 0xFFFFFFFF
             probe.mem_write(cfg, "regulator_battery_keepalive", str(ka), "u32")
             rows.append(_row(regulator.status(cfg), t0))
+            if wspec:
+                rows[-1]["watch"] = _watch_read(cfg, wspec)
             if rows[-1]["state"] != "RUNNING":
                 break
             next_t += interval
@@ -125,5 +159,6 @@ def run(cfg: dict, ceiling_mv: int | None, ilim_ma: int, seconds: float, interva
             "battery": _read(cfg, syms), "samples": len(rows), "stopped_early": stopped,
             "ended": rows[-1]["state"] if rows else None, "end_state": end["state"], "end_fault": end["fault_source"],
             "tail_mean": {k: mean(k) for k in ("v_out_mv", "i_out_ma", "v_in_mv", "i_in_ma", "is_raw_ma")},
+            "watch_tail": [r.get("watch") for r in tail] if wspec else None,
             "limiting_frac": round(sum(1 for r in running if r["lim"]) / len(running), 2) if running else None,
             "log": rel(f)}

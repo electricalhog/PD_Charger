@@ -407,6 +407,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--ilim-ma", type=int, required=True, help="current into the pack (regulator_ccm_ilim_ma)")
     g.add_argument("--seconds", type=float, required=True)
     g.add_argument("--interval", type=float, default=0.2, help="sample and keepalive period, s (timeout 2 s)")
+    g.add_argument("--watch", action="append", metavar="SYM[:TYPE]",
+                   help="also log this symbol each sample (u8 u16 u32 i8 i16 i32 f32); repeatable")
 
     # scope
     sc = sub.add_parser("scope", help="Rigol DS1054Z").add_subparsers(dest="op", required=True)
@@ -590,7 +592,7 @@ def dispatch(cfg: dict, a) -> dict:
         return regulator.command(cfg, name, a.timeout, getattr(a, "force", False), getattr(a, "mv", None))
     if c == "battery":
         if a.op == "run":
-            return battery.run(cfg, a.ceiling_mv, a.ilim_ma, a.seconds, a.interval, a.above_pack_mv)
+            return battery.run(cfg, a.ceiling_mv, a.ilim_ma, a.seconds, a.interval, a.above_pack_mv, a.watch)
         return battery.status(cfg)
     if c == "scope":
         return cmd_scope(cfg, a)

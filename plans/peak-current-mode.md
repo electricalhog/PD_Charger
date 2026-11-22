@@ -13,6 +13,31 @@ Sources:
 - **[model]** `plans/scripts/` arithmetic, below.
 - **[assumed]** anything P0 has to measure.
 
+## 0. Bench status (2026-11-22, after the first runs): blocked on IL_MON
+
+Built and verified (`bench/results/2026-11-22/README.md`, "Peak current mode, first bench"):
+- Timer E in lockstep with Timer A, DCDE sawtooth triggers, CPT1 = TA1 reset, CPT2 = EEV4; DAC3 CH1 in sawtooth mode
+  from `HRTIM_RST_TRG5` / `HRTIM_STEP_TRG5`, 425-tick steps. Checked at idle against COMP1 (reset value, 12.4 step,
+  trigger mapping all as configured).
+- The DCM comparator mode (§1 below, `regulator_pcmc_dcm`, `PCMC_DELAY_NS` 200).
+
+**Measured: IL_MON does not follow L1's current while Q1 is on.** At 12 V, averaged over ~200 pulses:
+- In DCM it holds at 0 A (±3 mV) for the first ~1 µs, then jumps with an overshoot near turn-off.
+- In forced CCM at 200 kHz it holds at the valley, steps once, and only reaches the peak in the last ~300 ns of a
+  2.25 µs on-time.
+- Through the discharge (SW1 low, SW2 steady) it tracks: 2.47 A/µs against 2.68 A/µs from the model.
+
+So COMP1 cannot end a pulse at a peak, and **peak current mode on IL_MON is not possible with the adapter as it
+reads today**. `PCMC_DCM_DEFAULT` is 0. §§1–6 stand as the design if IL_MON is made to track. ID_MON and IS_MON can't
+replace it: the output caps sit between Q3 and R6, and U6 reads the ADM1270's filtered sense. Both are DC.
+
+The next step is Dan's: probe the AD8410A's inputs and output on the adapter at 12 V DCM, to tell an input
+(wiring or filter) problem from the amplifier's common-mode recovery.
+
+The firmware-only alternative is **valley current mode**:
+- The comparator acts during the discharge, the interval where IL_MON is good, in buck, boost and buck-boost alike.
+- It is not designed here yet.
+
 ## 1. What changes
 
 Today the on-time ends every pulse: DCM's on-time is predicted from the peak command, and CCM's duty law is voltage
@@ -149,15 +174,15 @@ deadtime_ns`, 20 ns = 27 ticks of 0.735 ns):
 **DCM: DTEN = 0, as now.**
 - The charge pulse is ended by EEV4 at a constant threshold (step 0) = I_pk − m1·τ.
 - CMP2 becomes a backstop at 1.25 × the predicted on-time + 100 ns. If COMP1 fails, the peak is bounded at 1.25 I_pk.
-- **Blanking fix:** today DCM's CMP1 is 100 ns from the period start (`regulator.c:3372`). Q1 turns on after the
-  bootstrap refresh (about 250 ns), so the blanking is over before the pulse starts. It becomes refresh end + dead
-  time + t_blank.
+- **Blanking: no change needed** (corrected 2026-11-22). With `SYNC_RECT_ENABLED` 0, DCM's CMP1 is already
+  `DCM_PULSE_START_TICKS` + blanking (`hrtim_configure_compare_registers`). At idle Timer E captured TA1's
+  EEV4 reset at 2016 ticks, 0.37 µs into the period: the pulse start plus 100 ns.
 - The predictive SR stays off in DCM (`SR_ENABLE_DEFAULT 0`). If it is turned on, its Q2 window must start after the
   CMP2 backstop + DT. Q2 must never be on while Q1 might be.
 
 ## 5. Phases (bench gates; resistor only until P3; gate changes scoped unpowered first, skill rules)
 
-**P0: Measure IL_MON and COMP1.** Firmware: a `bu` command for a fixed DAC threshold, and the DCM blanking fix.
+**P0: Measure IL_MON and COMP1.** Firmware: a `bu` command for a fixed DAC threshold (the blanking needs no fix, §1).
 1. DCM buck at 5 / 12 / 20 V and boost at 28 V, raw scope capture at 500 MSa/s, CH1 with no BWL. Check IL_MON's
    rising and falling slopes against the model (gain at two slopes), the delay, and the settling after the SW1/SW2
    edges.
@@ -205,7 +230,6 @@ deadtime_ns`, 20 ns = 27 ticks of 0.735 ns):
   `slope_comp_update_step()` writes STINCDATA. The TIM6 ISR and its floor logic are deleted.
 - `Core/Src/regulator.c`:
   - the PID step 6 peak command and the clamp;
-  - DCM blanking from Q1's turn-on;
   - the DCM CMP2 backstop;
   - EEV2 in the charge reset;
   - FLT5 enable and FLT5 in `regulator_hrtim_fault_isr`;

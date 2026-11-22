@@ -360,6 +360,15 @@ extern volatile uint32_t regulator_battery_keepalive_stops;
  * and the most the mode can deliver now.  Telemetry, updated by the TIM7 ISR.
  */
 extern volatile uint16_t regulator_pid_output_dac_counts;
+
+/* Peak current mode, DCM (regulator.c step 6a, plans/peak-current-mode.md). */
+extern volatile uint8_t  regulator_pcmc_dcm;
+extern volatile uint16_t regulator_pcmc_delay_ns;
+extern volatile uint8_t  regulator_pcmc_active;
+extern volatile uint16_t regulator_pcmc_dac_counts;
+extern volatile uint16_t regulator_pcmc_backstop_ns;
+extern volatile uint16_t regulator_pcmc_q1_off_ns;
+extern volatile uint16_t regulator_pcmc_trip_ns;
 extern volatile uint16_t regulator_on_time_ns;
 extern volatile float regulator_i_cmd_ma;
 extern volatile float regulator_i_pk_ma;

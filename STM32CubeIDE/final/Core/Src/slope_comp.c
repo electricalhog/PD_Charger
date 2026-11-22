@@ -48,15 +48,25 @@ volatile uint32_t slope_comp_step_counts = 0u;
  */
 volatile uint32_t slope_comp_peak_dac_counts = 0u;
 
+/**
+ * slope_comp_ramp_step — DAC3 CH1 sawtooth decrement per Timer E CMP2 step
+ * (12.4 fixed point, DAC_STR1.STINCDATA1).  0 = flat threshold.
+ * Written by slope_comp_set_ramp() only.
+ */
+volatile uint32_t slope_comp_ramp_step = 0u;
+
 /* =========================================================================
  * Internal helpers
  * =========================================================================*/
 
 /**
- * dac3_ch1_write — Write a value directly to DAC3 channel 1 data register.
+ * dac3_ch1_write — Set DAC3 CH1's sawtooth reset value (the threshold at
+ * Timer E's period start), keeping the current step.
  *
- * Uses the 12-bit right-aligned holding register (DHR12R1).  This is the
- * lowest-latency path (no HAL overhead) for use inside ISRs.
+ * Since 2026-11-22 DAC3 CH1 runs in sawtooth mode (regulator.c
+ * dac3_sawtooth_init): DHR12R1 is driven by the sawtooth counter, and a write
+ * to DAC_STR1 is taken at the next hrtim_dac_reset_trg5 (Timer E roll-over,
+ * at most one switching period later).  One 32-bit store: atomic.
  *
  * @param counts  DAC value in [0, 4095].
  */
@@ -67,7 +77,8 @@ static inline void dac3_ch1_write(uint32_t counts)
     {
         counts = 4095u;
     }
-    DAC3->DHR12R1 = counts;
+    DAC3->STR1 = (slope_comp_ramp_step << DAC_STR1_STINCDATA1_Pos) |
+                 (counts << DAC_STR1_STRSTDATA1_Pos);   /* STDIR1 = 0: down */
 }
 
 /* =========================================================================
@@ -172,6 +183,15 @@ void slope_comp_update_step(uint32_t v_out_mv, uint32_t v_in_mv, SlopeCompMode m
     slope_comp_step_counts = step;
 }
 
+void slope_comp_set_ramp(uint32_t reset_counts, uint32_t step_12p4)
+{
+    if (step_12p4 > 0xFFFFu) { step_12p4 = 0xFFFFu; }
+    if (reset_counts > 4095u) { reset_counts = 4095u; }
+    slope_comp_ramp_step       = step_12p4;
+    slope_comp_peak_dac_counts = reset_counts;
+    dac3_ch1_write(reset_counts);
+}
+
 void slope_comp_set_peak(uint32_t peak_dac_counts)
 {
     /* Clamp to DAC range */
@@ -189,6 +209,8 @@ void slope_comp_set_peak(uint32_t peak_dac_counts)
 
 void slope_comp_tim6_isr(void)
 {
+    /* Obsolete with the DAC3 sawtooth (writes to DHR12R1 are overwritten by
+     * the sawtooth counter); kept for the shelved SLOPE_COMP_ENABLED build. */
     /* Read current DAC3 CH1 value from the output register.
      * NOTE: DAC3->DOR1 is the actual output (after trigger); for a DAC with
      * no trigger (DAC_TRIGGER_NONE, as configured by CubeMX), DHR12R1 is

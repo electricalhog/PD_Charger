@@ -75,7 +75,102 @@ IL_MON at idle 1640 mV (3 reads, 1639–1640; firmware keeps 1636, inside the ±
 All three ran to the end and stopped, no fault. ID_MON is back in line with 11-13 / 11-16 (P_out uses the nominal
 25.3 Ω, which drifts warm). The 12 V tail mean sits 476 mV over the ceiling (12034 mV in the 07:17 run); not looked into.
 
+## Peak current mode, first bench (`pcmc/`, plan `plans/peak-current-mode.md`)
+
+Same setup: 25.3 Ω, V_in 24.6 V, probes as above, `build/Battery`.
+
+### Firmware
+
+- Timer E runs in lockstep with Timer A: same prescaler and period, reset together, no outputs.
+  - DCDE = 1, DCDR = DCDS = 0. CMP2 = 425 ticks (78 ns) is the sawtooth step: 64 steps per 200 kHz period, 32 per
+    400 kHz.
+  - CPT1 = TA1 reset, CPT2 = EEV4 (COMP1, unblanked).
+- DAC3 CH1, COMP1's threshold, runs as a sawtooth: reset on `HRTIM_RST_TRG5`, step on `HRTIM_STEP_TRG5`, downward.
+  - `slope_comp_set_ramp(reset, step_12p4)` writes DAC_STR1, which takes effect at the next Timer E roll-over (the
+    same boundary as the Timer A/B compares).
+  - The PID writes the threshold with step 0, as before; stop writes 0.
+- DCM comparator mode: `regulator_pcmc_dcm`, step 6a.
+  - Threshold = I_pk − m1·`regulator_pcmc_delay_ns` (200 ns, assumed).
+  - CMP2 becomes a backstop at 1.25·t_on + 100 ns.
+  - Used only when the threshold falls after the blanking with 20 % margin, and with SR off.
+  - Telemetry: `regulator_pcmc_*` (Timer E captures in ns after the pulse start).
+- `bu battery run --watch SYM[:TYPE]` logs extra symbols in the same probe session as the keepalive. A separate
+  `bu mem read` during a run collided with it on the ST-LINK and ended the first 12 V run (DEV_CONNECT_ERR; the
+  regulator stopped on the keepalive, no fault).
+
+### At idle (switching off): Timer E and the sawtooth
+
+| Register | Read | Meaning |
+|---|---|---|
+| MCR | 0x3F0008 | master and Timers A–E on |
+| TE CR / CR2 | 0x08040008 / 0x1 | CONT, PREEN, TRSTU / DCDE |
+| TE PER / CMP2 | 27200 / 425 | |
+| DAC3 CR | 0xF7 | EN1, TEN1, TSEL1 = 13, WAVE1 = sawtooth |
+| DAC3 STMODR | 0xD0D | reset and step triggers = 13 (HRTIM trigger 5) |
+| TE CPT1 | 2016 ticks | TA1's EEV4 reset, 0.37 µs into the period = the pulse start + 100 ns blanking (DAC at 0 trips COMP1) |
+
+STR1 was written by hand and the period time of COMP1's last rise read from CPT2:
+- Reset 2600 at 16 counts/step tripped in step 34.
+- Reset 2300 at 16 counts/step tripped in step 16.
+- Both are DAC ≈ 2044–2060.
+
+At 1 count/step (12 reads), COMP1's last rise came at DAC 2056–2084. That is 1647–1680 mV against the 1640 mV scope
+mean, so IL_MON's noise at idle reaches ~40 mV (0.4 A) above its mean with no hysteresis. The reset value, the 12.4
+step, the roll-over reset and the trigger mapping all behave as configured.
+
+### 12 V DCM with the comparator mode on: COMP1 never ends the pulse
+
+- `run_dcm_12V.json` ran to the end with no fault: 12.01 V, 469 mA.
+- Q1's turn-off (CPT1) came at 1079–1220 ns, at the CMP2 backstop (1065–1162 ns).
+- COMP1's rise (CPT2) came at 1144–1567 ns, against ~620 ns from the model at the 1.6–1.7 A threshold.
+
+The scope says why (`scope_dcm_12V_200ns.png`; raw 250 MSa/s, 191 pulses, `aligned_dcm_12V.txt` from
+`align_pulses.py`):
+- SW2 is at 0 V for the Q4 bootstrap refresh and steps to ~14 V at +50…150 ns.
+- **IL_MON stays at its 0 A level (±3 mV) from 0 to ~1000 ns while Q1 is on.**
+- It then rises to 0.36 V (3.6 A) at 1250 ns, after SW1 falls at ~1100 ns, and decays to 0 at ~1950 ns, where the
+  freewheel ends (SW1 leaves −2.5 V).
+- From volt-seconds (t_on 1.1 µs at 24.6 − 14.1 V, freewheel 0.78 µs at 14.9 V, 4.7 µH; inference) the real peak
+  is ~2.5 A, so the 3.6 A on IL_MON is an overshoot.
+
+### 12 V forced CCM, 200 kHz, comparator mode off (`run_ccm_12V.json`, `scope_ccm_12V_1us.png`)
+
+Ran to the end with no fault: 11.96 V, on-time 2216 ns. SW2 sits at V_out apart from a refresh dip to 0 V just before
+each Q1 turn-on. Averaged over 239 periods (`aligned_ccm_12V.txt`):
+
+| t from Q1 on | IL_MON (rel.) | L1's current must be |
+|---|---|---|
+| 100–900 ns | −0.12 V, flat | rising at ~2.7 A/µs (V_L ≈ 12.9 V, constant) |
+| 950–1850 ns | +0.02 V, flat | rising |
+| 1900–2200 ns | rises to +0.58 V (5.8 A) | peak at turn-off (~2250 ns) |
+| 2500–4500 ns, SW1 low | falls 0.247 V/µs (2.47 A/µs) | 2.68 A/µs (model, 12.6 V / 4.7 µH) |
+
+**IL_MON does not follow L1's current while Q1 is on, in DCM or CCM. It does through the discharge** (0.92× the
+model slope). R5 is in series with L1 (L1 → SW2a → R5 → SW2, from the PCB), so the shunt is in the right place; the
+fault is in what U7's output does during the on-time. Whether that is the AD8410A's common-mode recovery or the
+adapter's input wiring is not known: it needs a probe on the adapter, which is a hardware look.
+
+Consequences:
+- **Peak current mode on IL_MON is blocked.** `PCMC_DCM_DEFAULT` is now 0 (the code stays, off).
+- **ID_MON and IS_MON can't stand in.** The output ceramics (C15–C19, C49) sit on VOUTa between Q3 and R6, so ID_MON
+  is DC. U6 reads the ADM1270's filtered sense.
+- **PEAK_PROTECT (COMP1) is not a cycle-by-cycle limit in the on-time either.** In a 28 V run (`regress_dcm_28V_b.json`)
+  COMP1 rose at 1855–1897 ns, right after every pulse ended at 1773–1792 ns, against the 12.5 A level (DAC 3581).
+  The model peak there is ~9.3 A (24.6 V × 1.78 µs / 4.7 µH; inference), so that rise is IL_MON's overshoot.
+
+### Regression, comparator mode off (`regress_dcm_<V>V.json`, DCM only)
+
+| Ceiling | V_out | I_out (ID_MON) | Earlier today |
+|---|---|---|---|
+| 5 V | 4980 mV | 196 mA | 5018 / 195 |
+| 12 V | 11924 mV | 470 mA | 12476 / 468 (12034 in the 07:17 run) |
+| 20 V | 20013 mV | 781 mA | 19986 / 780 |
+| 28 V | 27461 mV; repeat 27961 mV | 1079 / 1100 mA | 27937 (ID_MON off then) |
+
+All ran to the end, stopped, no fault. The first 28 V tail mean includes one 26.49 V sample; the repeat's samples
+were 27.7–28.15 V.
+
 ## End state
 
-`build/Battery` flashed, IDLE, input and output paths off, no fault, `regulator_ccm_enable` 0 (DCM only) until reset.
-Board 3V3 fixed, ID_MON / IS_MON reading. Scope on the layout above.
+`build/Battery` with `PCMC_DCM_DEFAULT` 0 flashed, IDLE, input and output paths off, no fault,
+`regulator_ccm_enable` 0 (DCM only) until reset. Scope back to CH1 0.5 V/div, 2 µs/div, trigger CH2 8 V.

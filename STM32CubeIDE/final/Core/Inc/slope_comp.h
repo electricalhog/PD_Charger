@@ -158,6 +158,14 @@ void slope_comp_update_step(uint32_t v_out_mv, uint32_t v_in_mv, SlopeCompMode m
  */
 void slope_comp_set_peak(uint32_t peak_dac_counts);
 
+/**
+ * slope_comp_set_ramp — DAC3 CH1 sawtooth: reset value (DAC counts, the
+ * threshold at Timer E's period start) and the decrement per
+ * PCMC_RAMP_STEP_TICKS step (12.4 fixed point; 0 = flat).  Taken at the next
+ * Timer E period start.  slope_comp_set_ramp(0, 0) is the safe state.
+ */
+void slope_comp_set_ramp(uint32_t reset_counts, uint32_t step_12p4);
+
 /* =========================================================================
  * ISR handler declaration (defined in slope_comp.c; referenced from
  * stm32g4xx_it.c which calls it from TIM6_DAC_IRQHandler).

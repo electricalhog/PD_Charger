@@ -365,6 +365,20 @@ volatile bool        regulator_bench_pwm_active      = false;
 /* Timer A/B set/reset sources saved while bench PWM strips EEV4 from them. */
 static uint32_t bench_saved_set_rst[4];
 volatile uint16_t    regulator_pid_output_dac_counts = 0u;
+
+/* Peak current mode, DCM (plans/peak-current-mode.md).  regulator_pcmc_dcm:
+ * 1 = COMP1 ends each DCM pulse at I_pk - m1 * regulator_pcmc_delay_ns, CMP2
+ * is a backstop; 0 = the on-time ends it (COMP1 at PEAK_PROTECT only).
+ * Change at IDLE or running: it applies per PID cycle. */
+volatile uint8_t     regulator_pcmc_dcm        = PCMC_DCM_DEFAULT;
+volatile uint16_t    regulator_pcmc_delay_ns   = PCMC_DELAY_NS;
+volatile uint8_t     regulator_pcmc_active     = 0u;   /* this cycle used COMP1 */
+volatile uint16_t    regulator_pcmc_dac_counts = 0u;   /* its threshold */
+volatile uint16_t    regulator_pcmc_backstop_ns = 0u;  /* CMP2 after the pulse start */
+/* Timer E captures (ns after the pulse start, last period): TA1 reset (Q1's
+ * gate command ended) and the last EEV4 (COMP1) rising edge, unblanked. */
+volatile uint16_t    regulator_pcmc_q1_off_ns  = 0u;
+volatile uint16_t    regulator_pcmc_trip_ns    = 0u;
 volatile int32_t     regulator_pid_error_mv          = 0;
 
 /* =========================================================================
@@ -446,7 +460,9 @@ static bool buck_phase2_on = false;
 _Static_assert(HRTIM_PERIOD_COUNTS < HRTIM_CMP_PARKED, "parked compare must be beyond the period");
 
 #define HRTIM_TIMER_ABCD_UDIS (HRTIM_CR1_TAUDIS | HRTIM_CR1_TBUDIS | HRTIM_CR1_TCUDIS | HRTIM_CR1_TDUDIS)
-#define HRTIM_TIMER_ABCD_SWU  (HRTIM_CR2_TASWU | HRTIM_CR2_TBSWU | HRTIM_CR2_TCSWU | HRTIM_CR2_TDSWU)
+/* Timer E (DAC3 sawtooth triggers) updates with A-D. */
+#define HRTIM_TIMER_ABCD_SWU  (HRTIM_CR2_TASWU | HRTIM_CR2_TBSWU | HRTIM_CR2_TCSWU | HRTIM_CR2_TDSWU | \
+                               HRTIM_CR2_TESWU)
 
 /** Transfer every preloaded register of Timers A-D now (configuration
  *  writes outside the PID ISR: init, mode changes, bench PWM). */
@@ -785,6 +801,9 @@ static void hrtim_set_switching_period(RegulatorMode mode)
     {
         HRTIM1->sTimerxRegs[idx[k]].PERxR = per;
     }
+    /* Timer E: same period as A, so the sawtooth resets at A's period start
+     * (CMP2 = PCMC_RAMP_STEP_TICKS is the same at 200 and 400 kHz). */
+    HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_E].PERxR = per;
     HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP4xR = adc_sync_dcm_trigger_ticks(per);
 }
 
@@ -793,7 +812,7 @@ static void hrtim_set_switching_period(RegulatorMode mode)
 static void hrtim_restart_counters(void)
 {
     HRTIM1->sCommonRegs.CR2 |= HRTIM_CR2_MRST | HRTIM_CR2_TARST | HRTIM_CR2_TBRST |
-                               HRTIM_CR2_TCRST | HRTIM_CR2_TDRST;
+                               HRTIM_CR2_TCRST | HRTIM_CR2_TDRST | HRTIM_CR2_TERST;
 }
 
 /** Write one CCM edge set (preloaded; the caller holds or forces the update). */
@@ -980,6 +999,8 @@ static bool is_good(void);
 static bool input_path_power_up(RegulatorFaultSource *failure);
 static void bench_pwm_restore(void);
 static void hrtim_start_timers(void);
+static void hrtim_configure_timer_e(void);
+static void dac3_sawtooth_init(void);
 static void hrtim_apply_buck_mode_static_leg(void);
 static void hrtim_apply_boost_mode_static_leg(void);
 static void hrtim_apply_buck_boost_legs(void);
@@ -1044,9 +1065,10 @@ void regulator_init(void)
      *  CMP1 = blanking window end, CMP2 = backstop, CMP3 = bootstrap end   */
     hrtim_configure_compare_registers();
 
-    /* --- Step 3: Set DAC3 CH1 to 0 (zero current threshold → safe) --- */
-    HAL_DAC_SetValue(&hdac3, DAC_CHANNEL_1, DAC_ALIGN_12B_R, 0u);
-    HAL_DAC_Start(&hdac3, DAC_CHANNEL_1);
+    /* --- Step 3: DAC3 CH1 sawtooth from Timer E, at 0 (zero current
+     *             threshold → safe) --- */
+    hrtim_configure_timer_e();
+    dac3_sawtooth_init();
 
     /* --- Step 4: Start COMP1 (§6.1) --- */
     HAL_COMP_Start(&hcomp1);
@@ -2853,6 +2875,47 @@ void regulator_pid_tim7_isr(void)
     regulator_i_max_ma   = i_max_ma;
     const uint32_t cmp2 = DCM_PULSE_START_TICKS + HRTIM_NS_TO_TICKS_RT(t_on_ns);
 
+    /* --- 6a. Peak current mode in DCM (plans/peak-current-mode.md) ---
+     * COMP1 (IL_MON vs DAC3 CH1) ends the pulse at the peak the model asks
+     * for, less what L gains in the loop delay (comparator, HRTIM, gate
+     * driver: regulator_pcmc_delay_ns, PCMC_DELAY_NS until measured);
+     * CMP2 becomes a backstop at 1.25 t_on + 100 ns (at most t_lim).  The
+     * threshold must come after the blanking (EEV4 is ignored until CMP1),
+     * with 20 % margin: below that the on-time ends the pulse as before.
+     * Not with the rectifier on: its window follows the predicted end.
+     * DCM's slope is zero (no subharmonic below 50 % of a period's ramp).
+     * cmp2 (predicted) still places the ADC sample. */
+    uint32_t cmp2_hw = cmp2;
+    uint32_t pcmc_dac = 0u;
+    regulator_pcmc_active = 0u;
+    if (regulator_pcmc_dcm && !regulator_ccm_active && !regulator_sr_enable)
+    {
+        const float m1_a_per_ns = chg_v / l_h * 1e-9f;
+        const float i_pk_on_a   = m1_a_per_ns * (float)t_on_ns;    /* after the clamps */
+        const uint32_t blank_ns = (regulator_mode == REGULATOR_MODE_BUCK) ? HRTIM_BLANKING_NS_BUCK
+                                                                          : HRTIM_BLANKING_NS_BOOST;
+        const float tau_ns = (float)regulator_pcmc_delay_ns;
+        if (i_pk_on_a >= 1.2f * m1_a_per_ns * ((float)blank_ns + tau_ns))
+        {
+            const float i_thr_a = i_pk_on_a - m1_a_per_ns * tau_ns;
+            pcmc_dac = IL_MA_TO_DAC_COUNTS((uint32_t)(i_thr_a * 1e3f));
+            uint32_t bs_ns = t_on_ns + t_on_ns / 4u + 100u;
+            if (bs_ns > t_lim_ns) { bs_ns = t_lim_ns; }
+            if (bs_ns < t_on_ns)  { bs_ns = t_on_ns; }
+            cmp2_hw = DCM_PULSE_START_TICKS + HRTIM_NS_TO_TICKS_RT(bs_ns);
+            regulator_pcmc_backstop_ns = (uint16_t)bs_ns;
+            regulator_pcmc_active = 1u;
+        }
+    }
+    {
+        HRTIM_Timerx_TypeDef *te = &HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_E];
+        const uint32_t c1 = te->CPT1xR & 0xFFFFu, c2 = te->CPT2xR & 0xFFFFu;
+        regulator_pcmc_q1_off_ns = (uint16_t)((c1 > DCM_PULSE_START_TICKS)
+            ? ((c1 - DCM_PULSE_START_TICKS) * 1000u) / BUCK_CCM_TICKS_PER_US : 0u);
+        regulator_pcmc_trip_ns   = (uint16_t)((c2 > DCM_PULSE_START_TICKS)
+            ? ((c2 - DCM_PULSE_START_TICKS) * 1000u) / BUCK_CCM_TICKS_PER_US : 0u);
+    }
+
     /* --- 6b. Rectifier window (regulator_config.h, SR_*) ---
      * Predicted discharge t_dis = t_on * charge / discharge voltage, the
      * rectifier's discharge voltages (no diode drop).  On one dead time
@@ -3032,7 +3095,7 @@ void regulator_pid_tim7_isr(void)
     }
     if (regulator_mode != REGULATOR_MODE_BOOST)
     {
-        HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP2xR = cmp2;
+        HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP2xR = cmp2_hw;
         /* Q2 rectifier (buck, buck-boost) */
         HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP2xR = sr_on;
         HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP3xR = sr_off;
@@ -3044,7 +3107,7 @@ void regulator_pid_tim7_isr(void)
     }
     if (regulator_mode != REGULATOR_MODE_BUCK)
     {
-        HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP2xR = cmp2;
+        HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B].CMP2xR = cmp2_hw;
         /* Q3 rectifier (boost, buck-boost) */
         HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_D].CMP3xR = sr_on;
         HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_D].CMP4xR = sr_off;
@@ -3110,14 +3173,12 @@ void regulator_pid_tim7_isr(void)
         const uint32_t c = IL_MA_TO_DAC_COUNTS(regulator_ccm_peak_ma);
         if (c < dac_counts) { dac_counts = c; }
     }
-    slope_comp_set_peak(dac_counts);
-#if SLOPE_COMP_ENABLED
-    slope_comp_update_step(v_out_mv, v_in_mv, (SlopeCompMode)regulator_mode);
-#else
-    /* No ramp: the DAC holds the threshold until the next PID cycle, so it
-     * is written here rather than in the 200 kHz period ISR.              */
-    slope_comp_reload_dac_peak();
-#endif
+    /* DCM peak current mode (6a): the pulse's own threshold. */
+    if (regulator_pcmc_active && pcmc_dac < dac_counts) { dac_counts = pcmc_dac; }
+    regulator_pcmc_dac_counts = (uint16_t)dac_counts;
+    /* DAC3 CH1 sawtooth (flat here): taken at Timer E's next roll-over,
+     * the same period boundary as the Timer A/B compares above. */
+    slope_comp_set_ramp(dac_counts, 0u);
 
     /* TODO(debug): Verify slope_comp_step_counts in debugger watch.
      * Expect ~1–5 DAC counts/tick at 2 MHz with default inductor value.
@@ -3597,7 +3658,60 @@ static void hrtim_start_timers(void)
     HAL_HRTIM_WaveformCounterStart_IT(&hhrtim1,
                                        HRTIM_TIMERID_MASTER |
                                        HRTIM_TIMERID_TIMER_A | HRTIM_TIMERID_TIMER_B |
-                                       HRTIM_TIMERID_TIMER_C | HRTIM_TIMERID_TIMER_D);
+                                       HRTIM_TIMERID_TIMER_C | HRTIM_TIMERID_TIMER_D |
+                                       HRTIM_TIMERID_TIMER_E);
+}
+
+/**
+ * hrtim_configure_timer_e — DAC3 CH1 sawtooth triggers and edge captures
+ * (plans/peak-current-mode.md).  Timer E runs in lockstep with Timer A (same
+ * prescaler and period, reset together by hrtim_restart_counters()), no
+ * outputs.
+ *   - DCDE = 1, DCDR = 0, DCDS = 0 (RM0440 §28.3.21): hrtim_dac_reset_trg5 on
+ *     each roll-over loads DAC3 STRSTDATA1; hrtim_dac_step_trg5 on each CMP2
+ *     match (CMP2 auto-repeats every PCMC_RAMP_STEP_TICKS) steps the ramp
+ *     down by STINCDATA1.  CMP2 is not used for anything else.
+ *   - CPT1 = TA1 reset (when Q1's gate command actually ended),
+ *     CPT2 = EEV4 (COMP1, unblanked: the first or a later trip).
+ * DCDE cannot change while the timer runs: call before hrtim_start_timers().
+ */
+static void hrtim_configure_timer_e(void)
+{
+    HRTIM_Timerx_TypeDef *ta = &HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A];
+    HRTIM_Timerx_TypeDef *te = &HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_E];
+    te->TIMxCR  = (ta->TIMxCR & HRTIM_TIMCR_CK_PSC) |
+                  HRTIM_TIMCR_CONT | HRTIM_TIMCR_PREEN | HRTIM_TIMCR_TRSTU;
+    te->TIMxCR2 = HRTIM_TIMCR2_DCDE;
+    te->PERxR   = ta->PERxR;
+    te->CMP2xR  = PCMC_RAMP_STEP_TICKS;
+    te->CPT1xCR = HRTIM_CPT1CR_TA1RST;
+    te->CPT2xCR = HRTIM_CPT2CR_EXEV4CPT;
+    te->TIMxDIER = 0u;
+}
+
+/**
+ * dac3_sawtooth_init — DAC3 CH1 (COMP1 INM) as a sawtooth from Timer E:
+ * reset trigger HRTIM_RST_TRG5, step trigger HRTIM_STEP_TRG5, decrement,
+ * saturating at 0.  Starts at reset value 0, step 0 (COMP1 trips at any
+ * current: safe).  slope_comp_set_ramp() sets the reset value and step;
+ * both take effect at the next Timer E period start.
+ */
+static void dac3_sawtooth_init(void)
+{
+    DAC_ChannelConfTypeDef c = {0};
+    c.DAC_HighFrequency           = DAC_HIGH_FREQUENCY_INTERFACE_MODE_AUTOMATIC;
+    c.DAC_DMADoubleDataMode       = DISABLE;
+    c.DAC_SignedFormat            = DISABLE;
+    c.DAC_SampleAndHold           = DAC_SAMPLEANDHOLD_DISABLE;
+    c.DAC_Trigger                 = DAC_TRIGGER_HRTIM_RST_TRG5;
+    c.DAC_Trigger2                = DAC_TRIGGER_HRTIM_STEP_TRG5;
+    c.DAC_OutputBuffer            = DAC_OUTPUTBUFFER_DISABLE;
+    c.DAC_ConnectOnChipPeripheral = DAC_CHIPCONNECT_INTERNAL;
+    c.DAC_UserTrimming            = DAC_TRIMMING_FACTORY;
+    (void)HAL_DAC_ConfigChannel(&hdac3, &c, DAC_CHANNEL_1);
+    (void)HAL_DACEx_SawtoothWaveGenerate(&hdac3, DAC_CHANNEL_1,
+                                         DAC_SAWTOOTH_POLARITY_DECREMENT, 0u, 0u);
+    (void)HAL_DAC_Start(&hdac3, DAC_CHANNEL_1);
 }
 
 /**
@@ -3970,8 +4084,9 @@ static void enter_fault(RegulatorFaultSource source)
     ccm_leave(REGULATOR_CCM_EXIT_STOP);
     bench_pwm_restore();
 
-    /* Zero DAC — comparator threshold = 0 → additional safety (§4.4) */
-    DAC3->DHR12R1 = 0u;
+    /* Zero DAC — comparator threshold = 0 → additional safety (§4.4); the
+     * sawtooth loads it at the next Timer E period start. */
+    slope_comp_set_ramp(0u, 0u);
 
     /* Stop timers */
     TIM6->CR1 &= ~TIM_CR1_CEN;   /* stop TIM6 (slope comp) */
