@@ -1,4 +1,4 @@
-# Bench 2026-11-22 — AD8410A on IL_MON, resistor only; ID_MON reads ~8× low
+# Bench 2026-11-22 — AD8410A on IL_MON, resistor only, DCM 5 → 33 V
 
 - U7 (IL_MON amplifier, was INA281A2 50 V/V) replaced by an AD8410A on an adapter (`KiCad/ad8410a_adapter`):
   REF1 tied to VS, REF2 to GND, so IL_MON sits at VS/2 at 0 A and swings both ways.
@@ -36,12 +36,33 @@ Scope at 12 V (`scope_12V_running.png`, triggered on SW1): SW1 200 kHz DCM pulse
 - 12 V: a DCM triangle of 2.6 A peak at 200 kHz from 24.6 V into 4.7 µH carries about 0.52 A.
 - 5 V: the firmware's 376 ns on-time gives a 1.57 A peak and about 0.29 A (and its own `i_pk_ma` was 1602).
 
-What changed today is the 3V3 supply (rail down, now from the Nucleo). Cause not looked into. **CCM, its current
-limit and the CCM OCP all use ID_MON**, so no run above 12 V and no CCM until ID_MON reads right again.
+Cause (Dan, 07:2x): only the AD8410A got the Nucleo's 3V3; the board's 3V3 rail is still down, so U8 (ID_MON) and U6
+(IS_MON) are unpowered. Their readings below mean nothing. **CCM, its current limit and the CCM OCP all use ID_MON**,
+so the sweep below ran DCM only (`regulator_ccm_enable` 0, written at IDLE; a reset puts it back to 1).
 
 The IL_MON mean (scope VAVG 1.629 V at 12 V vs 1.636 V at idle) is below the 8-bit screen resolution at 0.5 V/div
 (20 mV ≈ 0.2 A); it is not a gain check. The gain is only checked by the triangle above, roughly.
 
+## DCM sweep, 15 → 33 V (`run_<V>V.json`, `scope_<V>V_running.png`; 24 V has no screenshot)
+
+`bu battery run`, 5 s each, 2 A limit (not effective: ID_MON is unpowered), scope read 3.5 s in.
+
+| Ceiling | Result | V_out (fw) | TP2 VAVG (scope) | IL_MON VMAX → peak at 20 V/V | SW1 / SW2 VMAX |
+|---|---|---|---|---|---|
+| 15 V | ran, stopped, no fault | 14960 mV | 14.64 V | 1.98 V → 3.4 A | 31.2 / 17.2 V |
+| 20 V | ran, stopped, no fault | 20020 mV | 19.42 V | 1.88 V → 2.4 A | 28.0 / 22.4 V |
+| 24 V | ran, stopped, no fault | 24008 mV | 23.44 V | 2.68 V → 10.4 A | 28.4 / 34.4 V |
+| 28 V | ran, stopped, no fault | 27937 mV | 27.29 V | 2.78 V → 11.4 A | 28.4 / 39.2 V |
+| 33 V | ran, stopped, no fault; **V_out 30.4 V, not 33** | 30420 mV | 29.74 V | 2.84 V → 12.0 A | 28.4 / 43.2 V |
+
+- IL_MON VMAX includes edge spikes (20 MHz BWL). The 28 V screenshot shows the boost-DCM shape: a fast rise to a
+  near-flat top at about 2.56 V (≈ 9.3 A; the discharge slope (V_out − V_in)/L is small at 28 V from 24.5 V), then a
+  step down at the SW2 edge. That is under the 12.5 A COMP1 backstop (2.886 V). VMAX at 33 V (2.84 V) is close to
+  it: whether COMP1 cut pulses there is not checked (no trace taken).
+- 33 V short at 30.4 V: as 2026-11-12 (a DCM resistor run above ~30 V at 24.4 V in does not reach the ceiling).
+- TP2 (scope) reads 0.3–0.7 V under the firmware's V_out; not calibrated today.
+
 ## End state
 
-`build/Battery` flashed, IDLE, input and output paths off, no fault. Scope on the layout above.
+`build/Battery` flashed, IDLE, input and output paths off, no fault, `regulator_ccm_enable` 0 (DCM only) until reset.
+Board 3V3 still down (ID_MON / IS_MON unpowered). Scope on the layout above.
