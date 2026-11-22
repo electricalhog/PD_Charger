@@ -170,7 +170,41 @@ Consequences:
 All ran to the end, stopped, no fault. The first 28 V tail mean includes one 26.49 V sample; the repeat's samples
 were 27.7–28.15 V.
 
+## IL_MON blind spot: the AD8410A's common-mode deglitch, triggered by SW2 (`refresh/`)
+
+The AD8410A datasheet (Rev D, Theory of Operation; Figures 10 and 11) says the output is held at its last value
+for about 1 µs after a large input common-mode transient, then settles. R5's common mode is SW2. The test moved the
+output-leg bootstrap refresh (Q4 on, SW2 → 0 V) away from some Q1 turn-ons, with no firmware change:
+`regulator_ccm_refresh_interval_ns` (Timer B's period in forced CCM) set to 2 or 3 switching periods. Forced CCM
+(`regulator_ccm_enable` 2), 12 V ceiling, 25.3 Ω, comparator mode off. Pulses are grouped by the time from SW2's
+return to V_out after its last refresh dip to Q1's turn-on (`align_by_refresh.py`, `aligned_ccm_12V_*.txt`).
+
+| Run | V_out / I_out | Refresh just before Q1 (0 µs) | No refresh since the previous period (2.5 or 5 µs) |
+|---|---|---|---|
+| 200 kHz, every 10 µs | 11959 mV / 466 mA | flat from the dip to +1650 ns, then a jump | tracks from ~200 ns after Q1 on: 2.63 A/µs (400–2200 ns) |
+| 400 kHz, every 5 µs | 11959 mV / 465 mA | flat to +900 ns, a jump at ~1000 ns | tracks from ~200 ns: 2.6 A/µs (400–1000 ns) |
+| 400 kHz, every 7.5 µs | 11952 mV / 467 mA | flat to +900 ns | 2.5 µs and 5.0 µs groups both track: 2.6 A/µs (400–1000 ns) |
+
+Model rising slope: (24.6 − 12.0) V / 4.7 µH = 2.7 A/µs. All three runs ended RUNNING → IDLE with no fault, CCM active
+throughout. SW2 stays at 11.7–12.1 V in the periods without a refresh; Q3's gate voltage was not probed (at 10 µs the
+interval is twice the 5 µs default).
+
+**So the on-time blind spot is the deglitch, triggered by the SW2 step.** SW1's 0 → 25 V edge at Q1 turn-on does
+not trigger it: with SW2 steady, IL_MON follows the ramp ~200 ns after the edge (the amplifier's response, Figures
+20–23). A pulse one full period after a refresh is visible at both 200 and 400 kHz. The hold measured 1.0 µs
+(400 kHz) and 1.7 µs (200 kHz) after SW2 came back up; why they differ is not known.
+
+What this means (inference, not bench-tested yet):
+- **CCM:** refresh every Nth period (N ≥ 2) and leave the refresh right before Q1 turns on. The held value is then
+  the valley, under any peak threshold, so COMP1 can't false-trip; the refreshed period's pulse ends on the CMP2
+  backstop, which must then be the voltage-mode on-time. Moving the refresh to just after Q1 turns off instead
+  would hold the peak, so COMP1 would trip at the next pulse's blanking end.
+- **DCM (rectifier off):** Q3 and Q4 are both off, SW2 floats, and the Q2 refresh drags it to ~0 V through L1, so
+  SW2 still steps 0 → V_out + V_f at every Q1 turn-on (the 0 → 14 V seen in the DCM capture). No refresh move fixes
+  that. Q3 would have to hold SW2 at V_out for ≥ 1.7 µs before Q1 turns on, which needs a new Q3/Q4 schedule.
+
 ## End state
 
 `build/Battery` with `PCMC_DCM_DEFAULT` 0 flashed, IDLE, input and output paths off, no fault,
-`regulator_ccm_enable` 0 (DCM only) until reset. Scope back to CH1 0.5 V/div, 2 µs/div, trigger CH2 8 V.
+`regulator_ccm_enable` 0 (DCM only) until reset. After the refresh test: `regulator_buck_fsw_khz` 200 and
+`regulator_ccm_refresh_interval_ns` 5000 written back. Scope back to CH1 0.5 V/div, 2 µs/div, trigger CH2 8 V.

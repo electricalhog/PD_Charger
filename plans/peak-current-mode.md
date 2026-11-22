@@ -31,8 +31,11 @@ So COMP1 cannot end a pulse at a peak, and **peak current mode on IL_MON is not 
 reads today**. `PCMC_DCM_DEFAULT` is 0. §§1–6 stand as the design if IL_MON is made to track. ID_MON and IS_MON can't
 replace it: the output caps sit between Q3 and R6, and U6 reads the ADM1270's filtered sense. Both are DC.
 
-The next step is Dan's: probe the AD8410A's inputs and output on the adapter at 12 V DCM, to tell an input
-(wiring or filter) problem from the amplifier's common-mode recovery.
+**Cause found (later the same day, README "IL_MON blind spot"): the AD8410A's ~1 µs common-mode deglitch, triggered
+by SW2 steps.** With the output-leg refresh every 2nd or 3rd period in forced CCM, the pulses with no refresh before
+them track the on-time ramp ~200 ns after Q1 turns on (2.6 A/µs against 2.7 from the model), at 200 and 400
+kHz. So: CCM can run peak current mode with the refresh every Nth period (the refreshed pulse on the backstop). DCM
+needs Q3 to hold SW2 at V_out ≥ 1.7 µs before Q1 turns on, because SW2 floats to ~0 V between pulses today.
 
 The firmware-only alternative is **valley current mode**:
 - The comparator acts during the discharge, the interval where IL_MON is good, in buck, boost and buck-boost alike.
