@@ -434,3 +434,64 @@ float buck_ccm_exit_seed_ma(float i_avg_ma, float i_newest_ma, bool handover, fl
     if (i0 < 0.0f)          { i0 = 0.0f; }
     return i0;
 }
+
+/* ---- Buck CCM peak current mode (buck_ccm.h) ---- */
+
+void pcmc_ccm_command(float i_cmd_a, float v_in_v, float v_out_v, float l_h, uint32_t t_q1_ns, uint32_t t_on_ns,
+                      uint32_t tau_ns, float i_thr_max_a, float zero_counts, float counts_per_a, uint32_t step_ns,
+                      PcmcCcmCmd *out)
+{
+    const float m1 = (v_in_v > v_out_v) ? (v_in_v - v_out_v) / l_h : 0.0f;   /* A/s */
+    const float m2 = (v_out_v > 0.0f) ? v_out_v / l_h : 0.0f;
+    const float d  = (v_in_v > 0.0f) ? v_out_v / v_in_v : 1.0f;
+    float ma = 0.0f;
+    if (m2 > m1) { ma = 1.25f * 0.5f * (m2 - m1); }
+    if (d > 0.45f) { ma += 0.1f * m2; }
+    const float t_on = (float)t_on_ns * 1e-9f;
+    float i_thr = i_cmd_a + 0.5f * m1 * t_on - m1 * (float)tau_ns * 1e-9f;
+    if (i_thr > i_thr_max_a) { i_thr = i_thr_max_a; }
+    const float reset = i_thr + ma * ((float)t_q1_ns * 1e-9f + t_on);
+    float c = zero_counts + reset * counts_per_a + 0.5f;
+    if (c < 0.0f)    { c = 0.0f; }
+    if (c > 4095.0f) { c = 4095.0f; }
+    float s = ma * (float)step_ns * 1e-9f * counts_per_a * 16.0f + 0.5f;
+    if (s < 0.0f)     { s = 0.0f; }
+    if (s > 65535.0f) { s = 65535.0f; }
+    out->i_thr_a      = i_thr;
+    out->m_a_a_per_us = ma * 1e-6f;
+    out->reset_a      = reset;
+    out->reset_counts = (uint32_t)c;
+    out->step_12p4    = (uint32_t)s;
+}
+
+#define PCMC_CAPTURE_GUARD_TICKS 64u   /* register-read skew and capture latency */
+/* A TA1-reset capture lands 67 ticks (12.3 ns) after the compare that reset
+ * the output: bench 2026-11-22, 400 kHz, every pulse at the CMP2 backstop
+ * 8029 captured at 8096.  Without it a backstop-ended pulse fell outside the
+ * guard, the tracker never saw one, and the backstop could not move out. */
+#define PCMC_CAPTURE_LATENCY_TICKS 67u
+
+bool pcmc_ccm_capture(uint32_t cpt_b, uint32_t per, uint32_t a4, uint32_t bs, uint32_t *t_on_ticks,
+                      bool *at_backstop)
+{
+    if (cpt_b < per || cpt_b >= 2u * per) { return false; }   /* the refresh period, or not a count */
+    uint32_t cpt = cpt_b - per;
+    if (cpt <= a4 + PCMC_CAPTURE_LATENCY_TICKS) { return false; }
+    cpt -= PCMC_CAPTURE_LATENCY_TICKS;                         /* the turn-off's compare time */
+    if (cpt > bs + PCMC_CAPTURE_GUARD_TICKS) { return false; }
+    *t_on_ticks  = cpt - a4;
+    *at_backstop = (cpt + PCMC_CAPTURE_GUARD_TICKS / 4u >= bs);
+    return true;
+}
+
+uint32_t pcmc_ccm_track(uint32_t track_ticks, uint32_t meas_ticks)
+{
+    if (meas_ticks >= track_ticks) { return track_ticks + (meas_ticks - track_ticks + 2u) / 4u; }
+    return track_ticks - (track_ticks - meas_ticks + 2u) / 4u;
+}
+
+uint32_t pcmc_ccm_backstop(uint32_t track_ticks, uint32_t margin_ticks)
+{
+    const uint32_t m = track_ticks / 8u;
+    return track_ticks + ((m > margin_ticks) ? m : margin_ticks);
+}

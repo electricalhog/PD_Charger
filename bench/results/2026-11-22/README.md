@@ -203,8 +203,55 @@ What this means (inference, not bench-tested yet):
   SW2 still steps 0 → V_out + V_f at every Q1 turn-on (the 0 → 14 V seen in the DCM capture). No refresh move fixes
   that. Q3 would have to hold SW2 at V_out for ≥ 1.7 µs before Q1 turns on, which needs a new Q3/Q4 schedule.
 
+## Buck CCM peak current mode (`ccm_pcmc/`)
+
+Forced CCM (`regulator_ccm_enable` 2), `regulator_pcmc_ccm` 1, 12 V ceiling, 2 A limit, 25.3 Ω, V_in 24.6 V.
+Firmware (`pcmc_ccm_step`, regulator.c; `pcmc_ccm_*`, buck_ccm.c):
+- Q4 refreshes every second period (Timer B period 2T).
+- In the period without a refresh, COMP1 ends Q1 at a DAC3 sawtooth set from the voltage loop's average-current
+  command: i_thr = i_cmd + m1·t/2 − m1·τ, with slope compensation above D 0.45.
+- In the refresh period, Timer B CMP1 (TIMEVNT1) ends Q1 at the tracked on-time.
+- The CMP2 backstop is set past both. Q2 turns on a dead time after it, so Q1 and Q2 can't overlap.
+
+It took five firmware fixes to get there. Each was found on the bench, in this order:
+
+| # | Measured | Cause | Fix |
+|---|---|---|---|
+| 1 | SW_UVP 0.3 ms after the takeover at 6.4 V: V_out 6.3 → 3.1 V (`trace_12V_200k_tau200.csv`). Scope: pulses ended with IL_MON at 1.78–1.83 V, the DAC level (1.82 V); first pulse 960 ns from a −2.15 A valley, the duty law's 1240 ns (`periods_12V_200k_tau200.txt`) | τ = 200 ns (`regulator_pcmc_delay_ns`) took m1·τ = 0.78 A off the threshold; the comparator's measured lead is ~0 | CCM's own `regulator_pcmc_ccm_delay_ns`, default 0 (DCM's stays 200) |
+| 2 | 8 tracker samples in 0.68 s; another run's on-time pinned at 2451 ns while i_cmd wound 725 → 1015 mA, then OVER_BAND exits ×3 and SW_OVP 14.1 V (`trace_12V_200k_tau0_phaselock.csv`, `logs/`) | the PID read Timer E's capture at one fixed phase: TIM7's 50 µs is 10 periods of the same clock, so each run saw one kind of period only | Timer B CPT1 (TA1 reset) copied by DMA2 ch1 into a 2-slot ring; Timer B's count says which period |
+| 3 | DMA tracker at ~1 sample/cycle, then SW_OVP: on-time 2350 → 2810 ns while i_cmd fell 450 → 212 mA, V_out 10.6 → 11.95 V in 0.3 ms (`trace_12V_200k_dma_ratchet.csv`) | tracker up at once, down ¼: the copied refresh pulse makes the comparator pulse settle at 2·t_ss − track (volt-seconds, inferred), a gain of −1 that ratcheted up; the ripple term used the same on-time | tracker ¼ either way; ripple term from T·V_out/V_in; backstop track + max(150 ns, track/8) |
+| 4 | Stable, but a 2-period pattern: refresh pulses 1923 ± 29 ns, others 2771 ± 381 ns; valleys 1.52 / 1.23 V (`periods_12V_200k_symtrack.txt`) | COMP1 cut the refresh pulse ~2.2 µs into the period, when the deglitch hold released and IL_MON jumped from the held valley to the true current, already over the threshold. This disproves the "valley is held, so no false trip" point above | Timer A's EEV4 filter = TIMFLTR1 (blanking from Timer B's reset to TB CMP1, RM0440 Table 242) in this mode: COMP1 is masked for the whole refresh pulse |
+| 5 | 400 kHz: tracker stopped ~3 s in, i_cmd at its 8 A ceiling, threshold 9.6 A, V_out 11.2–11.8 V; each pulse ended at the backstop (8029) and was captured at 8096 | a TA1-reset capture lands 67 ticks (12.3 ns) after the compare, past the 64-tick guard, so every backstop-ended pulse was rejected and the backstop could not move out | subtract the 67-tick latency before classifying |
+
+Result with all five (raw captures at 4 ns/sample, `per_period.py`):
+
+| Run | V_out (ADC samples) | I_out | i_cmd | Refresh pulse | Other pulse | Valleys (IL_MON) |
+|---|---|---|---|---|---|---|
+| 200 kHz, 6 s (`run_12V_200k_fltr.json`) | 11.95–12.21 V, then SW_OVP at 5.5 s (below) | 460–474 mA | 513–770 mA | 2365 ± 11 ns | 2351 ± 51 ns | 1.369 / 1.338 V |
+| 200 kHz, 12 s and 20 s (`run_12V_200k_excursion.json`, `_20s.json`) | 11.52–12.42 V, means 11.97 / 12.02 | 463–477 mA | 507–689 mA | – | – | – |
+| 400 kHz, 10 s (`run_12V_400k_lat.json`) | 11.00–12.16 V, mean 11.84 | 441–475 mA | 539–851 mA | 1133 ± 11 ns | 1141 ± 50 ns | 1.538 / 1.512 V |
+| 200 kHz, defaults, 10 s (`run_12V_200k_final.json`) | 11.71–12.25 V, mean 12.00 | 432–477 mA | 511–585 mA | – | – | – |
+
+- The tracked on-time was 2.35–2.37 µs at 200 kHz (T·V_out/V_in = 2.44 µs) and 1.12 µs at 400 kHz.
+- The backstop ended 0.07–0.19 % of sampled pulses at 200 kHz and 1.3 % at 400 kHz. The tracker got ~19,800 samples/s (PID 20 kHz).
+- The takeover from the duty law (`periods_takeover_symtrack.txt`) kept pulse widths at ~1.2 µs at 6.4 V, with no dip.
+- i_cmd runs ~50–150 mA above I_out in steady state. The PID absorbs that.
+
+**Open: one excursion.** In the 6 s run above, CCM exited OVER_BAND at about 4.35 s, re-entered, and SW_OVP latched
+at 13.9 V about 1.15 s later. The trace wasn't armed for it, and it did not recur in the next 42 s (12 + 20 + 10 s
+runs). I checked one hypothesis and ruled it out: the ADC V window sits ~1 µs before Q1's actual turn-off at D 0.49.
+The cause is not known.
+
+Regression, peak mode off, 200 kHz, 5 s each: duty-law forced CCM 11966 mV / 467 mA (`regress_dutylaw_200k.json`);
+DCM 11986 mV / 468 mA (`regress_dcm_200k.json`). Both ended RUNNING with no fault. DCM at 400 kHz was not rerun.
+
+Not done: other voltages (5, 20 V), load steps, and a measurement of Q2's body-diode time after an early comparator
+turn-off. The comparator periods lose Timer A's 100 ns leading-edge blanking (TIMFLTR1 replaces CMP1). In the two
+captures with it, the shortest comparator pulses were 2236 ns at 200 kHz (119 periods, mean 2351) and 968 ns at
+400 kHz (240 periods, mean 1141). Whether a turn-on glitch causes the 400 kHz minimum is not known.
+
 ## End state
 
-`build/Battery` with `PCMC_DCM_DEFAULT` 0 flashed, IDLE, input and output paths off, no fault,
-`regulator_ccm_enable` 0 (DCM only) until reset. After the refresh test: `regulator_buck_fsw_khz` 200 and
-`regulator_ccm_refresh_interval_ns` 5000 written back. Scope back to CH1 0.5 V/div, 2 µs/div, trigger CH2 8 V.
+`build/Battery` flashed (CCM peak mode built, `PCMC_CCM_DEFAULT` 0), reset to defaults: IDLE, no fault,
+`regulator_pcmc_ccm` 0, `regulator_ccm_enable` 1, `regulator_buck_fsw_khz` 200, `regulator_pcmc_ccm_delay_ns` 0.
+Scope back to CH1 0.5 V/div (20 MHz), 2 µs/div, offset 0, trigger CH2 8 V NORM; CH4 10 V/div, no BW limit.

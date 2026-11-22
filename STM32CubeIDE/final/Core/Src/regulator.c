@@ -380,6 +380,44 @@ volatile uint16_t    regulator_pcmc_backstop_ns = 0u;  /* CMP2 after the pulse s
 volatile uint16_t    regulator_pcmc_q1_off_ns  = 0u;
 volatile uint16_t    regulator_pcmc_trip_ns    = 0u;
 volatile int32_t     regulator_pid_error_mv          = 0;
+/* Peak current mode, buck CCM (step 6c, buck_ccm.h pcmc_ccm_*): switch,
+ * backstop margin, and telemetry (active this cycle, tracked and last
+ * measured on-time, COMP1's level at the trip, the sawtooth step, valid
+ * captures and those the backstop ended). */
+volatile uint8_t     regulator_pcmc_ccm            = PCMC_CCM_DEFAULT;
+volatile uint16_t    regulator_pcmc_ccm_margin_ns  = PCMC_CCM_MARGIN_NS;
+volatile uint16_t    regulator_pcmc_ccm_delay_ns   = PCMC_CCM_DELAY_NS;
+volatile uint8_t     regulator_pcmc_ccm_active     = 0u;
+volatile uint16_t    regulator_pcmc_ccm_ton_ns     = 0u;
+volatile uint16_t    regulator_pcmc_ccm_meas_ns    = 0u;
+volatile float       regulator_pcmc_ccm_ithr_ma    = 0.0f;
+volatile uint16_t    regulator_pcmc_ccm_step       = 0u;
+volatile uint32_t    regulator_pcmc_ccm_samples    = 0u;
+volatile uint32_t    regulator_pcmc_ccm_bs_hits    = 0u;
+static uint32_t      pcmc_ccm_track_ticks = 0u;   /* tracked on-time */
+static uint32_t      pcmc_ccm_a4_ticks    = 0u;   /* Q1 on, as last written */
+static uint32_t      pcmc_ccm_bs_ticks    = 0u;   /* CMP2 backstop, as last written */
+static bool          pcmc_ccm_was         = false;
+/* Timer B CPT1 (Q1's turn-off) by DMA, the last two periods (pcmc_ccm_capture_dma_init) */
+#define PCMC_CPT_DMA_CH    DMA2_Channel1
+#define PCMC_CPT_DMAMUX_CH DMAMUX1_Channel8
+static volatile uint32_t pcmc_ccm_cpt_ring[2] = {0u, 0u};
+/* Timer A's EEV4 (COMP1) filter: 0001 = blanking from Timer A's reset to its
+ * CMP1 (MX_HRTIM1_Init, every mode); 0101 = TIMFLTR1, blanking from Timer B's
+ * reset to Timer B CMP1 (RM0440 Table 242), in buck CCM peak current mode:
+ * Timer B's period is the refresh pair and its CMP1 the refresh pulse's end
+ * (TIMEVNT1), so COMP1 is masked for that whole pulse.  IL_MON is held by the
+ * AD8410A's deglitch after the refresh's SW2 steps and then jumps to the true
+ * current: unmasked, COMP1 cut the refresh pulse there (bench 2026-11-22). */
+#define EEV4_FLTR_TA_CMP1   1u
+#define EEV4_FLTR_TB_CMP1   5u
+static inline void timer_a_eev4_filter(uint32_t code)
+{
+    HRTIM_Timerx_TypeDef *ta = &HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A];
+    const uint32_t v = (ta->EEFxR1 & ~HRTIM_EEFR1_EE4FLTR_Msk) | (code << HRTIM_EEFR1_EE4FLTR_Pos);
+    if (v != ta->EEFxR1) { ta->EEFxR1 = v; }
+}
+
 
 /* =========================================================================
  * PID controller instance
@@ -635,6 +673,8 @@ static void ccm_timing_cfg(BuckCcmTimingCfg *c, uint8_t kind)
     c->dt_ns               = dt;
     c->refresh_ns          = rf;
     c->refresh_interval_ns = (ivl == 0u) ? sw_period_ns : ivl;   /* invalid multiples: cfg_valid */
+    /* Peak current mode needs periods with no refresh in them (step 6c) */
+    if (regulator_pcmc_ccm && c->refresh_interval_ns < 2u * sw_period_ns) { c->refresh_interval_ns = 2u * sw_period_ns; }
     c->min_on_ns           = CCM_MIN_ON_NS;
     c->min_q2_end_ns       = CCM_MIN_Q2_END_NS;
     if (kind == CCM_KIND_BOOST)
@@ -933,6 +973,91 @@ static bool hrtim_release_one_period(void)
     return ok;
 }
 
+/**
+ * pcmc_ccm_step — buck CCM peak current mode, one PID cycle (step 6c; under
+ * the caller's update hold).  Q4 refreshes in the first of every two periods
+ * (ccm_timing_cfg): IL_MON is held then, so Timer B CMP1 (TIMEVNT1 in Q1's
+ * reset, Timer B's first half only) ends that period's pulse at the tracked
+ * on-time; in the second COMP1 does (EEV4).  The tracked on-time follows
+ * Q1's turn-off in periods with no refresh: Timer B's CPT1, which DMA copies
+ * into a two-slot ring each period (pcmc_ccm_capture_dma_init).  A register
+ * read here would be at one fixed phase of the switching period for a whole
+ * run (TIM7's 50 us is ten periods of the same clock), so it saw one kind of
+ * period only (bench 2026-11-22: tracking stalled) (pcmc_ccm_capture/track).
+ * The CMP2 backstop is it plus max(margin, 1/8) (pcmc_ccm_backstop); Q2
+ * turns on a dead time after the backstop as in the duty law, so Q1 and Q2
+ * never overlap whichever event ends Q1.  The command sets the sawtooth.
+ */
+static void pcmc_ccm_step(const BuckCcmTimingCfg *cfg, float i_cmd_ma, uint32_t v_in_mv, uint32_t v_out_mv,
+                          PcmcCcmCmd *cmd)
+{
+    HRTIM_Timerx_TypeDef *ta = &HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A];
+    HRTIM_Timerx_TypeDef *tb = &HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B];
+    const uint32_t margin = buck_ccm_ticks(regulator_pcmc_ccm_margin_ns);
+    const uint32_t max_on = buck_ccm_ticks(buck_ccm_max_on_ns(cfg));
+    const uint32_t min_on = buck_ccm_ticks(cfg->min_on_ns);
+    if (!pcmc_ccm_was)
+    {
+        /* from the duty law: its on-time and the edges it wrote last cycle */
+        pcmc_ccm_track_ticks = ccm_state.t_on_ticks;
+        pcmc_ccm_a4_ticks    = buck_ccm_ticks(cfg->pulse_start_ns);
+        pcmc_ccm_bs_ticks    = pcmc_ccm_a4_ticks + ccm_state.t_on_ticks;
+    }
+    else
+    {
+        /* the ring's newer slot first (CNDTR: transfers left before the DMA wraps to slot 0) */
+        const uint32_t newest = (3u - (PCMC_CPT_DMA_CH->CNDTR & 3u)) % 2u;
+        uint32_t meas = 0u;
+        bool hit = false;
+        bool got = pcmc_ccm_capture(pcmc_ccm_cpt_ring[newest] & 0xFFFFu, sw_period_ticks, pcmc_ccm_a4_ticks,
+                                    pcmc_ccm_bs_ticks, &meas, &hit);
+        if (!got)
+        {
+            got = pcmc_ccm_capture(pcmc_ccm_cpt_ring[newest ^ 1u] & 0xFFFFu, sw_period_ticks, pcmc_ccm_a4_ticks,
+                                   pcmc_ccm_bs_ticks, &meas, &hit);
+        }
+        if (got)
+        {
+            regulator_pcmc_ccm_samples++;
+            if (hit) { regulator_pcmc_ccm_bs_hits++; }
+            regulator_pcmc_ccm_meas_ns = (uint16_t)((meas * 1000u) / BUCK_CCM_TICKS_PER_US);
+            pcmc_ccm_track_ticks = pcmc_ccm_track(pcmc_ccm_track_ticks, meas);
+        }
+    }
+    if (pcmc_ccm_track_ticks < min_on) { pcmc_ccm_track_ticks = min_on; }
+    if (pcmc_ccm_track_ticks > max_on) { pcmc_ccm_track_ticks = max_on; }
+    BuckCcmTiming t;
+    buck_ccm_timing_ticks(cfg, pcmc_ccm_backstop(pcmc_ccm_track_ticks, margin), &t);   /* clamped to [min, max] */
+    hrtim_write_ccm_timing(&t);
+    tb->CMP1xR = t.a_cmp4 + pcmc_ccm_track_ticks;                     /* <= t.a_cmp2 */
+    ta->RSTx1R = HRTIM_OUTPUTRESET_EEV_4 | HRTIM_RST1R_CMP2 | HRTIM_RST1R_TIMEVNT1;
+    timer_a_eev4_filter(EEV4_FLTR_TB_CMP1);   /* COMP1 masked through the refresh pulse */
+    pcmc_ccm_a4_ticks = t.a_cmp4;
+    pcmc_ccm_bs_ticks = t.a_cmp2;
+    ccm_state.t_on_ticks = pcmc_ccm_track_ticks;   /* an exit's handover starts from it */
+
+    const uint32_t ton_ns = (pcmc_ccm_track_ticks * 1000u) / BUCK_CCM_TICKS_PER_US;
+    /* The ripple term's on-time: the volt-second one, T V_out / V_in, not the
+     * measured pulse, which the threshold itself moves (a second loop that
+     * ran away with the ratchet tracker, bench 2026-11-22). */
+    uint32_t t_ff_ns = (v_in_mv > 0u) ? (uint32_t)(((uint64_t)sw_period_ns * v_out_mv) / v_in_mv) : 0u;
+    if (t_ff_ns < cfg->min_on_ns)          { t_ff_ns = cfg->min_on_ns; }
+    if (t_ff_ns > buck_ccm_max_on_ns(cfg)) { t_ff_ns = buck_ccm_max_on_ns(cfg); }
+    float thr_max_a = (float)PEAK_PROTECT_MAX_MA * 1e-3f;
+    if (regulator_ccm_peak_ma != 0u && (float)regulator_ccm_peak_ma * 1e-3f < thr_max_a)
+    {
+        thr_max_a = (float)regulator_ccm_peak_ma * 1e-3f;
+    }
+    pcmc_ccm_command(i_cmd_ma * 1e-3f, (float)v_in_mv * 1e-3f, (float)v_out_mv * 1e-3f,
+                     (float)INDUCTOR_VALUE_NH * 1e-9f, (t.a_cmp4 * 1000u) / BUCK_CCM_TICKS_PER_US, t_ff_ns,
+                     regulator_pcmc_ccm_delay_ns, thr_max_a, (float)IL_MON_ZERO_DAC_COUNTS, (float)DAC_COUNTS_PER_AMP,
+                     (PCMC_RAMP_STEP_TICKS * 1000u) / BUCK_CCM_TICKS_PER_US, cmd);
+    regulator_on_time_ns       = (uint16_t)ton_ns;
+    regulator_pcmc_ccm_ton_ns  = (uint16_t)ton_ns;
+    regulator_pcmc_ccm_ithr_ma = cmd->i_thr_a * 1e3f;
+    regulator_pcmc_ccm_step    = (uint16_t)cmd->step_12p4;
+}
+
 static void ccm_leave(RegulatorCcmExit why)
 {
     if (regulator_ccm_active)
@@ -947,6 +1072,9 @@ static void ccm_leave(RegulatorCcmExit why)
     regulator_ccm_active = 0u;
     regulator_ccm_kind   = CCM_KIND_NONE;
     ccm_hold = CCM_REENTRY_HOLD;
+    pcmc_ccm_was = false;              /* peak mode restarts from the duty law */
+    regulator_pcmc_ccm_active = 0u;
+    timer_a_eev4_filter(EEV4_FLTR_TA_CMP1);
 }
 
 _Static_assert(PEAK_PROTECT_COUNTS_BOOST <= PID_OUTPUT_MAX, "PEAK_PROTECT_COUNTS_BOOST over the DAC range");
@@ -1000,6 +1128,7 @@ static bool input_path_power_up(RegulatorFaultSource *failure);
 static void bench_pwm_restore(void);
 static void hrtim_start_timers(void);
 static void hrtim_configure_timer_e(void);
+static void pcmc_ccm_capture_dma_init(void);
 static void dac3_sawtooth_init(void);
 static void hrtim_apply_buck_mode_static_leg(void);
 static void hrtim_apply_boost_mode_static_leg(void);
@@ -1068,6 +1197,7 @@ void regulator_init(void)
     /* --- Step 3: DAC3 CH1 sawtooth from Timer E, at 0 (zero current
      *             threshold → safe) --- */
     hrtim_configure_timer_e();
+    pcmc_ccm_capture_dma_init();
     dac3_sawtooth_init();
 
     /* --- Step 4: Start COMP1 (§6.1) --- */
@@ -2844,18 +2974,32 @@ void regulator_pid_tim7_isr(void)
         ccm_ocp_count = 0u;
     }
 
+    /* Buck CCM peak current mode (step 6c) this cycle: buck kind, past the
+     * entry's open-loop window, not on an entry, exit or kind-change cycle,
+     * and with periods free of Q4's refresh. */
+    const bool pcmc_ccm_run = regulator_pcmc_ccm && regulator_ccm_active && !ccm_enter_now && !ccm_exit_now &&
+                              !ccm_buck_legs && regulator_mode == REGULATOR_MODE_BUCK &&
+                              regulator_ccm_kind == CCM_KIND_BUCK && ccm_blind_left == 0u &&
+                              ccm_cfg.refresh_interval_ns >= 2u * ccm_cfg.period_ns;
     float i_cmd_ma;
-    if (regulator_ccm_active)
+    if (regulator_ccm_active && !pcmc_ccm_run)
     {
         i_cmd_ma = (float)i_lim_meas_ma;   /* telemetry: the DCM loop is held */
     }
     else
     {
+        /* DCM, or CCM in peak current mode: the same average-current loop.
+         * Taking over from the duty law, its integrator starts at the
+         * current CCM measures, so the command is continuous. */
+        if (pcmc_ccm_run && !pcmc_ccm_was) { pid_state.integrator = (float)i_lim_meas_ma; }
+        const float out_max = pcmc_ccm_run ? (float)PCMC_CCM_I_MAX_MA : i_max_ma;
         pid_config.output_min = 0.0f;
-        pid_config.output_max = i_max_ma;
+        pid_config.output_max = out_max;
         i_cmd_ma = pid_update(&pid_state, &pid_config, v_cmd_mv, (float)v_out_mv);
-        ilim_state.clamp = (i_cmd_ma >= i_max_ma) ? 1 : ((i_cmd_ma <= 0.0f) ? -1 : 0);
+        ilim_state.clamp = (i_cmd_ma >= out_max) ? 1 : ((i_cmd_ma <= 0.0f) ? -1 : 0);
     }
+
+    PcmcCcmCmd pcmc_cmd = {0};   /* buck CCM peak current mode (6c), for the DAC write */
 
     /* --- 6. Modulator: I_cmd -> peak current -> on-time (Timer A/B CMP2) ---
      * The charge this period is Q = I_cmd T_sw, so I_pk = sqrt(2 Q / (L k))
@@ -2999,6 +3143,14 @@ void regulator_pid_tim7_isr(void)
         }
         else
         {
+            if (pcmc_ccm_run)
+            {
+                pcmc_ccm_step(&ccm_cfg, i_cmd_ma, v_in_mv, v_out_mv, &pcmc_cmd);
+            }
+            else
+            {
+            /* the duty law: COMP1 back to the protection level only, no Timer B CMP1 in Q1's reset */
+            HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].RSTx1R = HRTIM_OUTPUTRESET_EEV_4 | HRTIM_RST1R_CMP2;
             (void)buck_ccm_update(&ccm_state, &g, &ccm_cfg, (float)v_out_mv * 1e-3f, (float)v_in_mv * 1e-3f);
             BuckCcmTiming t;
             buck_ccm_timing_ticks(&ccm_cfg, ccm_state.t_on_ticks, &t);   /* 184 ps steps */
@@ -3031,11 +3183,12 @@ void regulator_pid_tim7_isr(void)
                 hrtim_write_ccm_timing(&t);
             }
             regulator_on_time_ns = (uint16_t)t.t_on_ns;
+            }   /* the duty law */
         }
         regulator_ccm_u_mv   = ccm_state.u_v * 1e3f;
-        ilim_state.clamp     = ccm_state.clamp;
-        /* Learned once settled at a fixed setpoint, not limiting. */
-        if (ccm_dwell >= CCM_ENTRY_GRACE && !ccm_state.limiting && ccm_state.clamp == 0 &&
+        if (!pcmc_ccm_run) { ilim_state.clamp = ccm_state.clamp; }   /* peak mode: the PID's (step 5) */
+        /* Learned once settled at a fixed setpoint, not limiting (the duty law only). */
+        if (!pcmc_ccm_run && ccm_dwell >= CCM_ENTRY_GRACE && !ccm_state.limiting && ccm_state.clamp == 0 &&
             effective_setpoint_mv == target_voltage_mv)
         {
             CcmULearned *ul = &ccm_u_learned[ccm_u_band(effective_setpoint_mv)];
@@ -3048,7 +3201,7 @@ void regulator_pid_tim7_isr(void)
         else                     { ccm_clamp_cycles = 0u; }
         regulator_sr_on_ns   = 0u;
         regulator_sr_off_ns  = 0u;
-        trace_at_limit       = (ccm_state.clamp > 0);
+        trace_at_limit       = pcmc_ccm_run ? (ilim_state.clamp > 0) : (ccm_state.clamp > 0);
     }
     else
     {
@@ -3175,10 +3328,18 @@ void regulator_pid_tim7_isr(void)
     }
     /* DCM peak current mode (6a): the pulse's own threshold. */
     if (regulator_pcmc_active && pcmc_dac < dac_counts) { dac_counts = pcmc_dac; }
+    /* Buck CCM peak current mode (6c): the sawtooth from the command; its
+     * level at the trip is clamped there (PEAK_PROTECT_MAX_MA or
+     * regulator_ccm_peak_ma), the ramp's start sits above it. */
+    uint32_t dac_step = 0u;
+    if (pcmc_ccm_run) { dac_counts = pcmc_cmd.reset_counts; dac_step = pcmc_cmd.step_12p4; }
     regulator_pcmc_dac_counts = (uint16_t)dac_counts;
-    /* DAC3 CH1 sawtooth (flat here): taken at Timer E's next roll-over,
-     * the same period boundary as the Timer A/B compares above. */
-    slope_comp_set_ramp(dac_counts, 0u);
+    regulator_pcmc_ccm_active = pcmc_ccm_run ? 1u : 0u;
+    if (!pcmc_ccm_run) { timer_a_eev4_filter(EEV4_FLTR_TA_CMP1); }
+    pcmc_ccm_was = pcmc_ccm_run;
+    /* DAC3 CH1 sawtooth: taken at Timer E's next roll-over, the same period
+     * boundary as the Timer A/B compares above. */
+    slope_comp_set_ramp(dac_counts, dac_step);
 
     /* TODO(debug): Verify slope_comp_step_counts in debugger watch.
      * Expect ~1–5 DAC counts/tick at 2 MHz with default inductor value.
@@ -3675,6 +3836,28 @@ static void hrtim_start_timers(void)
  *     CPT2 = EEV4 (COMP1, unblanked: the first or a later trip).
  * DCDE cannot change while the timer runs: call before hrtim_start_timers().
  */
+/**
+ * pcmc_ccm_capture_dma_init — Timer B CPT1 = TA1 reset (Q1's turn-off in
+ * Timer B's count: period 2T in CCM peak current mode, the refresh period
+ * its first half), and DMA2 channel 1 (DMAMUX1 channel 8, HRTIM1_B request
+ * on CPT1) copying each capture into pcmc_ccm_cpt_ring, circular, so the
+ * PID ISR finds the last two pulses whatever its phase.  No interrupt.
+ */
+static void pcmc_ccm_capture_dma_init(void)
+{
+    HRTIM_Timerx_TypeDef *tb = &HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_B];
+    __HAL_RCC_DMAMUX1_CLK_ENABLE();
+    __HAL_RCC_DMA2_CLK_ENABLE();
+    PCMC_CPT_DMA_CH->CCR = 0u;
+    PCMC_CPT_DMAMUX_CH->CCR = DMA_REQUEST_HRTIM1_B;
+    PCMC_CPT_DMA_CH->CPAR  = (uint32_t)&tb->CPT1xR;
+    PCMC_CPT_DMA_CH->CMAR  = (uint32_t)pcmc_ccm_cpt_ring;
+    PCMC_CPT_DMA_CH->CNDTR = 2u;
+    PCMC_CPT_DMA_CH->CCR   = DMA_CCR_CIRC | DMA_CCR_MINC | DMA_CCR_PSIZE_1 | DMA_CCR_MSIZE_1 | DMA_CCR_EN;
+    tb->CPT1xCR   = HRTIM_CPT1CR_TA1RST;
+    tb->TIMxDIER |= HRTIM_TIMDIER_CPT1DE;
+}
+
 static void hrtim_configure_timer_e(void)
 {
     HRTIM_Timerx_TypeDef *ta = &HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A];

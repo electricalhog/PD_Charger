@@ -349,6 +349,36 @@ _Static_assert(HRTIM_PERIOD_COUNTS >= 5440u && HRTIM_PERIOD_COUNTS <= 54400u,
 #ifndef PCMC_DELAY_NS
 #define PCMC_DELAY_NS 200u
 #endif
+/**
+ * Buck CCM peak current mode (regulator.c step 6c, buck_ccm.h pcmc_ccm_*).
+ * PCMC_CCM_DEFAULT     regulator_pcmc_ccm at boot: 1 = in buck CCM, after the
+ *                      entry's open-loop window, the voltage loop's average-
+ *                      current command sets COMP1's sawtooth and COMP1 ends Q1
+ *                      in every second period; 0 = the duty law (as before).
+ *                      Forces Q4's refresh to every second period at least
+ *                      (the AD8410A holds IL_MON ~1-1.7 us after an SW2 step,
+ *                      bench 2026-11-22 "IL_MON blind spot").
+ * PCMC_CCM_MARGIN_NS   CMP2 backstop = tracked on-time + the larger of this
+ *                      and 1/8 of it.  Q2 turns on a dead time after the
+ *                      backstop (Timer C), so a pulse COMP1 ends early
+ *                      freewheels through Q2's reverse conduction until then.
+ * PCMC_CCM_DELAY_NS    the threshold's lead for the delay from the true
+ *                      current to Q1's turn-off (regulator_pcmc_ccm_delay_ns;
+ *                      DCM's regulator_pcmc_delay_ns is separate).  0: at 6 V
+ *                      the comparator ended Q1 with IL_MON at the DAC level
+ *                      and 200 ns took 0.78 A off the average, which
+ *                      collapsed V_out at the takeover (bench 2026-11-22).
+ * PCMC_CCM_I_MAX_MA    ceiling on the voltage loop's command in this mode
+ *                      (the peak itself is clamped at PEAK_PROTECT_MAX_MA, or
+ *                      regulator_ccm_peak_ma when set).
+ */
+#ifndef PCMC_CCM_DEFAULT
+#define PCMC_CCM_DEFAULT 0u
+#endif
+#define PCMC_CCM_MARGIN_NS 150u
+#define PCMC_CCM_DELAY_NS  0u
+#define PCMC_CCM_I_MAX_MA  8000u
+
 _Static_assert((HRTIM_PERIOD_COUNTS % PCMC_RAMP_STEP_TICKS) == 0u,
                "sawtooth steps must divide the period");
 

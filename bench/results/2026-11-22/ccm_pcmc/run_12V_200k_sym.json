@@ -1,0 +1,80 @@
+{
+ "ok": true,
+ "ceiling_mv": 12000,
+ "above_pack_mv": null,
+ "pack_read_mv": null,
+ "battery": {
+  "ceiling_mv": 12000,
+  "pack_mv": 0,
+  "keepalive": 12,
+  "vin_start_mv": 24616,
+  "keepalive_stops": 0,
+  "ilim_ma": 2000
+ },
+ "samples": 12,
+ "stopped_early": false,
+ "ended": "RUNNING",
+ "end_state": "IDLE",
+ "end_fault": [],
+ "tail_mean": {
+  "v_out_mv": 12104,
+  "i_out_ma": 466,
+  "v_in_mv": 24582,
+  "i_in_ma": 300,
+  "is_raw_ma": 291
+ },
+ "watch_tail": [
+  {
+   "regulator_pcmc_ccm_active": 1,
+   "regulator_pcmc_ccm_ton_ns": 2659,
+   "regulator_pcmc_ccm_meas_ns": 2934,
+   "regulator_pcmc_ccm_ithr_ma": 4138.817,
+   "regulator_pcmc_ccm_samples": 76075,
+   "regulator_pcmc_ccm_bs_hits": 864,
+   "regulator_pcmc_dac_counts": 2634,
+   "regulator_i_cmd_ma": 869.572
+  },
+  {
+   "regulator_pcmc_ccm_active": 1,
+   "regulator_pcmc_ccm_ton_ns": 2754,
+   "regulator_pcmc_ccm_meas_ns": 2681,
+   "regulator_pcmc_ccm_ithr_ma": 4169.978,
+   "regulator_pcmc_ccm_samples": 85806,
+   "regulator_pcmc_ccm_bs_hits": 998,
+   "regulator_pcmc_dac_counts": 2637,
+   "regulator_i_cmd_ma": 852.561
+  },
+  {
+   "regulator_pcmc_ccm_active": 1,
+   "regulator_pcmc_ccm_ton_ns": 2736,
+   "regulator_pcmc_ccm_meas_ns": 2693,
+   "regulator_pcmc_ccm_ithr_ma": 4180.178,
+   "regulator_pcmc_ccm_samples": 95665,
+   "regulator_pcmc_ccm_bs_hits": 1145,
+   "regulator_pcmc_dac_counts": 2635,
+   "regulator_i_cmd_ma": 871.989
+  },
+  {
+   "regulator_pcmc_ccm_active": 1,
+   "regulator_pcmc_ccm_ton_ns": 2642,
+   "regulator_pcmc_ccm_meas_ns": 2175,
+   "regulator_pcmc_ccm_ithr_ma": 4233.334,
+   "regulator_pcmc_ccm_samples": 105287,
+   "regulator_pcmc_ccm_bs_hits": 1293,
+   "regulator_pcmc_dac_counts": 2633,
+   "regulator_i_cmd_ma": 869.108
+  },
+  {
+   "regulator_pcmc_ccm_active": 1,
+   "regulator_pcmc_ccm_ton_ns": 2531,
+   "regulator_pcmc_ccm_meas_ns": 2469,
+   "regulator_pcmc_ccm_ithr_ma": 4175.549,
+   "regulator_pcmc_ccm_samples": 115000,
+   "regulator_pcmc_ccm_bs_hits": 1423,
+   "regulator_pcmc_dac_counts": 2632,
+   "regulator_i_cmd_ma": 862.433
+  }
+ ],
+ "limiting_frac": 0.0,
+ "log": "bringup_out/20261122-175740_battery_run.json"
+}

@@ -369,6 +369,17 @@ extern volatile uint16_t regulator_pcmc_dac_counts;
 extern volatile uint16_t regulator_pcmc_backstop_ns;
 extern volatile uint16_t regulator_pcmc_q1_off_ns;
 extern volatile uint16_t regulator_pcmc_trip_ns;
+/* Peak current mode, buck CCM (regulator.c step 6c). */
+extern volatile uint8_t  regulator_pcmc_ccm;
+extern volatile uint16_t regulator_pcmc_ccm_margin_ns;
+extern volatile uint16_t regulator_pcmc_ccm_delay_ns;   /* CCM peak mode's threshold lead (PCMC_CCM_DELAY_NS) */
+extern volatile uint8_t  regulator_pcmc_ccm_active;
+extern volatile uint16_t regulator_pcmc_ccm_ton_ns;
+extern volatile uint16_t regulator_pcmc_ccm_meas_ns;
+extern volatile float    regulator_pcmc_ccm_ithr_ma;
+extern volatile uint16_t regulator_pcmc_ccm_step;
+extern volatile uint32_t regulator_pcmc_ccm_samples;
+extern volatile uint32_t regulator_pcmc_ccm_bs_hits;
 extern volatile uint16_t regulator_on_time_ns;
 extern volatile float regulator_i_cmd_ma;
 extern volatile float regulator_i_pk_ma;

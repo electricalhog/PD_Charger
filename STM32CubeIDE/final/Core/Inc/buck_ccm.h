@@ -305,6 +305,47 @@ uint32_t boost_ccm_update(BuckCcmState *s, const BuckCcmGains *g, const BuckCcmT
 float buck_ccm_exit_seed_ma(float i_avg_ma, float i_newest_ma, bool handover, float add_learned_ma,
                             float add_table_ma, float floor_ma, float i_max_ma);
 
+/* ---- Buck CCM peak current mode (plans/peak-current-mode.md, regulator.c step 6c) ----
+ * COMP1 (IL_MON against DAC3 CH1) ends Q1 through EEV4.  The DAC is a falling sawtooth from the period start
+ * (Timer E), so the level COMP1 meets at time t is reset - m_a t.  The AD8410A holds IL_MON for ~1-1.7 us after
+ * an SW2 step (bench 2026-11-22), so Q4's refresh runs every second period: in that period COMP1 is blind and
+ * Timer B CMP1 ends Q1 at the tracked on-time; in the other COMP1 does.  Q2 still turns on a dead time after the
+ * CMP2 backstop (Timer C), so the backstop is the tracked on-time plus a margin, never a loose bound. */
+typedef struct
+{
+    float    i_thr_a;        /**< COMP1's level at the predicted trip (A, before the clamp: clamped)  */
+    float    m_a_a_per_us;   /**< compensation slope                                                   */
+    float    reset_a;        /**< the ramp's start, A above IL_MON's zero                              */
+    uint32_t reset_counts;   /**< DAC3 STRSTDATA1, 0..4095                                             */
+    uint32_t step_12p4;      /**< DAC3 STINCDATA1 per Timer E step, 12.4 fixed point                   */
+} PcmcCcmCmd;
+
+/** Average-current command -> COMP1 sawtooth.  i_thr = i_cmd + m1 t_on / 2 - m1 tau (average = peak - half the
+ *  ripple; tau is the sense-to-gate delay), at most i_thr_max_a.  m_a = 1.25 max(0, (m2 - m1) / 2), plus 0.1 m2
+ *  above D = 0.45 (m1 = (V_in - V_out) / L, m2 = V_out / L).  reset = i_thr + m_a (t_q1 + t_on): t_q1 is Q1's
+ *  turn-on after the period start, where the ramp starts.  zero_counts and counts_per_a are IL_MON's scale in
+ *  DAC codes; step_ns the time per sawtooth step. */
+void pcmc_ccm_command(float i_cmd_a, float v_in_v, float v_out_v, float l_h, uint32_t t_q1_ns, uint32_t t_on_ns,
+                      uint32_t tau_ns, float i_thr_max_a, float zero_counts, float counts_per_a, uint32_t step_ns,
+                      PcmcCcmCmd *out);
+
+/** Q1's on-time from Timer B's CPT1 of TA1's reset (cpt_b).  Timer B's period is 2 per and the refresh period is its
+ *  first half, so the count says which period the pulse was in, whenever it is read.  a4 is Q1's turn-on and bs the
+ *  CMP2 backstop as Timer A compare values.  Returns true, with the on-time in ticks and whether the backstop ended
+ *  it, only for a pulse in the second half (no refresh) inside [a4, bs]. */
+bool pcmc_ccm_capture(uint32_t cpt_b, uint32_t per, uint32_t a4, uint32_t bs, uint32_t *t_on_ticks,
+                      bool *at_backstop);
+
+/** The tracked on-time (the refresh period's pulse, TIMEVNT1): a quarter of the way to each measurement, either
+ *  way.  The refresh pulse copies it, and the comparator's pulse then settles at 2 t_ss - track (volt-seconds over
+ *  the pair), so a full copy would swing the error sign each sample forever and a ratchet (up at once, down slowly)
+ *  ran away on the bench (2026-11-22, SW_OVP at 12 V); a quarter halves it per sample. */
+uint32_t pcmc_ccm_track(uint32_t track_ticks, uint32_t meas_ticks);
+
+/** The CMP2 backstop's on-time: the track plus the larger of margin_ticks and track / 8, room for the
+ *  comparator's pulse to settle away from the track. */
+uint32_t pcmc_ccm_backstop(uint32_t track_ticks, uint32_t margin_ticks);
+
 #ifdef __cplusplus
 }
 #endif

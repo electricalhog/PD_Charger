@@ -37,6 +37,18 @@ them track the on-time ramp ~200 ns after Q1 turns on (2.6 A/µs against 2.7 fro
 kHz. So: CCM can run peak current mode with the refresh every Nth period (the refreshed pulse on the backstop). DCM
 needs Q3 to hold SW2 at V_out ≥ 1.7 µs before Q1 turns on, because SW2 floats to ~0 V between pulses today.
 
+**Buck CCM peak current mode runs (later still, README "Buck CCM peak current mode", `regulator_pcmc_ccm`,
+default off).** 12 V into 25.3 Ω at 200 and 400 kHz, the two periods' pulses within 15 ns of each other. The design
+as built, which differs from the bullet above:
+- The refresh period's pulse ends on Timer B CMP1 (TIMEVNT1) at the tracked on-time, not on the backstop. COMP1 is
+  masked for it by Timer A's EEV4 filter TIMFLTR1 (Timer B reset → TB CMP1). The held valley does not protect it:
+  IL_MON jumps to the true current when the hold releases, and COMP1 tripped there.
+- The tracker reads Timer B CPT1 (TA1 reset) through DMA. It subtracts the 67-tick capture latency and moves a
+  quarter of the way to each sample, either way. The threshold's ripple term uses T·V_out/V_in.
+- CCM uses its own threshold lead, `regulator_pcmc_ccm_delay_ns` 0: 200 ns collapsed V_out at the takeover.
+- Open: one unexplained OVER_BAND exit, then SW_OVP 13.9 V, in about a minute of running. Not yet tried: 5 and 20 V, load
+  steps, a battery.
+
 The firmware-only alternative is **valley current mode**:
 - The comparator acts during the discharge, the interval where IL_MON is good, in buck, boost and buck-boost alike.
 - It is not designed here yet.
