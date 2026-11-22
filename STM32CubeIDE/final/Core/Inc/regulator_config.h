@@ -57,7 +57,8 @@ extern "C" {
  * IL_MON — Inductor current sense
  * MCU pin : PA1 / ADC1_IN2 (shared with COMP1_INP)
  * Net     : IL_MON (dc-dc.kicad_sch)
- * Physical: INA281A2 (U7) output; 5 mΩ shunt (R5), 50 V/V gain
+ * Physical: U7 output; 5 mΩ shunt (R5).  Was INA281A2 (50 V/V); AD8410A
+ *           on an adapter since 2026-11-22 (IL_MON_GAIN_VV, IL_MON_ZERO_MV)
  * Dir     : Analog input (also COMP1 non-inverting input)
  */
 #define PIN_IL_MON_PORT GPIOA
@@ -1751,16 +1752,47 @@ _Static_assert(BATTERY_CEILING_MAX_MV * OVP_RELATIVE_PCT / 100u < 40000u,
 #define DAC_FULL_SCALE_COUNTS 4096u
 
 /**
+ * IL_MON_GAIN_VV, IL_MON_ZERO_MV — the IL_MON amplifier (U7) as COMP1 sees it.
+ *
+ * 2026-11-22: U7 (INA281A2, 50 V/V, 0 V at 0 A) replaced by an AD8410A on an
+ * adapter board (KiCad/ad8410a_adapter).  The adapter ties REF1 to VS and
+ * REF2 to GND, so the output is offset to about VS/2 at 0 A and swings both
+ * ways.
+ *   IL_MON_GAIN_VV : 20 V/V is the AD8410A's fixed gain as remembered, NOT
+ *                    yet checked against the datasheet or measured.
+ *   IL_MON_ZERO_MV : IL_MON at 0 A.  1636 mV measured 2026-11-22 at idle
+ *                    (scope VAVG, 0.5 V/div, 20 MHz BWL, so about +-20 mV),
+ *                    with the board's 3V3 fed from the Nucleo.  (Earlier the
+ *                    board's 3V3 rail was down and IL_MON idled at 0.53 V.)
+ * Old part: -DIL_MON_GAIN_VV=50 -DIL_MON_ZERO_MV=0 (DAC_COUNTS_PER_AMP 310).
+ */
+#ifndef IL_MON_GAIN_VV
+#define IL_MON_GAIN_VV 20u
+#endif
+#ifndef IL_MON_ZERO_MV
+#define IL_MON_ZERO_MV 1636u
+#endif
+
+/** IL_MON_ZERO_DAC_COUNTS — DAC3 code at IL_MON's 0 A level (3.3 V ref). */
+#define IL_MON_ZERO_DAC_COUNTS ((IL_MON_ZERO_MV * DAC_FULL_SCALE_COUNTS + 1650u) / 3300u)
+
+/**
  * DAC_COUNTS_PER_AMP — DAC counts per ampere of peak inductor current.
  * Units  : counts / A
- * Derive : I_peak × Sensitivity / (V_REF / DAC_counts)
- *          = I_peak × 0.250 V/A / (3.3 V / 4096)
- *          = I_peak × 0.250 / 0.000806
- *          ≈ 310.2 counts/A  →  use 310 counts/A for integer math. (§6.2)
+ * Derive : R5 × gain / (V_REF / DAC_counts)
+ *          INA281A2: 5 mΩ × 50 = 250 mV/A → 310 counts/A
+ *          AD8410A : 5 mΩ × 20 = 100 mV/A → 124 counts/A
  * NOTE   : Direction is: more DAC counts → higher comparator threshold →
- *          higher peak current before COMP1 trips.
+ *          higher peak current before COMP1 trips.  A current maps to
+ *          IL_MON_ZERO_DAC_COUNTS + this slope (IL_MA_TO_DAC_COUNTS); a
+ *          DAC code under the zero level trips COMP1 at any current (safe).
  */
-#define DAC_COUNTS_PER_AMP 310u
+#define DAC_COUNTS_PER_AMP \
+    ((INDUCTOR_SHUNT_R5_MOHM * IL_MON_GAIN_VV * DAC_FULL_SCALE_COUNTS + 1650u) / 3300u)
+
+/** IL_MA_TO_DAC_COUNTS — COMP1 threshold (DAC3 CH1 code) for a peak current. */
+#define IL_MA_TO_DAC_COUNTS(ma) \
+    (IL_MON_ZERO_DAC_COUNTS + ((uint32_t)(ma) * DAC_COUNTS_PER_AMP) / 1000u)
 
 /**
  * SLOPE_STEP_NUMERATOR — Numerator for slope-step integer computation.

@@ -411,9 +411,9 @@ volatile uint32_t regulator_vin_filt_mv = 0u;
  *  (PEAK_PROTECT_PCT above the mode's commanded peak limit; step 6).       */
 #define PEAK_PROTECT_MA(peak_ma) (((peak_ma) * PEAK_PROTECT_PCT / 100u) < PEAK_PROTECT_MAX_MA \
                                       ? ((peak_ma) * PEAK_PROTECT_PCT / 100u) : PEAK_PROTECT_MAX_MA)
-#define PEAK_PROTECT_COUNTS       (PEAK_PROTECT_MA(DCM_MAX_PEAK_MA) * DAC_COUNTS_PER_AMP / 1000u)
-#define PEAK_PROTECT_COUNTS_BB    (PEAK_PROTECT_MA(DCM_MAX_PEAK_MA_BB) * DAC_COUNTS_PER_AMP / 1000u)
-#define PEAK_PROTECT_COUNTS_BOOST (PEAK_PROTECT_MA(DCM_MAX_PEAK_MA_BOOST) * DAC_COUNTS_PER_AMP / 1000u)
+#define PEAK_PROTECT_COUNTS       IL_MA_TO_DAC_COUNTS(PEAK_PROTECT_MA(DCM_MAX_PEAK_MA))
+#define PEAK_PROTECT_COUNTS_BB    IL_MA_TO_DAC_COUNTS(PEAK_PROTECT_MA(DCM_MAX_PEAK_MA_BB))
+#define PEAK_PROTECT_COUNTS_BOOST IL_MA_TO_DAC_COUNTS(PEAK_PROTECT_MA(DCM_MAX_PEAK_MA_BOOST))
 _Static_assert(PEAK_PROTECT_COUNTS <= PID_OUTPUT_MAX, "PEAK_PROTECT_COUNTS over the DAC range");
 
 /* =========================================================================
@@ -3107,7 +3107,7 @@ void regulator_pid_tim7_isr(void)
      * period, never above the backstop. */
     if (regulator_ccm_active && regulator_ccm_peak_ma != 0u)
     {
-        const uint32_t c = ((uint32_t)regulator_ccm_peak_ma * DAC_COUNTS_PER_AMP) / 1000u;
+        const uint32_t c = IL_MA_TO_DAC_COUNTS(regulator_ccm_peak_ma);
         if (c < dac_counts) { dac_counts = c; }
     }
     slope_comp_set_peak(dac_counts);

@@ -199,13 +199,15 @@ void slope_comp_tim6_isr(void)
     /* Read current value from the holding register and decrement */
     uint32_t current = DAC3->DHR12R1;
 
-    if (current >= slope_comp_step_counts)
+    /* Floor at IL_MON's 0 A code (0 for the old INA281).  A code already
+     * under it (the 0 "safe" write) is left alone, never raised. */
+    if (current >= IL_MON_ZERO_DAC_COUNTS + slope_comp_step_counts)
     {
         current -= slope_comp_step_counts;
     }
-    else
+    else if (current > IL_MON_ZERO_DAC_COUNTS)
     {
-        current = 0u;   /* floor at 0 — do not wrap */
+        current = IL_MON_ZERO_DAC_COUNTS;
     }
 
     DAC3->DHR12R1 = current;
