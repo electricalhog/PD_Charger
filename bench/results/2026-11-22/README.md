@@ -62,7 +62,20 @@ The IL_MON mean (scope VAVG 1.629 V at 12 V vs 1.636 V at idle) is below the 8-b
 - 33 V short at 30.4 V: as 2026-11-12 (a DCM resistor run above ~30 V at 24.4 V in does not reach the ceiling).
 - TP2 (scope) reads 0.3–0.7 V under the firmware's V_out; not calibrated today.
 
+## 3V3 fixed (Dan, later): current monitors back (`run3v3_<V>V.json`)
+
+IL_MON at idle 1640 mV (3 reads, 1639–1640; firmware keeps 1636, inside the ±20 mV of 0.5 V/div). DCM only, 5 s each.
+
+| Ceiling | V_out (fw) | ID_MON | V_out / 25.3 Ω | ID / expected | I_in (IS_MON) | P_out / P_in |
+|---|---|---|---|---|---|---|
+| 5 V | 5018 mV | 195 mA | 198 mA | 0.983 | 55 mA | 1.00 / 1.35 W (0.74) |
+| 12 V | 12476 mV | 468 mA | 493 mA | 0.949 | 288 mA | 6.15 / 7.08 W (0.87) |
+| 20 V | 19986 mV | 780 mA | 790 mA | 0.987 | 695 mA | 15.79 / 17.06 W (0.93) |
+
+All three ran to the end and stopped, no fault. ID_MON is back in line with 11-13 / 11-16 (P_out uses the nominal
+25.3 Ω, which drifts warm). The 12 V tail mean sits 476 mV over the ceiling (12034 mV in the 07:17 run); not looked into.
+
 ## End state
 
 `build/Battery` flashed, IDLE, input and output paths off, no fault, `regulator_ccm_enable` 0 (DCM only) until reset.
-Board 3V3 still down (ID_MON / IS_MON unpowered). Scope on the layout above.
+Board 3V3 fixed, ID_MON / IS_MON reading. Scope on the layout above.
