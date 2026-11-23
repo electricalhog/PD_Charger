@@ -53,6 +53,18 @@ as built, which differs from the bullet above:
     (+0.3 A at 5 V, −0.5 A at 20 V) lands as a current step.
   - Load steps and a battery aren't tried yet.
 
+**Peak current mode as the buck's only mode (later, README "Peak current mode as the buck's only mode",
+`regulator_pcmc_ccm` = 2, opt-in).** Forced CCM and the comparator from the first PID cycle, no duty law, no
+takeover. A negative current command (to −1.5 A) takes the place of DCM. Into 25.3 Ω, 5/12/20 V at 200 and 400 kHz
+with the refresh every 2nd/3rd/4th period, and 5 ↔ 20 V triangle sweeps at 10 and 50 V/s: no fault, never left the
+mode. What it needed: COMP1's zero measured at every start (2072–2083 vs the assumed 2031), slope compensation
+≥ 0.8·m2 (sub-harmonic dips), the ramp aligned to the tracked on-time, a DAC3 full-scale cap on the slope, and a
+300 Hz loop only while the output switch is open. Mode 1 keeps its old constants. Open:
+- The no-load start trips SW_OVP. Below ~0.5 µs on-time IL_MON overshoots (6.3 against 4.8 A/µs), so the
+  comparator loses authority. This needs a low-duty modulator before mode 2 can start into an open output or a battery.
+- 20 V / 400 kHz still dips (2–20 per 100 ms).
+- The command runs 0.1–0.85 A under I_out.
+
 The firmware-only alternative is **valley current mode**:
 - The comparator acts during the discharge, the interval where IL_MON is good, in buck, boost and buck-boost alike.
 - It is not designed here yet.

@@ -61,7 +61,7 @@ CMD = {"clear-fault": 1, "stop": 2, "bench-pwm-on": 3, "bench-pwm-off": 4, "set-
 ARG_CMDS = ("set-voltage", "start")   # take a millivolt argument in regulator_debug.arg
 RAW_ARG_CMDS = ("trace-arm", "switch-pulse")   # take a packed argument (trace_arg) or microseconds
 BENCH_ARG_CMDS = ("bench-ccm-pwm",)             # packed argument (ccm_pwm_arg), BENCH_RESULTS
-TRACE_TRIGGERS = {"now": 0, "switch": 1, "ceiling": 2, "error": 3, "ccm": 4, "mode": 5}
+TRACE_TRIGGERS = {"now": 0, "switch": 1, "ceiling": 2, "error": 3, "ccm": 4, "mode": 5, "after": 6, "sweep": 7}
 TRACE_STATES = {0: "IDLE", 1: "ARMED", 2: "TRIGGERED", 3: "DONE"}
 TRACE_RESULTS = {
     0: ("OK", ""),

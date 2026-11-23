@@ -1,0 +1,8 @@
+pre: IDLE   fsw 400 kHz  N 2 (refresh every 5000 ns)  sweep 5000..20000 @ 50000 mV/s  hold_open 0
+ok True ended RUNNING fault [] error None
+n 33 v 5156 20024 12582 i 203 762 icmd 15 193 ccm [1] pcmc [1] vin 24582 24651
+V_out - commanded (switch closed or sweeping): min -350 max 284 mean -2
+first {'regulator_sweep_mv': 14205, 'regulator_sweep_turns': 65, 'regulator_pcmc_ccm_active': 1, 'regulator_pcmc_ccm_ton_ns': 1340, 'regulator_pcmc_ccm_meas_ns': 1333, 'regulator_pcmc_ccm_ithr_ma': 1605.944, 'regulator_i_cmd_ma': 14.672, 'regulator_pcmc_ccm_samples': 1544939, 'regulator_pcmc_ccm_bs_hits': 2528, 'regulator_ccm_entries': 9, 'regulator_ccm_exits': 8, 'regulator_ccm_exit_reason': 7}
+last {'regulator_sweep_mv': 16605, 'regulator_sweep_turns': 96, 'regulator_pcmc_ccm_active': 1, 'regulator_pcmc_ccm_ton_ns': 1575, 'regulator_pcmc_ccm_meas_ns': 1551, 'regulator_pcmc_ccm_ithr_ma': 1502.097, 'regulator_i_cmd_ma': 45.228, 'regulator_pcmc_ccm_samples': 1733263, 'regulator_pcmc_ccm_bs_hits': 2585, 'regulator_ccm_entries': 9, 'regulator_ccm_exits': 8, 'regulator_ccm_exit_reason': 7}
+trace bringup_out/20261122-214605_regulator_trace.csv DONE 1503 2 {'min': 0, 'max': 8571, 'first': 0, 'last': 8502}
+exits [(263064, 7, 9), (29655, 7, 2), (41540, 7, 3), (109881, 7, 4), (173323, 7, 5), (214056, 7, 6), (231656, 7, 7), (247406, 7, 8)]

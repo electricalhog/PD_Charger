@@ -354,7 +354,17 @@ _Static_assert(HRTIM_PERIOD_COUNTS >= 5440u && HRTIM_PERIOD_COUNTS <= 54400u,
  * PCMC_CCM_DEFAULT     regulator_pcmc_ccm at boot: 1 = in buck CCM, after the
  *                      entry's open-loop window, the voltage loop's average-
  *                      current command sets COMP1's sawtooth and COMP1 ends Q1
- *                      in every second period; 0 = the duty law (as before).
+ *                      in every second period; 0 = the duty law (as before);
+ *                      2 = peak current mode is the buck's only mode: forced
+ *                      CCM from the first PID cycle of a start (soft-start
+ *                      and the output switch open included), no open-loop
+ *                      window, and none of the load / band / ramp-down / switch
+ *                      exits to DCM.  Light load is the valley going negative
+ *                      (the command may go to -PCMC_CCM_I_MIN_MA), not DCM.
+ *                      The safety exits stay (BAD_CONFIG, VIN_RISE, DUTY, a
+ *                      mode change out of buck), and re-enter at once.
+ *                      Q4's refresh every regulator_ccm_refresh_interval_ns
+ *                      (N periods, N >= 2, Timer B's period <= 65535 ticks).
  *                      Forces Q4's refresh to every second period at least
  *                      (the AD8410A holds IL_MON ~1-1.7 us after an SW2 step,
  *                      bench 2026-11-22 "IL_MON blind spot").
@@ -378,6 +388,36 @@ _Static_assert(HRTIM_PERIOD_COUNTS >= 5440u && HRTIM_PERIOD_COUNTS <= 54400u,
 #define PCMC_CCM_MARGIN_NS 150u
 #define PCMC_CCM_DELAY_NS  0u
 #define PCMC_CCM_I_MAX_MA  8000u
+/** PCMC_CCM_I_MIN_MA — the command's floor in mode 2, below 0: a falling
+ *  setpoint with no load pulls the output down through Q2 (the duty law's
+ *  forced CCM does the same).  The command, not the current: the average ran
+ *  0.3 A (no slope floor) to 0.67 A (PCMC_CCM_SLOPE_PM 800) above it at 12 V
+ *  (bench 2026-11-22), so with 500 mA a no-load output could not be held. */
+#define PCMC_CCM_I_MIN_MA  1500u
+#define PCMC_CCM_ONLY      2u
+/** PCMC_CCM_LEB_MAX_NS — up to this tracked on-time, EEV4 keeps Q1's leading-edge
+ *  blanking (TA CMP1) instead of the refresh-pulse mask (TB CMP1).  Bench test value. */
+#define PCMC_CCM_LEB_MAX_NS 0u
+/** IL_ZERO_SEARCH_COUNTS — il_zero_measure's window either side of
+ *  IL_MON_ZERO_DAC_COUNTS (+-1.6 A at 124 counts/A). */
+#define IL_ZERO_SEARCH_COUNTS 200u
+/** PCMC_CCM_SLOPE_PM — buck CCM peak mode's slope compensation, at least this
+ *  many permille of m2 = V_out / L (regulator_pcmc_ccm_slope_pm).  Bench
+ *  2026-11-22, 12 V from 24.5 V at 400 kHz, refresh every 2nd period: with
+ *  the formula alone (0.1 m2 at D 0.49) the comparator pulses rang in a
+ *  short / long / medium pattern and V_out dipped 0.8-1.5 V about every
+ *  4.5 ms (11 dips in 100 ms); 300: 9, 500: 2, 800 and 1000: none, the
+ *  pulses' spread +-230 / 144 / 82 / 69 / 8 ns.  The average moves above the
+ *  command with it (PCMC_CCM_I_MIN_MA). */
+#define PCMC_CCM_SLOPE_PM 800u
+/** PCMC_LOOP_CROSSOVER_HZ — LOOP_CROSSOVER_HZ in mode 2 while CCM runs with the
+ *  output switch open (regulator_pcmc_loop_fc_hz): IL_MON's error at short
+ *  on-times is an offset of a few hundred mA that the integrator has to
+ *  remove within the 5 ms soft-start; at 100 Hz V_out fell 2.7 V behind and
+ *  SW_UVP tripped at its end (bench 2026-11-22).  With the switch closed the
+ *  loop counts C_ext's 250 uF, and 300 Hz there limit-cycled into the
+ *  25.3 ohm resistor (V_out -1.1/+1.2 V at 400 kHz), so LOOP_CROSSOVER_HZ. */
+#define PCMC_LOOP_CROSSOVER_HZ 300.0f
 
 _Static_assert((HRTIM_PERIOD_COUNTS % PCMC_RAMP_STEP_TICKS) == 0u,
                "sawtooth steps must divide the period");

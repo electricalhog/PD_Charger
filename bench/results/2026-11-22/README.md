@@ -289,8 +289,117 @@ for 12 and 20 V):
 
 At 5 V / 200 kHz that is 31 % under V_cmd, and recovery took about 8 ms. UVP (50 % relative) didn't trip.
 
+## Peak current mode as the buck's only mode (`pcmc_only/`)
+
+The question was whether peak current mode could replace both the DCM duty law and the forced-CCM duty law in buck.
+Built as `regulator_pcmc_ccm` = 2 (`PCMC_CCM_ONLY`, opt-in; `PCMC_CCM_DEFAULT` stays 0):
+- Forced CCM with the comparator from the first PID cycle of a start, through the soft-start with the output
+  switch open. There is no duty-law phase, no takeover, and no CCM entry blind window.
+- Light load is handled by letting the current command go negative, down to −`PCMC_CCM_I_MIN_MA` (1.5 A). That
+  takes the place of DCM.
+- CCM exits stay off for RAMP_DOWN, SWITCH, OVER_BAND and LIGHT_LOAD. The safety exits stay on (BAD_CONFIG,
+  VIN_RISE, DUTY, MODE, DISABLED, STOP).
+- Q4's refresh every N periods (`regulator_ccm_refresh_interval_ns` = N·T). The capture classifier takes any N; Timer
+  B's 16-bit period limits it to N ≤ 2 at 200 kHz and N ≤ 4 at 400 kHz. In the raw captures the refresh pulse came
+  every 2nd, 3rd and 4th period as set (`periods_*.txt`).
+- A bench sweep in firmware: `regulator_sweep_lo_mv` / `_hi_mv` / `_rate_mv_s` run a triangle on the target while
+  the output switch is on. `regulator_output_hold_open` keeps the switch open for a no-load run. New trace
+  triggers: AFTER (6, n ms after the start) and SWEEP (7, a turnaround), so no second SWD session is needed mid-run.
+  (A second `bu` during `battery run` broke the run with "memory read failed".)
+- Scripts: `run.sh CEIL FSW N SEC NAME` (env LO HI RATE HOLD SCOPE TRIG), `summarize.py`, `dips.py`, `per_period.py`.
+
+Load points are the 25.3 Ω resistor only, so I = V/25.3 (0.2–0.79 A over 5–20 V), plus no load. V_in 24.5–24.6 V,
+2 A limit. No pack.
+
+### What it took, in the order the bench showed it
+
+| # | Measured | Cause | Fix |
+|---|---|---|---|
+| 1 | SW_UVP on the first start | the CCM entry's ilim reference walk (`buck_ccm_limit_from`, ~1 V/ms) | skipped in mode 2 |
+| 2 | SW_UVP again, V_out stuck at 0.9–2.3 V; the comparator ended pulses at 86 ns | the COMP1 zero: measured 2072–2083 counts against `IL_MON_ZERO_DAC_COUNTS` 2031, 0.42 A at 124 counts/A (by hand at idle: 2082–2084) | `il_zero_measure()` at every start: DAC3 plain mode, binary search for COMP1's flip, ±`IL_ZERO_SEARCH_COUNTS` 200 (`regulator_il_zero_meas`) |
+| 3 | soft-start ran ahead of the loop, then limit cycle ±1.1 V at 400 kHz with the switch closed | the PID gains assume C_ext 250 µF; at 300 Hz with the switch closed the real crossover is ~3 kHz (inferred) | `PCMC_LOOP_CROSSOVER_HZ` 300 only while the switch is open; 100 Hz after |
+| 4 | V_out dips of 0.8–1.5 V about every 4.45 ms at 12 V / 400 kHz, comparator pulses short/long/medium | sub-harmonic: slope compensation too small (the same dips are in the mode-1 traces) | slope floor m_a ≥ `PCMC_CCM_SLOPE_PM`/1000 · m2 = 0.8 · m2 |
+| 5 | SW_OVP at the 5 V / 200 kHz start with slope 800 | command offset +0.3–0.5 A: the ramp's reset value aligned to T·V_out/V_in, not to where the pulse ends | reset = i_thr + m_a·(t_q1 + tracked on-time) (`regulator_pcmc_ccm_ramp_track` 1) |
+| 6 | 20 V / 200 kHz: i_cmd at its 8 A ceiling | the reset value needed ~24 A, DAC3 clipped at 4095 | m_a capped so the reset stays 0.2 A under full scale (`PCMC_RESET_HEADROOM_A`) |
+| 7 | mode 1 (takeover) SW_OVP 6.4 → 7.5 V with the constants of 4–5 | its integrator preset (= measured current) no longer matched the command | mode 1 keeps its constants: fixed zero 2031, formula slope, t_ff alignment |
+
+Slope floor at 12 V / 400 kHz, N 2 (`run_12V_400k_N2_slope*`, `dips.py`: V_out < V_cmd − 800 mV in 100 ms of trace;
+spread of comparator pulse widths from the raw captures):
+
+| slope_pm | 0 | 300 | 500 | 800 | 1000 |
+|---|---|---|---|---|---|
+| dips / 100 ms | 11 | 9 | 2 | 0 | 0 |
+| comparator pulse spread | ±230 ns | 144 ns | 82 ns | 69 ns | 8 ns |
+
+Also tried and reverted: `regulator_pcmc_ccm_leb_max_ns` (EEV4 on Timer A's 100 ns LEB filter when the on-time is
+short; default 0 = off, kept as an option) and a 20 ms soft-start for no load (below).
+
+### Static points, 10 s each (`run_<V>_<fsw>_N<n>*`, trace 4 s in)
+
+V_out − V_cmd from the 0.2 s log samples; sd and dips from the 100 ms trace (50 µs samples). Slope 800, ramp
+aligned. "i_cmd − I_out" is the command offset the integrator carries.
+
+| Point | V_out − V_cmd mean [min, max] | trace sd | dips | I_out | i_cmd − I_out |
+|---|---|---|---|---|---|
+| 5 V 200k N2 | −31 [−154, +105] mV | 76 mV | 0 | 194–199 mA | −0.21 A |
+| 5 V 400k N2 | +15 [−137, +105] | 65 | 0 | 192–199 | −0.15 |
+| 5 V 400k N3 | −8 [−188, +156] | 57 | 0 | 191–202 | −0.11 |
+| 5 V 400k N4 | −42 [−240, +191] | 49 | 0 | 195–202 | −0.05 |
+| 12 V 200k N2 | +72 [−152, +383] | 184 | 0 | 451–477 | −0.29 |
+| 12 V 400k N2 | −41 [−290, +142] | 81 | 0 | 460–471 | −0.67 |
+| 12 V 400k N3 | +14 [−203, +383] | 113 | 0 | 458–471 | −0.49 |
+| 12 V 400k N4 | −70 [−600, +228] | 79 | 0 | 462–471 | −0.28 |
+| 20 V 200k N2 (DAC cap) | −17 [−563, +317] | 108 | 0 | 777–785 | −0.61 |
+| 20 V 400k N2 | −46 [−477, +162] | 161 | 7 | 762–784 | −0.72 |
+| 20 V 400k N3 | +16 [−701, +696] | 328 | 20 | 747–796 | −0.71 |
+| 20 V 400k N3, slope 1200 | +43 [−408, +472] | 228 | 2 | 758–792 | −0.85 |
+| 20 V 400k N4 | +59 [−183, +541] | 142 | 8 | 755–793 | −0.35 |
+
+Every run ended RUNNING with no fault, with CCM and the comparator active at every sample.
+Final check on the committed build (`run_final_*`): 12 V 200k N2 +14 [−307, +211] mV, sd 116, 0 dips;
+20 V 400k N4 +129 [−287, +317], 2 dips, sd 144; 5 V 400k N2 +4 [−240, +346], 0 dips, sd 71.
+
+### Continuous sweeps 5 ↔ 20 V into the resistor (`run_sweep_*`, trace at a turnaround)
+
+Triangle on the target, so the load moves with it from 0.2 to 0.79 A. V_out − V_cmd per log sample, worst over all bins:
+
+| Run | turns | V_out − V_cmd [min, max] | trace at the 20 V turn: sd, dips |
+|---|---|---|---|
+| 200k N2, 10 V/s, 12 s | 7 | [−336, +280] mV | 179 mV, – |
+| 400k N2, 10 V/s | 14 | [−483, +374] | 249, 7 |
+| 400k N3, 10 V/s | 22 | [−519, +302] (one sample +4605, below) | 278, 11 |
+| 400k N4, 10 V/s | 30 | [−346, +594] | 224, 8 |
+| 200k N2, 50 V/s, 10 s | 63 | [−310, +299] | – |
+| 400k N2, 50 V/s | 96 | [−350, +284] | – |
+
+(The turn count is cumulative across the runs of one boot.) None faulted or left the comparator mode.
+The command offset grows with V_out in every sweep: about −0.1 to −0.2 A at 5 V, −0.4 A at 12 V, −0.6 to −0.7 A at 20 V
+(N 4: −0.0 to −0.3 A).
+
+### Open
+
+- **No-load start fails (SW_OVP), twice** (`run_noload_200k_N2_5V.json`, `run_sweep_200k_N2_noload_10Vs.json`).
+  - Measured: at on-times under ~0.5 µs IL_MON rises at 6.3 A/µs against a true 4.8 A/µs and peaks ~100 ns after Q1
+    turns off.
+  - Inferred: the AD8410A's ~2.7 MHz bandwidth, so the comparator has no authority there. V_out sat at D·V_in ≈ 1.7 V
+    while i_cmd swung −266 to 0 mA, then ran into OVP.
+  - The resistor start works because the switch closes at ~4–5 V and the load catches the overshoot. That margin is
+    small.
+  - A 20 ms soft-start made it worse: the resistor start ran away before the switch closed. Reverted.
+  - Mode 2 needs a different modulator below ~0.5 µs on-time (duty law or pulse skipping) before it can start into an
+    open output or a battery.
+- **20 V / 400 kHz dips:** 7, 20 and 8 per 100 ms at N 2, 3 and 4 with slope 800. Slope 1000 gave 4 and 1200 gave 2
+  at N 3. 200 kHz has none.
+- **Command offset** of −0.1 to −0.85 A (above). The integrator carries it; it is a current step on any handover.
+- **Two V_out telemetry samples** don't fit I_out·R: 3897 mV at 12 V, and 13107 mV with V_cmd 8502 and I_out 323 mA
+  (the +4605 above). Inferred: SWD read glitches, not output excursions.
+- Load points are limited to I = V/25.3 Ω and no load. Load steps and a battery aren't tried.
+
+Regression on the same build (`regress_*.json`, 12 V 200 kHz): default DCM 11.85–12.18 V, mean 11.99, il_zero 2072;
+mode 1 11.64–12.18 V, mean 11.98. Both ended RUNNING.
+
 ## End state
 
-`build/Battery` flashed (CCM peak mode built, `PCMC_CCM_DEFAULT` 0), reset to defaults: IDLE, no fault,
-`regulator_pcmc_ccm` 0, `regulator_ccm_enable` 1, `regulator_buck_fsw_khz` 200, `regulator_pcmc_ccm_delay_ns` 0.
-Scope back to CH1 0.5 V/div (20 MHz), 2 µs/div, offset 0, trigger CH2 8 V NORM; CH4 10 V/div, no BW limit.
+`build/Battery` flashed (mode 2 built, `PCMC_CCM_DEFAULT` 0), reset to defaults: IDLE, no fault,
+`regulator_pcmc_ccm` 0, `regulator_ccm_enable` 1, `regulator_buck_fsw_khz` 200, refresh interval 5000 ns, sweep off.
+Scope back to CH4 10 V/div, 2 µs/div, trigger CH2 8 V NORM.

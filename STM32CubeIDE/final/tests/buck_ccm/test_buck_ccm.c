@@ -1888,7 +1888,7 @@ static void test_pcmc_ccm(void)
 {
     PcmcCcmCmd c;
     /* 12 V from 24.6 V at 200 kHz, 0.47 A, t_on 2300 ns, Q1 at 360 ns, tau 200 ns, 124 counts/A from 2031 */
-    pcmc_ccm_command(0.47f, 24.6f, 12.0f, 4.7e-6f, 360u, 2300u, 200u, 12.5f, 2031.0f, 124.0f, 78u, &c);
+    pcmc_ccm_command(0.47f, 24.6f, 12.0f, 4.7e-6f, 360u, 2300u, 200u, 12.5f, 2031.0f, 124.0f, 78u, 0.0f, 2300u, &c);
     const float m1 = 12.6f / 4.7e-6f, m2 = 12.0f / 4.7e-6f;
     const float thr = 0.47f + 0.5f * m1 * 2.3e-6f - m1 * 0.2e-6f;
     CHECK(fabsf(c.i_thr_a - thr) < 1e-3f, "i_thr %.4f vs %.4f", c.i_thr_a, thr);
@@ -1897,18 +1897,24 @@ static void test_pcmc_ccm(void)
     CHECK(c.reset_counts == (uint32_t)(2031.0f + c.reset_a * 124.0f + 0.5f), "counts %u", (unsigned)c.reset_counts);
     CHECK(c.step_12p4 == (uint32_t)(0.1f * m2 * 78e-9f * 124.0f * 16.0f + 0.5f), "step %u", (unsigned)c.step_12p4);
     /* D < 0.45 and m2 < m1: no compensation, flat */
-    pcmc_ccm_command(1.0f, 24.6f, 5.0f, 4.7e-6f, 360u, 500u, 200u, 12.5f, 2031.0f, 124.0f, 78u, &c);
+    pcmc_ccm_command(1.0f, 24.6f, 5.0f, 4.7e-6f, 360u, 500u, 200u, 12.5f, 2031.0f, 124.0f, 78u, 0.0f, 500u, &c);
     CHECK(c.step_12p4 == 0u && c.m_a_a_per_us == 0.0f, "5 V: flat (step %u)", (unsigned)c.step_12p4);
     /* 20 V from 24.6 V: m2 > m1, 1.25 (m2 - m1) / 2 + 0.1 m2 */
-    pcmc_ccm_command(5.0f, 24.6f, 20.0f, 4.7e-6f, 360u, 2000u, 200u, 12.5f, 2031.0f, 124.0f, 78u, &c);
+    pcmc_ccm_command(1.0f, 24.6f, 5.0f, 4.7e-6f, 360u, 500u, 200u, 12.5f, 2031.0f, 124.0f, 78u, 0.5f, 500u, &c);
+    CHECK(fabsf(c.m_a_a_per_us - 0.5f * 5.0f / 4.7f) < 1e-3f, "slope floor: m_a = 0.5 m2 at 5 V");
+    /* 20 V at 200 kHz with 0.8 m2: the ramp's start would need 24 A (code 5060); the slope gives way */
+    pcmc_ccm_command(0.8f, 24.6f, 20.0f, 4.7e-6f, 360u, 3800u, 0u, 12.5f, 2082.0f, 124.0f, 78u, 0.8f, 3850u, &c);
+    CHECK(c.reset_counts <= 4095u && c.reset_counts >= 4095u - 30u, "slope capped at the DAC: reset %u", (unsigned)c.reset_counts);
+    CHECK(c.m_a_a_per_us < 0.8f * 20.0f / 4.7f && c.m_a_a_per_us > 1.0f, "slope capped: m_a %.2f A/us", (double)c.m_a_a_per_us);
+    pcmc_ccm_command(5.0f, 24.6f, 20.0f, 4.7e-6f, 360u, 2000u, 200u, 12.5f, 2031.0f, 124.0f, 78u, 0.0f, 2000u, &c);
     {
         const float a = 4.6f / 4.7e-6f, b = 20.0f / 4.7e-6f, want = (0.625f * (b - a) + 0.1f * b) * 1e-6f;
         CHECK(fabsf(c.m_a_a_per_us - want) < 1e-3f, "20 V m_a %.3f vs %.3f", c.m_a_a_per_us, want);
     }
     /* the clamp and the DAC range */
-    pcmc_ccm_command(30.0f, 24.6f, 12.0f, 4.7e-6f, 360u, 2300u, 200u, 12.5f, 2031.0f, 124.0f, 78u, &c);
+    pcmc_ccm_command(30.0f, 24.6f, 12.0f, 4.7e-6f, 360u, 2300u, 200u, 12.5f, 2031.0f, 124.0f, 78u, 0.0f, 2300u, &c);
     CHECK(c.i_thr_a == 12.5f && c.reset_counts <= 4095u, "clamp %.2f, %u", c.i_thr_a, (unsigned)c.reset_counts);
-    pcmc_ccm_command(0.0f, 24.6f, 1.0f, 4.7e-6f, 360u, 100u, 2000u, 12.5f, 10.0f, 124.0f, 78u, &c);
+    pcmc_ccm_command(0.0f, 24.6f, 1.0f, 4.7e-6f, 360u, 100u, 2000u, 12.5f, 10.0f, 124.0f, 78u, 0.0f, 100u, &c);
     CHECK(c.reset_counts == 0u, "floor at 0 (%u)", (unsigned)c.reset_counts);
 
     /* capture: Timer B's CPT1 of Q1's turn-off (period 2 per: the refresh period is its first half);
@@ -1916,17 +1922,24 @@ static void test_pcmc_ccm(void)
     const uint32_t per = 27200u, a4 = 1958u, bs = 15000u;
     uint32_t t = 0u; bool hit = false;
     /* captures land 67 ticks after the compare that ended the pulse */
-    CHECK(pcmc_ccm_capture(per + 14000u + 67u, per, a4, bs, &t, &hit) && t == 14000u - a4 && !hit,
+    CHECK(pcmc_ccm_capture(per + 14000u + 67u, per, 2u, a4, bs, &t, &hit) && t == 14000u - a4 && !hit,
           "second half: no refresh (t %u)", (unsigned)t);
-    CHECK(!pcmc_ccm_capture(14000u, per, a4, bs, &t, &hit), "first half: the refresh period");
-    CHECK(pcmc_ccm_capture(per + 15000u + 67u + 5u, per, a4, bs, &t, &hit) && hit, "backstop hit");
+    CHECK(!pcmc_ccm_capture(14000u, per, 2u, a4, bs, &t, &hit), "first half: the refresh period");
+    CHECK(pcmc_ccm_capture(per + 15000u + 67u + 5u, per, 2u, a4, bs, &t, &hit) && hit, "backstop hit");
     /* the 400 kHz bench case: backstop 8029, every capture at 8096 */
-    CHECK(pcmc_ccm_capture(13600u + 8096u, 13600u, 1958u, 8029u, &t, &hit) && hit && t == 8029u - 1958u,
+    CHECK(pcmc_ccm_capture(13600u + 8096u, 13600u, 2u, 1958u, 8029u, &t, &hit) && hit && t == 8029u - 1958u,
           "400 kHz backstop capture (t %u)", (unsigned)t);
-    CHECK(!pcmc_ccm_capture(per + 100u, per, a4, bs, &t, &hit), "before Q1");
-    CHECK(!pcmc_ccm_capture(per + a4, per, a4, bs, &t, &hit), "at Q1's turn-on");
-    CHECK(!pcmc_ccm_capture(per + bs + 200u, per, a4, bs, &t, &hit), "after the backstop");
-    CHECK(!pcmc_ccm_capture(2u * per + 10u, per, a4, bs, &t, &hit), "past Timer B's period");
+    CHECK(!pcmc_ccm_capture(per + 100u, per, 2u, a4, bs, &t, &hit), "before Q1");
+    CHECK(!pcmc_ccm_capture(per + a4, per, 2u, a4, bs, &t, &hit), "at Q1's turn-on");
+    CHECK(!pcmc_ccm_capture(per + bs + 200u, per, 2u, a4, bs, &t, &hit), "after the backstop");
+    CHECK(!pcmc_ccm_capture(2u * per + 10u, per, 2u, a4, bs, &t, &hit), "past Timer B's period");
+    /* Q4's refresh every 3 / 4 periods (400 kHz: 13600-tick periods, Timer B 40800 / 54400) */
+    CHECK(pcmc_ccm_capture(2u * 13600u + 5000u + 67u, 13600u, 3u, 1958u, 8029u, &t, &hit) && t == 5000u - 1958u && !hit,
+          "N=3: third period");
+    CHECK(!pcmc_ccm_capture(3u * 13600u + 5000u, 13600u, 3u, 1958u, 8029u, &t, &hit), "N=3: past Timer B's period");
+    CHECK(pcmc_ccm_capture(3u * 13600u + 5000u + 67u, 13600u, 4u, 1958u, 8029u, &t, &hit) && t == 5000u - 1958u,
+          "N=4: fourth period");
+    CHECK(!pcmc_ccm_capture(5000u, 13600u, 4u, 1958u, 8029u, &t, &hit), "N=4: the refresh period");
 
     /* tracking: a quarter of the difference either way (rounded), so a copied refresh pulse's error halves per
      * sample; the backstop: the track plus max(margin, track / 8) */

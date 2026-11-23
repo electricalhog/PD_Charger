@@ -437,9 +437,11 @@ float buck_ccm_exit_seed_ma(float i_avg_ma, float i_newest_ma, bool handover, fl
 
 /* ---- Buck CCM peak current mode (buck_ccm.h) ---- */
 
+#define PCMC_RESET_HEADROOM_A 0.2f   /* pcmc_ccm_command: the ramp's start under DAC3's full scale */
+
 void pcmc_ccm_command(float i_cmd_a, float v_in_v, float v_out_v, float l_h, uint32_t t_q1_ns, uint32_t t_on_ns,
                       uint32_t tau_ns, float i_thr_max_a, float zero_counts, float counts_per_a, uint32_t step_ns,
-                      PcmcCcmCmd *out)
+                      float ma_min_frac, uint32_t t_ramp_ns, PcmcCcmCmd *out)
 {
     const float m1 = (v_in_v > v_out_v) ? (v_in_v - v_out_v) / l_h : 0.0f;   /* A/s */
     const float m2 = (v_out_v > 0.0f) ? v_out_v / l_h : 0.0f;
@@ -447,10 +449,20 @@ void pcmc_ccm_command(float i_cmd_a, float v_in_v, float v_out_v, float l_h, uin
     float ma = 0.0f;
     if (m2 > m1) { ma = 1.25f * 0.5f * (m2 - m1); }
     if (d > 0.45f) { ma += 0.1f * m2; }
+    if (ma < ma_min_frac * m2) { ma = ma_min_frac * m2; }
     const float t_on = (float)t_on_ns * 1e-9f;
     float i_thr = i_cmd_a + 0.5f * m1 * t_on - m1 * (float)tau_ns * 1e-9f;
     if (i_thr > i_thr_max_a) { i_thr = i_thr_max_a; }
-    const float reset = i_thr + ma * ((float)t_q1_ns * 1e-9f + t_on);
+    const float t_r = (float)t_q1_ns * 1e-9f + (float)t_ramp_ns * 1e-9f;
+    /* The ramp's start within DAC3's range: less slope rather than a clipped start, which would move the
+     * threshold itself (bench 2026-11-22, 20 V at 200 kHz with 0.8 m2: reset 24 A, clipped at 16 A, and the
+     * command wound up to its ceiling with V_out short) */
+    const float reset_max = (4095.0f - zero_counts) / counts_per_a - PCMC_RESET_HEADROOM_A;
+    if (ma > 0.0f && t_r > 0.0f && i_thr + ma * t_r > reset_max)
+    {
+        ma = (reset_max > i_thr) ? (reset_max - i_thr) / t_r : 0.0f;
+    }
+    const float reset = i_thr + ma * t_r;
     float c = zero_counts + reset * counts_per_a + 0.5f;
     if (c < 0.0f)    { c = 0.0f; }
     if (c > 4095.0f) { c = 4095.0f; }
@@ -471,11 +483,11 @@ void pcmc_ccm_command(float i_cmd_a, float v_in_v, float v_out_v, float l_h, uin
  * guard, the tracker never saw one, and the backstop could not move out. */
 #define PCMC_CAPTURE_LATENCY_TICKS 67u
 
-bool pcmc_ccm_capture(uint32_t cpt_b, uint32_t per, uint32_t a4, uint32_t bs, uint32_t *t_on_ticks,
+bool pcmc_ccm_capture(uint32_t cpt_b, uint32_t per, uint32_t n, uint32_t a4, uint32_t bs, uint32_t *t_on_ticks,
                       bool *at_backstop)
 {
-    if (cpt_b < per || cpt_b >= 2u * per) { return false; }   /* the refresh period, or not a count */
-    uint32_t cpt = cpt_b - per;
+    if (per == 0u || cpt_b < per || cpt_b >= n * per) { return false; }   /* the refresh period, or not a count */
+    uint32_t cpt = cpt_b % per;
     if (cpt <= a4 + PCMC_CAPTURE_LATENCY_TICKS) { return false; }
     cpt -= PCMC_CAPTURE_LATENCY_TICKS;                         /* the turn-off's compare time */
     if (cpt > bs + PCMC_CAPTURE_GUARD_TICKS) { return false; }

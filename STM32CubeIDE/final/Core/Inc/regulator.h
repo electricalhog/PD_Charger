@@ -373,6 +373,18 @@ extern volatile uint16_t regulator_pcmc_trip_ns;
 extern volatile uint8_t  regulator_pcmc_ccm;
 extern volatile uint16_t regulator_pcmc_ccm_margin_ns;
 extern volatile uint16_t regulator_pcmc_ccm_delay_ns;   /* CCM peak mode's threshold lead (PCMC_CCM_DELAY_NS) */
+extern volatile uint16_t regulator_pcmc_ccm_leb_max_ns; /* EEV4 keeps the LEB up to this tracked on-time */
+extern volatile uint16_t regulator_pcmc_ccm_slope_pm;   /* slope compensation floor, permille of m2 */
+extern volatile uint8_t  regulator_pcmc_ccm_ramp_track;  /* ramp aligned to the tracked on-time (1) or T V_out/V_in */
+extern volatile float    regulator_pcmc_loop_fc_hz;     /* voltage-loop crossover in PCMC_CCM_ONLY */
+extern volatile uint16_t regulator_il_zero_dac;   /* COMP1's 0 A level in DAC3 codes (measured at a start) */
+extern volatile uint16_t regulator_il_zero_meas;  /* the last measurement, 0 = failed */
+extern volatile uint32_t regulator_sweep_lo_mv;       /* bench triangle sweep of the target (0 rate = off) */
+extern volatile uint32_t regulator_sweep_hi_mv;
+extern volatile uint32_t regulator_sweep_rate_mv_s;
+extern volatile uint8_t  regulator_output_hold_open;  /* bench: step 4c leaves the output switch open */
+extern volatile uint32_t regulator_sweep_mv;
+extern volatile uint32_t regulator_sweep_turns;
 extern volatile uint8_t  regulator_pcmc_ccm_active;
 extern volatile uint16_t regulator_pcmc_ccm_ton_ns;
 extern volatile uint16_t regulator_pcmc_ccm_meas_ns;
@@ -533,7 +545,9 @@ typedef enum
     REGULATOR_TRACE_TRIG_CEILING = 2u,
     REGULATOR_TRACE_TRIG_ERROR   = 3u,
     REGULATOR_TRACE_TRIG_CCM     = 4u,
-    REGULATOR_TRACE_TRIG_MODE    = 5u
+    REGULATOR_TRACE_TRIG_MODE    = 5u,
+    REGULATOR_TRACE_TRIG_AFTER   = 6u,  /**< threshold_mv ms after the start (bench: a settled window)  */
+    REGULATOR_TRACE_TRIG_SWEEP   = 7u   /**< a turnaround of the bench sweep (regulator_sweep_*)        */
 } RegulatorTraceTrigger;
 
 typedef enum
@@ -576,7 +590,9 @@ typedef struct
     uint16_t flags;      /**< REGULATOR_TRACE_FLAG_*                            */
     uint16_t v_cmd_mv;   /**< the reference both loops track: the setpoint, or
                               the current limit's v_lim under it [mV]           */
-    int16_t  u_mv;       /**< the CCM law's integrator (BuckCcmState.u_v) [mV]  */
+    int16_t  u_mv;       /**< the CCM law's integrator (BuckCcmState.u_v) [mV]; in buck CCM peak
+                              current mode the signed command I_cmd [mA], and i_max_ma COMP1's
+                              threshold i_thr [mA]                                */
 } RegulatorTraceSample;  /* 14 bytes */
 
 typedef struct

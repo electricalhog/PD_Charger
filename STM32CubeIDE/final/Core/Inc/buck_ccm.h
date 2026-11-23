@@ -322,18 +322,18 @@ typedef struct
 
 /** Average-current command -> COMP1 sawtooth.  i_thr = i_cmd + m1 t_on / 2 - m1 tau (average = peak - half the
  *  ripple; tau is the sense-to-gate delay), at most i_thr_max_a.  m_a = 1.25 max(0, (m2 - m1) / 2), plus 0.1 m2
- *  above D = 0.45 (m1 = (V_in - V_out) / L, m2 = V_out / L).  reset = i_thr + m_a (t_q1 + t_on): t_q1 is Q1's
- *  turn-on after the period start, where the ramp starts.  zero_counts and counts_per_a are IL_MON's scale in
+ *  above D = 0.45 (m1 = (V_in - V_out) / L, m2 = V_out / L), and at least ma_min_frac m2.  reset = i_thr + m_a (t_q1 + t_ramp): t_q1 is Q1's
+ *  turn-on after the period start, where the ramp starts, and t_ramp the on-time at which the ramp is at i_thr.  zero_counts and counts_per_a are IL_MON's scale in
  *  DAC codes; step_ns the time per sawtooth step. */
 void pcmc_ccm_command(float i_cmd_a, float v_in_v, float v_out_v, float l_h, uint32_t t_q1_ns, uint32_t t_on_ns,
                       uint32_t tau_ns, float i_thr_max_a, float zero_counts, float counts_per_a, uint32_t step_ns,
-                      PcmcCcmCmd *out);
+                      float ma_min_frac, uint32_t t_ramp_ns, PcmcCcmCmd *out);
 
-/** Q1's on-time from Timer B's CPT1 of TA1's reset (cpt_b).  Timer B's period is 2 per and the refresh period is its
- *  first half, so the count says which period the pulse was in, whenever it is read.  a4 is Q1's turn-on and bs the
- *  CMP2 backstop as Timer A compare values.  Returns true, with the on-time in ticks and whether the backstop ended
- *  it, only for a pulse in the second half (no refresh) inside [a4, bs]. */
-bool pcmc_ccm_capture(uint32_t cpt_b, uint32_t per, uint32_t a4, uint32_t bs, uint32_t *t_on_ticks,
+/** Q1's on-time from Timer B's CPT1 of TA1's reset (cpt_b).  Timer B's period is n per (n >= 2, Q4's refresh every
+ *  n periods) and the refresh period is its first, so the count says which period the pulse was in, whenever it is
+ *  read.  a4 is Q1's turn-on and bs the CMP2 backstop as Timer A compare values.  Returns true, with the on-time in
+ *  ticks and whether the backstop ended it, only for a pulse in periods 2..n (no refresh) inside [a4, bs]. */
+bool pcmc_ccm_capture(uint32_t cpt_b, uint32_t per, uint32_t n, uint32_t a4, uint32_t bs, uint32_t *t_on_ticks,
                       bool *at_backstop);
 
 /** The tracked on-time (the refresh period's pulse, TIMEVNT1): a quarter of the way to each measurement, either

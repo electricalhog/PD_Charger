@@ -1,0 +1,50 @@
+{
+ "ok": true,
+ "ceiling_mv": 12000,
+ "above_pack_mv": null,
+ "pack_read_mv": null,
+ "battery": {
+  "ceiling_mv": 12000,
+  "pack_mv": 0,
+  "keepalive": 19,
+  "vin_start_mv": 24634,
+  "keepalive_stops": 0,
+  "ilim_ma": 2000
+ },
+ "samples": 19,
+ "stopped_early": false,
+ "ended": "RUNNING",
+ "end_state": "IDLE",
+ "end_fault": [],
+ "tail_mean": {
+  "v_out_mv": 11976,
+  "i_out_ma": 468,
+  "v_in_mv": 24599,
+  "i_in_ma": 289,
+  "is_raw_ma": 290
+ },
+ "watch_tail": [
+  {
+   "regulator_il_zero_meas": 2072,
+   "regulator_pcmc_ccm_active": 0
+  },
+  {
+   "regulator_il_zero_meas": 2072,
+   "regulator_pcmc_ccm_active": 0
+  },
+  {
+   "regulator_il_zero_meas": 2072,
+   "regulator_pcmc_ccm_active": 0
+  },
+  {
+   "regulator_il_zero_meas": 2072,
+   "regulator_pcmc_ccm_active": 0
+  },
+  {
+   "regulator_il_zero_meas": 2072,
+   "regulator_pcmc_ccm_active": 0
+  }
+ ],
+ "limiting_frac": 0.0,
+ "log": "bringup_out/20261122-214945_battery_run.json"
+}

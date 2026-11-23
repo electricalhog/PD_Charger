@@ -1,0 +1,8 @@
+pre: IDLE   fsw 200 kHz  N 2 (refresh every 10000 ns)  sweep 0..0 @ 0 mV/s  hold_open 0
+ok False ended FAULT fault ['SW_OVP'] error None
+first {'regulator_sweep_mv': 0, 'regulator_pcmc_ccm_active': 0, 'regulator_pcmc_ccm_ton_ns': 1073, 'regulator_pcmc_ccm_meas_ns': 1080, 'regulator_pcmc_ccm_ithr_ma': 2219.643, 'regulator_i_cmd_ma': -57.889, 'regulator_pcmc_ccm_samples': 128, 'regulator_pcmc_ccm_bs_hits': 1, 'regulator_ccm_entries': 1, 'regulator_ccm_exits': 1, 'regulator_ccm_exit_reason': 7}
+last {'regulator_sweep_mv': 0, 'regulator_pcmc_ccm_active': 0, 'regulator_pcmc_ccm_ton_ns': 1073, 'regulator_pcmc_ccm_meas_ns': 1080, 'regulator_pcmc_ccm_ithr_ma': 2219.643, 'regulator_i_cmd_ma': -57.889, 'regulator_pcmc_ccm_samples': 128, 'regulator_pcmc_ccm_bs_hits': 1, 'regulator_ccm_entries': 1, 'regulator_ccm_exits': 1, 'regulator_ccm_exit_reason': 7}
+trace bringup_out/20261122-213504_regulator_trace.csv ARMED 129 None {'min': 0, 'max': 5570, 'first': 0, 'last': 5501}
+exits [(21055, 7, 1)]
+periods 5 median period us 5.000
+ refresh 0 n 5 width 351+-15 [336,372] il_on 1.565+-0.011 il_off 1.651+-0.098 il_min 1.484
