@@ -1,0 +1,85 @@
+{
+ "ok": true,
+ "ceiling_mv": 5000,
+ "above_pack_mv": null,
+ "pack_read_mv": null,
+ "battery": {
+  "ceiling_mv": 5000,
+  "pack_mv": 0,
+  "keepalive": 20,
+  "vin_start_mv": 24668,
+  "keepalive_stops": 0,
+  "ilim_ma": 2000
+ },
+ "samples": 20,
+ "stopped_early": false,
+ "ended": "RUNNING",
+ "end_state": "IDLE",
+ "end_fault": [],
+ "tail_mean": {
+  "v_out_mv": 4770,
+  "i_out_ma": 195,
+  "v_in_mv": 24634,
+  "i_in_ma": 60,
+  "is_raw_ma": 72
+ },
+ "watch_tail": [
+  {
+   "regulator_pcmc_ccm_active": 1,
+   "regulator_pcmc_ccm_ton_ns": 988,
+   "regulator_pcmc_ccm_meas_ns": 986,
+   "regulator_pcmc_ccm_ithr_ma": 2606.488,
+   "regulator_pcmc_ccm_bs_hits": 117,
+   "regulator_pcmc_ccm_samples": 158112,
+   "regulator_i_cmd_ma": 482.055,
+   "regulator_pcmc_dac_counts": 2352,
+   "regulator_fsw_khz": 200
+  },
+  {
+   "regulator_pcmc_ccm_active": 1,
+   "regulator_pcmc_ccm_ton_ns": 977,
+   "regulator_pcmc_ccm_meas_ns": 980,
+   "regulator_pcmc_ccm_ithr_ma": 2613.994,
+   "regulator_pcmc_ccm_bs_hits": 123,
+   "regulator_pcmc_ccm_samples": 168337,
+   "regulator_i_cmd_ma": 496.003,
+   "regulator_pcmc_dac_counts": 2355,
+   "regulator_fsw_khz": 200
+  },
+  {
+   "regulator_pcmc_ccm_active": 1,
+   "regulator_pcmc_ccm_ton_ns": 985,
+   "regulator_pcmc_ccm_meas_ns": 1010,
+   "regulator_pcmc_ccm_ithr_ma": 2606.838,
+   "regulator_pcmc_ccm_bs_hits": 132,
+   "regulator_pcmc_ccm_samples": 178046,
+   "regulator_i_cmd_ma": 482.15,
+   "regulator_pcmc_dac_counts": 2354,
+   "regulator_fsw_khz": 200
+  },
+  {
+   "regulator_pcmc_ccm_active": 1,
+   "regulator_pcmc_ccm_ton_ns": 978,
+   "regulator_pcmc_ccm_meas_ns": 986,
+   "regulator_pcmc_ccm_ithr_ma": 2610.021,
+   "regulator_pcmc_ccm_bs_hits": 138,
+   "regulator_pcmc_ccm_samples": 188249,
+   "regulator_i_cmd_ma": 509.344,
+   "regulator_pcmc_dac_counts": 2355,
+   "regulator_fsw_khz": 200
+  },
+  {
+   "regulator_pcmc_ccm_active": 1,
+   "regulator_pcmc_ccm_ton_ns": 979,
+   "regulator_pcmc_ccm_meas_ns": 974,
+   "regulator_pcmc_ccm_ithr_ma": 2600.983,
+   "regulator_pcmc_ccm_bs_hits": 151,
+   "regulator_pcmc_ccm_samples": 198169,
+   "regulator_i_cmd_ma": 494.788,
+   "regulator_pcmc_dac_counts": 2351,
+   "regulator_fsw_khz": 200
+  }
+ ],
+ "limiting_frac": 0.0,
+ "log": "bringup_out/20261122-193736_battery_run.json"
+}

@@ -46,8 +46,12 @@ as built, which differs from the bullet above:
 - The tracker reads Timer B CPT1 (TA1 reset) through DMA. It subtracts the 67-tick capture latency and moves a
   quarter of the way to each sample, either way. The threshold's ripple term uses T·V_out/V_in.
 - CCM uses its own threshold lead, `regulator_pcmc_ccm_delay_ns` 0: 200 ns collapsed V_out at the takeover.
-- Open: one unexplained OVER_BAND exit, then SW_OVP 13.9 V, in about a minute of running. Not yet tried: 5 and 20 V, load
-  steps, a battery.
+- 5 and 20 V at 200 and 400 kHz also regulate (10 s each, no fault). The pulse pairs are within 10 ns of each other.
+- Open:
+  - One unexplained OVER_BAND exit, then SW_OVP 13.9 V, in about two minutes of running.
+  - The takeover from the duty law dips V_out by 1.0–1.5 V. That is 31 % at 5 V, because i_cmd's offset from I_out
+    (+0.3 A at 5 V, −0.5 A at 20 V) lands as a current step.
+  - Load steps and a battery aren't tried yet.
 
 The firmware-only alternative is **valley current mode**:
 - The comparator acts during the discharge, the interval where IL_MON is good, in buck, boost and buck-boost alike.

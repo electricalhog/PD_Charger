@@ -234,7 +234,9 @@ Result with all five (raw captures at 4 ns/sample, `per_period.py`):
 
 - The tracked on-time was 2.35–2.37 µs at 200 kHz (T·V_out/V_in = 2.44 µs) and 1.12 µs at 400 kHz.
 - The backstop ended 0.07–0.19 % of sampled pulses at 200 kHz and 1.3 % at 400 kHz. The tracker got ~19,800 samples/s (PID 20 kHz).
-- The takeover from the duty law (`periods_takeover_symtrack.txt`) kept pulse widths at ~1.2 µs at 6.4 V, with no dip.
+- The takeover from the duty law (`periods_takeover_symtrack.txt`) kept pulse widths at ~1.2 µs at 6.4 V. V_out still
+  dipped: the trace (`trace_12V_200k_symtrack_entry.csv`) has it 1.19 V under V_cmd 1.9 ms in (the capture ended at
+  1.3 ms). See the 5 and 20 V section.
 - i_cmd runs ~50–150 mA above I_out in steady state. The PID absorbs that.
 
 **Open: one excursion.** In the 6 s run above, CCM exited OVER_BAND at about 4.35 s, re-entered, and SW_OVP latched
@@ -245,10 +247,47 @@ The cause is not known.
 Regression, peak mode off, 200 kHz, 5 s each: duty-law forced CCM 11966 mV / 467 mA (`regress_dutylaw_200k.json`);
 DCM 11986 mV / 468 mA (`regress_dcm_200k.json`). Both ended RUNNING with no fault. DCM at 400 kHz was not rerun.
 
-Not done: other voltages (5, 20 V), load steps, and a measurement of Q2's body-diode time after an early comparator
+Not done: load steps, and a measurement of Q2's body-diode time after an early comparator
 turn-off. The comparator periods lose Timer A's 100 ns leading-edge blanking (TIMFLTR1 replaces CMP1). In the two
 captures with it, the shortest comparator pulses were 2236 ns at 200 kHz (119 periods, mean 2351) and 968 ns at
 400 kHz (240 periods, mean 1141). Whether a turn-on glitch causes the 400 kHz minimum is not known.
+
+### 5 V and 20 V (`run_5V_*`, `run_20V_*`, `trace_*`, `periods_*`; `pcmc_run.sh`)
+
+Same setup and firmware (e8ba4a1), defaults (`regulator_pcmc_ccm_delay_ns` 0), 10 s each, captures 5 s in.
+
+| Run | V_out (20 ADC samples) | I_out | i_cmd | Tracked on-time | Refresh pulse | Comparator pulse [min, max] |
+|---|---|---|---|---|---|---|
+| 5 V, 200 kHz | 4.62–5.09 V, mean 4.93 | 187–198 mA | 477–509 mA | 975–979 ns | 995 ± 6 ns | 993 ± 21 [952, 1052] ns |
+| 5 V, 400 kHz | 4.81–5.19 V, mean 5.00 | 196–199 mA | 538–595 mA | 472–474 ns | 484 ± 4 ns | 485 ± 13 [432, 532] ns |
+| 20 V, 200 kHz | 19.64–20.23 V, mean 19.96 | 771–786 mA | 215–276 mA | 3926–3927 ns | 3929 ± 8 ns | 3938 ± 36 [3856, 4040] ns |
+| 20 V, 400 kHz | 18.83–20.27 V, mean 19.91 | 774–785 mA | 189–277 mA | 1875–1892 ns | 1893 ± 9 ns | 1892 ± 23 [1828, 1948] ns |
+
+- All four ended RUNNING with no fault, in CCM and peak mode at every sample. The only CCM exit in each was the
+  STOP at the end.
+- The 18.83 V reading at 20 V / 400 kHz was one sample (7.7 s). The samples either side read 19.7–20.0 V, and i_cmd
+  didn't move.
+- At 20 V, CCM was entered at 6.35 V on the soft-start, so peak mode carried the 80 V/s ramp to 20 V. After the
+  takeover dip (below), from 2.7 ms to the trace's end at 90 ms, V_out − V_cmd stayed between −1.15 and +0.28 V
+  (200 kHz) and between −1.95 and +0.43 V (400 kHz).
+- The refresh period's "valley" column isn't comparable: there IL_MON still shows the value held at the refresh (the
+  pulse ends before the hold releases at 5 V), so it is left out of the table.
+
+**i_cmd versus I_out depends on the operating point.** It is +290 to +360 mA at 5 V, +50 to +150 mA at 12 V, and
+−0.5 A at 20 V. The PID absorbs it in steady state. Inferred causes:
+- At 20 V the slope compensation is large (m_a ≈ 2.5 A/µs at D 0.81). The comparator ends Q1 ~140 ns before T·V_out/V_in,
+  where the ramp is still ~0.35 A above i_thr.
+- At 5 V the offset is not explained.
+
+**The takeover is not bumpless.** The integrator is preset to the measured current, so the offset above becomes a
+current step at the takeover. V_out − V_cmd worst within 15 ms of CCM entry (entry at 4.9 V for the 5 V runs, 6.35 V
+for 12 and 20 V):
+
+| 5 V 200k | 5 V 400k | 12 V 200k | 20 V 200k | 20 V 400k |
+|---|---|---|---|---|
+| −1548 mV (2.65 ms) | −1042 mV (4.55 ms) | −1194 mV (1.9 ms) | −1253 mV (2.55 ms) | −1538 mV (1.70 ms) |
+
+At 5 V / 200 kHz that is 31 % under V_cmd, and recovery took about 8 ms. UVP (50 % relative) didn't trip.
 
 ## End state
 
