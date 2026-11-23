@@ -1,0 +1,1 @@
+[{"t": 0.69, "state": "FAULT", "fault": ["SW_UVP"], "mode": "BUCK", "ccm": 0, "lim": 1, "target_mv": 12000, "commanded_mv": 6708, "v_out_mv": 2794, "v_in_mv": 24599, "i_out_ma": 248, "i_in_ma": 77, "is_raw_ma": 9, "switch": 0, "dis": 0, "watch": {"regulator_pcmc_ccm_samples": 24, "regulator_pcmc_ccm_meas_ns": 440, "regulator_pcmc_dac_counts": 2205}}]

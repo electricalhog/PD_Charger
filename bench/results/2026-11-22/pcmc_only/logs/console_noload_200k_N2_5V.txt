@@ -1,0 +1,6 @@
+pre: IDLE   fsw 200 kHz  N 2 (refresh every 10000 ns)  sweep 0..0 @ 0 mV/s  hold_open 1
+ok False ended FAULT fault ['SW_OVP'] error None
+first {'regulator_sweep_mv': 0, 'regulator_sweep_turns': 0, 'regulator_pcmc_ccm_active': 0, 'regulator_pcmc_ccm_ton_ns': 1093, 'regulator_pcmc_ccm_meas_ns': 1110, 'regulator_pcmc_ccm_ithr_ma': 2223.171, 'regulator_i_cmd_ma': -94.446, 'regulator_pcmc_ccm_samples': 358, 'regulator_pcmc_ccm_bs_hits': 2, 'regulator_ccm_entries': 1, 'regulator_ccm_exits': 1, 'regulator_ccm_exit_reason': 7}
+last {'regulator_sweep_mv': 0, 'regulator_sweep_turns': 0, 'regulator_pcmc_ccm_active': 0, 'regulator_pcmc_ccm_ton_ns': 1093, 'regulator_pcmc_ccm_meas_ns': 1110, 'regulator_pcmc_ccm_ithr_ma': 2223.171, 'regulator_i_cmd_ma': -94.446, 'regulator_pcmc_ccm_samples': 358, 'regulator_pcmc_ccm_bs_hits': 2, 'regulator_ccm_entries': 1, 'regulator_ccm_exits': 1, 'regulator_ccm_exit_reason': 7}
+trace bringup_out/20261122-214835_regulator_trace.csv TRIGGERED 359 0 {'min': 0, 'max': 5553, 'first': 0, 'last': 5553}
+exits [(4267, 7, 1)]

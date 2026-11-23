@@ -171,7 +171,9 @@ USBPD_StatusTypeDef USBPD_DPM_RequestGetBatteryCapability(uint8_t PortNum, uint8
 USBPD_StatusTypeDef USBPD_DPM_RequestGetBatteryStatus(uint8_t PortNum, uint8_t *pBatteryStatusRef);
 USBPD_StatusTypeDef USBPD_DPM_RequestSecurityRequest(uint8_t PortNum);
 /* USER CODE BEGIN Function */
-
+#if defined(USBPDCORE_EPR)
+uint32_t            USBPD_DPM_RequestDPMWhatToDo(uint8_t PortNum, uint32_t IDAction);
+#endif /* USBPDCORE_EPR */
 /* USER CODE END Function */
 /**
   * @}

@@ -1,0 +1,52 @@
+{
+ "source": "bu regulator status reads (board ADC and loop telemetry) during the 2026-10-15 session, transcribed from the session log; not a scripted capture. Load: 25 ohm fixed on VBUS, QT Py buck load not armed. Supply 24 V.",
+ "fields": "v_out_mv: board ADC (VD_MON); i_cmd_ma: the loop's average output-current command; i_max_ma: its ceiling at that operating point; i_pk_ma: modelled peak inductor current; t_on_ns: charge pulse; sr_window_ns: rectifier on/off from the period start",
+ "runs": [
+  {"run": "A", "build": "17:12 interim: peak limits buck 6 A, buck-boost 8 A, boost 10 A; PDOs 3 A; 2 s cap above 28 V", "rectifier": "none",
+   "before": "On arrival the regulator was latched in SW_UVP with VBUS at 0 V: it had been left on the 28 V EPR contract when the 25 ohm went on.",
+   "points": [
+    {"contract_v": 5,  "mode": "BUCK", "v_out_mv": [5001, 5001, 4915, 5018], "i_cmd_ma": [354, 356, 356, 360], "i_max_ma": 1850, "i_pk_ma": 1820, "t_on_ns": 450},
+    {"contract_v": 9,  "mode": "BUCK", "v_out_mv": [9054, 9020, 9020, 9054], "i_cmd_ma": [529, 529, 532, 533], "i_max_ma": 2490, "i_pk_ma": 2590, "t_on_ns": 803},
+    {"contract_v": 15, "mode": "BUCK", "v_out_mv": [15074, 14970, 15039, 15074], "i_cmd_ma": [753, 751, 750, 766], "i_max_ma": 2430, "i_pk_ma": 3030, "t_on_ns": 1572},
+    {"contract_v": 20, "mode": "BUCK", "v_out_mv": [20093, 19955, 19955, 19955], "i_cmd_ma": [966, 960, 964, 964], "i_max_ma": 1424, "i_pk_ma": 2630, "t_on_ns": 3060},
+    {"contract_v": 24, "mode": "BUCK_BOOST", "result": "did not hold", "v_out_mv": [22680], "i_cmd_ma": [1252], "i_max_ma": 1252, "i_pk_ma": 8000, "t_on_ns": 1561,
+     "note": "command at its ceiling, VBUS stalled at 22.7 V; the sink's transition timer ran out and it sent Hard Resets (three, then a detach and a new request), back to 20 V by request"}
+   ]},
+  {"run": "B", "build": "17:15: buck-boost peak limit 10 A", "rectifier": "none",
+   "points": [
+    {"contract_v": 20, "mode": "BUCK", "v_out_mv": [19955, 19799, 20110, 19886], "i_cmd_ma": [916, 898, 919, 893], "i_max_ma": 1430, "i_pk_ma": 2590, "t_on_ns": 2990},
+    {"contract_v": 24, "mode": "BUCK_BOOST", "v_out_mv": [24370, 24163, 23784, 24060], "i_cmd_ma": [1372, 1331, 1340, 1363], "i_max_ma": 1840, "i_pk_ma": 8650, "t_on_ns": 1700},
+    {"contract_v": 28, "mode": "BOOST", "result": "did not hold", "v_out_mv": [21973, 21973, 21955, 22024], "i_cmd_ma": [275, 276, 276, 275], "i_max_ma": 276, "i_pk_ma": 641, "t_on_ns": 125,
+     "note": "EPR contract accepted (PS_RDY sent), then VBUS sat at 22 V in boost. Mode log: buck-boost -> boost at setpoint 27.49 V with V_out 27.34 V; boost -> buck-boost only when 20 V was requested"}
+   ]},
+  {"run": "C", "build": "17:19: buck-boost up to V_in + 7 V, boost falls back on a sag, PS_RDY waits for the ramp, Hard Reset if VBUS stays 8 % low for 200 ms", "rectifier": "none",
+   "points": [
+    {"contract_v": 28, "mode": "BUCK_BOOST", "v_out_mv": [27940, 27957, 27975, 27854, 27975, 28078], "i_cmd_ma": [1521, 1522, 1513, 1526, 1517, 1520], "i_max_ma": 1598, "i_pk_ma": 9770, "t_on_ns": 1925},
+    {"contract_v": 20, "mode": "BUCK", "v_out_mv": [19972, 20041], "i_cmd_ma": [1003, 1000], "i_max_ma": 1430, "i_pk_ma": 2690, "t_on_ns": 3127}
+   ],
+   "after": "Q1-Q4 reported hot by touch after the 28 V run; parked at 5 V (V_out 4984 mV, I_cmd 372 mA)."},
+  {"run": "D", "build": "17:52/17:54: rectifier build (Timers C/D edges, explicit Q4, preload), regulator_sr_enable 0", "rectifier": "off",
+   "points": [
+    {"contract_v": 5,  "mode": "BUCK", "v_out_mv": [5001, 4984, 5036], "i_cmd_ma": [370, 374, 367], "i_max_ma": 1850, "i_pk_ma": 1863, "t_on_ns": 459},
+    {"contract_v": 9,  "mode": "BUCK", "v_out_mv": [9003, 8934, 9020], "i_cmd_ma": [551, 560, 551], "i_max_ma": 2485, "i_pk_ma": 2630, "t_on_ns": 819},
+    {"contract_v": 15, "mode": "BUCK", "v_out_mv": [14936, 15005, 14298], "i_cmd_ma": [773, 767, 786], "i_max_ma": 2422, "i_pk_ma": 3085, "t_on_ns": 1605},
+    {"contract_v": 20, "mode": "BUCK", "v_out_mv": [19972, 20041, 20041], "i_cmd_ma": [1052, 1059, 1062], "i_max_ma": 1421, "i_pk_ma": 2763, "t_on_ns": 3212},
+    {"contract_v": 24, "mode": "BUCK_BOOST", "v_out_mv": [23939, 24042, 23991], "i_cmd_ma": [1385, 1378, 1382], "i_max_ma": 1849, "i_pk_ma": 8650, "t_on_ns": 1684},
+    {"contract_v": 28, "mode": "BUCK_BOOST", "v_out_mv": [27923, 28130, 28009, 28389], "i_cmd_ma": [1566, 1552, 1549, 1544], "i_max_ma": 1597, "i_pk_ma": 9850, "t_on_ns": 1925, "capture": "sr0_bb28 (18:51)"}
+   ],
+   "after": "At 5 V (I_cmd 375 mA, capture sr0_buck5 19:14) regulator_sr_enable was written 1 with no fade-in: within a second the regulator latched SW_OVP. Fault snapshot: V_out 5519 mV, setpoint 5000 mV, 1121 pulse-skip transitions. The capture sr1_buck5 (19:14:40) was taken after the fault, with the outputs off."},
+  {"run": "E", "build": "19:16: 100 ms rectifier fade-in (window, model diode term, Q3 start); pulse skipping in buck also stops Q4", "rectifier": "on (faded in)",
+   "points": [
+    {"contract_v": 5,  "mode": "BUCK", "rectifier": "off", "v_out_mv": [5036, 4949], "i_cmd_ma": [376, 372], "t_on_ns": 460},
+    {"contract_v": 5,  "mode": "BUCK", "v_out_mv": [5053, 5001, 4932, 5070, 5122, 4967], "i_cmd_ma": [230, 227, 227, 227, 230, 227], "t_on_ns": 343, "sr_window_ns": [642, 1672], "capture": "sr1_buck5b (19:17)"},
+    {"contract_v": 9,  "mode": "BUCK", "v_out_mv": [8985, 8882, 9020], "i_cmd_ma": [457, 458, 454], "i_max_ma": 2373, "t_on_ns": 728, "sr_window_ns": [1028, 1974]},
+    {"contract_v": 15, "mode": "BUCK", "v_out_mv": [14987, 15039, 15005], "i_cmd_ma": [632, 633, 622], "i_max_ma": 2373, "t_on_ns": 1434, "sr_window_ns": [1731, 2370]},
+    {"contract_v": 20, "mode": "BUCK", "v_out_mv": [19972, 20110, 19989], "i_cmd_ma": [860, 829, 845], "i_max_ma": 1401, "t_on_ns": 2886, "sr_window_ns": [3167, 3564]},
+    {"contract_v": 24, "mode": "BUCK_BOOST", "v_out_mv": [23939, 23956, 24180], "i_cmd_ma": [1182, 1191, 1188], "i_max_ma": 1957, "i_pk_ma": 7804, "t_on_ns": 1522, "sr_window_ns": [1822, 3024]},
+    {"contract_v": 28, "mode": "BUCK_BOOST", "v_out_mv": [27837, 27957, 27888], "i_cmd_ma": [1383, 1364, 1372], "i_max_ma": 1679, "i_pk_ma": 9070, "t_on_ns": 1791, "sr_window_ns": [2083, 3282], "capture": "sr1_bb28 (19:18)"},
+    {"contract_v": 36, "mode": "BOOST", "v_out_mv": [36150, 36064, 36512, 35908], "i_cmd_ma": [2118, 2148, 2163, 2080], "i_max_ma": [2269, 2053, 2245, 2279], "i_pk_ma": [7156, 6479, 6357, 7126], "t_on_ns": 1383, "sr_window_ns": [1669, 4044],
+     "capture": "burst36_sr1 (19:22)", "note": "requested from 28 V; a screech was heard; the 2 s cap sent a Hard Reset (pd_bench_high_v_resets = 1) and the sink came back at 5 V SPR"}
+   ],
+   "after": "Q1-Q4 reported cooler by touch at 28 V with the rectifier on than in run C."}
+ ]
+}

@@ -1,0 +1,8 @@
+{
+ "above_33v_ms": 2090.0,
+ "hold_mean_v_scope": 34.93,
+ "hold_pp_v_20khz": 5.27,
+ "hold_rms_mv_20khz": 882.0,
+ "dominant_hz": 3918.0,
+ "note": "scope at 5 V/div DC, about +-1 V absolute; for scale, the meter read 35.32 V on a steady, no-load 36 V contract on 2026-10-12"
+}

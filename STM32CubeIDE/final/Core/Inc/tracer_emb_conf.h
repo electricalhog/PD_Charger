@@ -90,6 +90,21 @@ extern "C" {
 #define TRACER_EMB_TX_DMA_ACTIVE_FLAG                LL_DMA_IsActiveFlag_TC3
 #define TRACER_EMB_TX_DMA_CLEAR_FLAG                 LL_DMA_ClearFlag_TC3
 
+/* Override TRACER_EMB IRQ priorities so they are at or below
+ * configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY (5).
+ *
+ * Without these defines, tracer_emb_hw.c falls back to hardcoded values:
+ *   - DMA TX interrupt: priority 0  (highest possible — unsafe)
+ *   - USART TX interrupt: priority 3  (above FreeRTOS syscall ceiling)
+ *
+ * The LPUART1 ISR calls GUI_CALLBACK_RX() -> osMessagePut() ->
+ * xQueueSendFromISR(), which calls portASSERT_IF_INTERRUPT_PRIORITY_INVALID()
+ * and asserts at port.c:754 when the interrupt priority is numerically lower
+ * than configMAX_SYSCALL_INTERRUPT_PRIORITY (0x50 = priority 5 << 4).
+ */
+#define TRACER_EMB_TX_DMA_PRIORITY  5
+#define TRACER_EMB_TX_IRQ_PRIORITY  5
+
 #ifdef __cplusplus
 }
 #endif

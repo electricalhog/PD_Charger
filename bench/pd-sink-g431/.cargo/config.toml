@@ -1,0 +1,7 @@
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+# probe-rs over the Nucleo's ST-LINK.  Without probe-rs, flash the ELF with
+# STM32_Programmer_CLI (see README.md).
+runner = "probe-rs run --chip STM32G431RBTx --connect-under-reset"
+
+[build]
+target = "thumbv7em-none-eabihf"

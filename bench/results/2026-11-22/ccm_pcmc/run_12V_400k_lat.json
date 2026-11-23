@@ -1,0 +1,80 @@
+{
+ "ok": true,
+ "ceiling_mv": 12000,
+ "above_pack_mv": null,
+ "pack_read_mv": null,
+ "battery": {
+  "ceiling_mv": 12000,
+  "pack_mv": 0,
+  "keepalive": 20,
+  "vin_start_mv": 24651,
+  "keepalive_stops": 0,
+  "ilim_ma": 2000
+ },
+ "samples": 20,
+ "stopped_early": false,
+ "ended": "RUNNING",
+ "end_state": "IDLE",
+ "end_fault": [],
+ "tail_mean": {
+  "v_out_mv": 11890,
+  "i_out_ma": 464,
+  "v_in_mv": 24589,
+  "i_in_ma": 261,
+  "is_raw_ma": 273
+ },
+ "watch_tail": [
+  {
+   "regulator_pcmc_ccm_active": 1,
+   "regulator_pcmc_ccm_ton_ns": 1118,
+   "regulator_pcmc_ccm_meas_ns": 1163,
+   "regulator_pcmc_ccm_ithr_ma": 2181.832,
+   "regulator_pcmc_ccm_bs_hits": 2110,
+   "regulator_pcmc_ccm_samples": 157958,
+   "regulator_i_cmd_ma": 563.436,
+   "regulator_fsw_khz": 400
+  },
+  {
+   "regulator_pcmc_ccm_active": 1,
+   "regulator_pcmc_ccm_ton_ns": 1118,
+   "regulator_pcmc_ccm_meas_ns": 1098,
+   "regulator_pcmc_ccm_ithr_ma": 2179.366,
+   "regulator_pcmc_ccm_bs_hits": 2256,
+   "regulator_pcmc_ccm_samples": 167998,
+   "regulator_i_cmd_ma": 565.963,
+   "regulator_fsw_khz": 400
+  },
+  {
+   "regulator_pcmc_ccm_active": 1,
+   "regulator_pcmc_ccm_ton_ns": 1145,
+   "regulator_pcmc_ccm_meas_ns": 1139,
+   "regulator_pcmc_ccm_ithr_ma": 2185.244,
+   "regulator_pcmc_ccm_bs_hits": 2371,
+   "regulator_pcmc_ccm_samples": 177859,
+   "regulator_i_cmd_ma": 561.363,
+   "regulator_fsw_khz": 400
+  },
+  {
+   "regulator_pcmc_ccm_active": 1,
+   "regulator_pcmc_ccm_ton_ns": 1124,
+   "regulator_pcmc_ccm_meas_ns": 1139,
+   "regulator_pcmc_ccm_ithr_ma": 2345.414,
+   "regulator_pcmc_ccm_bs_hits": 2515,
+   "regulator_pcmc_ccm_samples": 187832,
+   "regulator_i_cmd_ma": 568.553,
+   "regulator_fsw_khz": 400
+  },
+  {
+   "regulator_pcmc_ccm_active": 1,
+   "regulator_pcmc_ccm_ton_ns": 1130,
+   "regulator_pcmc_ccm_meas_ns": 1139,
+   "regulator_pcmc_ccm_ithr_ma": 2216.921,
+   "regulator_pcmc_ccm_bs_hits": 2660,
+   "regulator_pcmc_ccm_samples": 197839,
+   "regulator_i_cmd_ma": 851.397,
+   "regulator_fsw_khz": 400
+  }
+ ],
+ "limiting_frac": 0.0,
+ "log": "bringup_out/20261122-180822_battery_run.json"
+}

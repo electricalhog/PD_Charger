@@ -1,0 +1,95 @@
+{
+ "ok": true,
+ "ceiling_mv": 12000,
+ "above_pack_mv": null,
+ "pack_read_mv": null,
+ "battery": {
+  "ceiling_mv": 12000,
+  "pack_mv": 0,
+  "keepalive": 84,
+  "vin_start_mv": 24651,
+  "keepalive_stops": 0,
+  "ilim_ma": 2000
+ },
+ "samples": 19,
+ "stopped_early": false,
+ "ended": "RUNNING",
+ "end_state": "IDLE",
+ "end_fault": [],
+ "tail_mean": {
+  "v_out_mv": 11945,
+  "i_out_ma": 463,
+  "v_in_mv": 24599,
+  "i_in_ma": 260,
+  "is_raw_ma": 266
+ },
+ "watch_tail": [
+  {
+   "regulator_sweep_mv": 0,
+   "regulator_pcmc_ccm_active": 1,
+   "regulator_pcmc_ccm_ton_ns": 1130,
+   "regulator_pcmc_ccm_meas_ns": 1139,
+   "regulator_pcmc_ccm_ithr_ma": 1876.047,
+   "regulator_i_cmd_ma": 212.995,
+   "regulator_pcmc_ccm_samples": 502195,
+   "regulator_pcmc_ccm_bs_hits": 4953,
+   "regulator_ccm_entries": 4,
+   "regulator_ccm_exits": 3,
+   "regulator_ccm_exit_reason": 7
+  },
+  {
+   "regulator_sweep_mv": 0,
+   "regulator_pcmc_ccm_active": 1,
+   "regulator_pcmc_ccm_ton_ns": 1136,
+   "regulator_pcmc_ccm_meas_ns": 1133,
+   "regulator_pcmc_ccm_ithr_ma": 1847.485,
+   "regulator_i_cmd_ma": 204.112,
+   "regulator_pcmc_ccm_samples": 508099,
+   "regulator_pcmc_ccm_bs_hits": 5034,
+   "regulator_ccm_entries": 4,
+   "regulator_ccm_exits": 3,
+   "regulator_ccm_exit_reason": 7
+  },
+  {
+   "regulator_sweep_mv": 0,
+   "regulator_pcmc_ccm_active": 1,
+   "regulator_pcmc_ccm_ton_ns": 1142,
+   "regulator_pcmc_ccm_meas_ns": 1157,
+   "regulator_pcmc_ccm_ithr_ma": 1950.019,
+   "regulator_i_cmd_ma": 201.375,
+   "regulator_pcmc_ccm_samples": 514096,
+   "regulator_pcmc_ccm_bs_hits": 5104,
+   "regulator_ccm_entries": 4,
+   "regulator_ccm_exits": 3,
+   "regulator_ccm_exit_reason": 7
+  },
+  {
+   "regulator_sweep_mv": 0,
+   "regulator_pcmc_ccm_active": 1,
+   "regulator_pcmc_ccm_ton_ns": 1133,
+   "regulator_pcmc_ccm_meas_ns": 1110,
+   "regulator_pcmc_ccm_ithr_ma": 1839.247,
+   "regulator_i_cmd_ma": 203.25,
+   "regulator_pcmc_ccm_samples": 520033,
+   "regulator_pcmc_ccm_bs_hits": 5173,
+   "regulator_ccm_entries": 4,
+   "regulator_ccm_exits": 3,
+   "regulator_ccm_exit_reason": 7
+  },
+  {
+   "regulator_sweep_mv": 0,
+   "regulator_pcmc_ccm_active": 1,
+   "regulator_pcmc_ccm_ton_ns": 1100,
+   "regulator_pcmc_ccm_meas_ns": 1145,
+   "regulator_pcmc_ccm_ithr_ma": 1816.333,
+   "regulator_i_cmd_ma": 212.406,
+   "regulator_pcmc_ccm_samples": 526016,
+   "regulator_pcmc_ccm_bs_hits": 5248,
+   "regulator_ccm_entries": 4,
+   "regulator_ccm_exits": 3,
+   "regulator_ccm_exit_reason": 7
+  }
+ ],
+ "limiting_frac": 0.0,
+ "log": "bringup_out/20261122-213023_battery_run.json"
+}

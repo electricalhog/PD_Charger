@@ -63,9 +63,50 @@ void USBPD_HW_IF_StopBISTMode2(uint8_t PortNum)
   Ports[PortNum].husbpd->CR = _cr;
 }
 
+/* PD_Charger bench instrumentation (2026-11-03, EPR KeepAlive drops): UCPD
+ * events and send refusals, read over SWD (bu mem read ucpd_dbg).  [0] RXORDDET [1] RXMSGEND [2] RXMSGEND with RXERR or
+ * after RXOVR [3] RXOVR [4] RXHRSTDET [5] TXMSGSENT [6] TXMSGDISC [7] TXMSGABT
+ * [8] sends refused: RX ongoing [9] sends refused: TX DMA busy [10] uwTick of
+ * the last refusal [11] longest refusal streak, ms (first refusal to the next
+ * accepted send) [12] streaks over 2 ms [13] SR at the last refusal.
+ * RX end -> next send (the GoodCRC), DWT cycles at 170 MHz: [14] IPSR of that
+ * send (0: task) [15] last [16] max [17] uwTick at the max [18] count over
+ * 1 ms [19] DWT at the RX end (set by the IRQ) [20] RX end pending.
+ * ucpd_ring: the last 32 RX ends and sends, frozen at a received Hard Reset
+ * (ucpd_ring_freeze; write 0 to re-arm): [2k] DWT cycles, [2k+1] kind << 24
+ * (1 RX end, 2 send, 3 send refused, 4 Hard Reset RX) | IPSR << 16 | header. */
+volatile uint32_t ucpd_dbg[21];
+volatile uint32_t ucpd_ring[64];
+volatile uint32_t ucpd_ring_idx;
+volatile uint32_t ucpd_ring_freeze;
+volatile uint32_t ucpd_ring_hp[32][6];   /* isr_hp_cyc (stm32g4xx_it.c) at each entry */
+extern volatile uint32_t isr_hp_cyc[6];
+void ucpd_ring_log(uint32_t kind, uint32_t hdr)
+{
+  if (ucpd_ring_freeze != 0u) { return; }
+  const uint32_t k = (ucpd_ring_idx++ % 32u) * 2u;
+  for (uint32_t i = 0u; i < 6u; i++) { ucpd_ring_hp[k / 2u][i] = isr_hp_cyc[i]; }
+  ucpd_ring[k]      = DWT->CYCCNT;
+  ucpd_ring[k + 1u] = (kind << 24) | ((__get_IPSR() & 0xFFu) << 16) | (hdr & 0xFFFFu);
+}
+static uint32_t ucpd_refuse_t0;
+static uint8_t  ucpd_refusing;
+
 USBPD_StatusTypeDef USBPD_HW_IF_SendBuffer(uint8_t PortNum, USBPD_SOPType_TypeDef Type, uint8_t *pBuffer, uint32_t Size)
 {
   USBPD_StatusTypeDef _status = USBPD_OK;
+
+  if (ucpd_dbg[20] != 0u)
+  {
+    const uint32_t lat = DWT->CYCCNT - ucpd_dbg[19];
+    ucpd_dbg[20] = 0u;
+    ucpd_dbg[14] = __get_IPSR();
+    ucpd_dbg[15] = lat;
+    if (lat > ucpd_dbg[16]) { ucpd_dbg[16] = lat; ucpd_dbg[17] = HAL_GetTick(); }
+    if (lat > 170000u)      { ucpd_dbg[18]++; }
+  }
+
+  ucpd_ring_log(2u, (Size >= 2u) ? ((uint32_t)pBuffer[0] | ((uint32_t)pBuffer[1] << 8)) : 0u);
 
   if (USBPD_SOPTYPE_HARD_RESET == Type)
   {
@@ -80,10 +121,22 @@ USBPD_StatusTypeDef USBPD_HW_IF_SendBuffer(uint8_t PortNum, USBPD_SOPType_TypeDe
     {
       PHY_LEAVE_CRITICAL_SECTION()
       _status = USBPD_ERROR;
+      ucpd_dbg[(Ports[PortNum].RXStatus == USBPD_TRUE) ? 8u : 9u]++;
+      ucpd_ring_log(3u, 0u);
+      ucpd_dbg[10] = HAL_GetTick();
+      ucpd_dbg[13] = Ports[PortNum].husbpd->SR;
+      if (!ucpd_refusing) { ucpd_refusing = 1u; ucpd_refuse_t0 = ucpd_dbg[10]; }
     }
     else
     {
       PHY_LEAVE_CRITICAL_SECTION()
+      if (ucpd_refusing)
+      {
+        const uint32_t d = HAL_GetTick() - ucpd_refuse_t0;
+        if (d > ucpd_dbg[11]) { ucpd_dbg[11] = d; }
+        if (d > 2u) { ucpd_dbg[12]++; }
+        ucpd_refusing = 0u;
+      }
 
       switch (Type)
       {

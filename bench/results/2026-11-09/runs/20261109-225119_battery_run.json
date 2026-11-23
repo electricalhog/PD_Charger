@@ -1,0 +1,1 @@
+[{"t": 0.92, "state": "FAULT", "fault": ["SW_VIN_RISE"], "mode": "BUCK", "ccm": 0, "lim": 1, "target_mv": 16057, "commanded_mv": 16057, "v_out_mv": 15729, "v_in_mv": 26486, "i_out_ma": 425, "i_in_ma": 471, "switch": 0, "dis": 0}]

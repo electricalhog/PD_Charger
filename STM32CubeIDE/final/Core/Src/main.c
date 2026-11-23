@@ -24,7 +24,12 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "regulator.h"
+#include "pd_interface.h"
+#include "pd_vbus.h"
+#include "usbpd_dpm_core.h"
+#include "adc_monitor.h"
+#include "debug_log.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -34,6 +39,11 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+/** Default task test voltage (millivolts).
+ *  The default task bypasses PD negotiation and regulates to this voltage
+ *  directly, enabling standalone regulation testing. */
+#define DEFAULT_TASK_TEST_VOLTAGE_MV  28000u  /* 2026-09-28 boost: 24 V in; output switch on from the evening run (330 ohm load, OUTPUT_SWITCH_ENABLED 1). Buck runs 1 to 29 used 5000u. */
 
 /* USER CODE END PD */
 
@@ -134,7 +144,15 @@ int main(void)
   MX_TIM7_Init();
   MX_TCPP_Init();
   /* USER CODE BEGIN 2 */
+  /* Initialise the buck-boost regulator after all peripheral MX inits.
+   * regulator_init() performs HRTIM post-configuration, PID init, ADC
+   * calibration, slope compensation setup, and transitions to IDLE state.
+   * Must run before osKernelStart() so interrupts are armed before RTOS. */
+  regulator_init();
 
+  /* Clear the debug capture buffer so the first samples collected after
+   * osKernelStart() are clean (no zero-filled ghost entries). */
+  debug_log_clear();
   /* USER CODE END 2 */
 
   /* USBPD initialisation ---------------------------------*/
@@ -158,7 +176,7 @@ int main(void)
 
   /* Create the thread(s) */
   /* definition and creation of defaultTask */
-  osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 128);
+  osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 512);
   defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
@@ -254,17 +272,21 @@ static void MX_ADC1_Init(void)
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc1.Init.GainCompensation = 0;
-  hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
+  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   hadc1.Init.LowPowerAutoWait = DISABLE;
   hadc1.Init.ContinuousConvMode = DISABLE;
-  hadc1.Init.NbrOfConversion = 4;
+  hadc1.Init.NbrOfConversion = 1;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
-  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
-  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
-  hadc1.Init.DMAContinuousRequests = DISABLE;
-  hadc1.Init.Overrun = ADC_OVR_DATA_PRESERVED;
-  hadc1.Init.OversamplingMode = DISABLE;
+  hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIG_HRTIM_TRG1;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
+  hadc1.Init.DMAContinuousRequests = ENABLE;
+  hadc1.Init.Overrun = ADC_OVR_DATA_OVERWRITTEN;
+  hadc1.Init.OversamplingMode = ENABLE;
+  hadc1.Init.Oversampling.Ratio = ADC_OVERSAMPLING_RATIO_8;
+  hadc1.Init.Oversampling.RightBitShift = ADC_RIGHTBITSHIFT_NONE;
+  hadc1.Init.Oversampling.TriggeredMode = ADC_TRIGGEREDMODE_SINGLE_TRIGGER;
+  hadc1.Init.Oversampling.OversamplingStopReset = ADC_REGOVERSAMPLING_CONTINUED_MODE;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
     Error_Handler();
@@ -282,7 +304,7 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_1;
   sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_2CYCLES_5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_6CYCLES_5;
   sConfig.SingleDiff = ADC_SINGLE_ENDED;
   sConfig.OffsetNumber = ADC_OFFSET_NONE;
   sConfig.Offset = 0;
@@ -295,6 +317,7 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_2;
   sConfig.Rank = ADC_REGULAR_RANK_2;
+  sConfig.SamplingTime = ADC_SAMPLETIME_12CYCLES_5;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -483,9 +506,12 @@ static void MX_HRTIM1_Init(void)
   HRTIM_EventCfgTypeDef pEventCfg = {0};
   HRTIM_FaultCfgTypeDef pFaultCfg = {0};
   HRTIM_FaultBlankingCfgTypeDef pFaultBlkCfg = {0};
+  HRTIM_ADCTriggerCfgTypeDef pADCTriggerCfg = {0};
   HRTIM_TimeBaseCfgTypeDef pTimeBaseCfg = {0};
   HRTIM_TimerCfgTypeDef pTimerCfg = {0};
   HRTIM_TimerCtlTypeDef pTimerCtl = {0};
+  HRTIM_CompareCfgTypeDef pCompareCfg = {0};
+  HRTIM_TimerEventFilteringCfgTypeDef pTimerEventFilteringCfg = {0};
   HRTIM_DeadTimeCfgTypeDef pDeadTimeCfg = {0};
   HRTIM_OutputCfgTypeDef pOutputCfg = {0};
 
@@ -556,6 +582,16 @@ static void MX_HRTIM1_Init(void)
     Error_Handler();
   }
   HAL_HRTIM_FaultModeCtl(&hhrtim1, HRTIM_FAULT_2, HRTIM_FAULTMODECTL_ENABLED);
+  pADCTriggerCfg.UpdateSource = HRTIM_ADCTRIGGERUPDATE_MASTER;
+  pADCTriggerCfg.Trigger = HRTIM_ADCTRIGGEREVENT13_MASTER_PERIOD;
+  if (HAL_HRTIM_ADCTriggerConfig(&hhrtim1, HRTIM_ADCTRIGGER_1, &pADCTriggerCfg) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_HRTIM_ADCPostScalerConfig(&hhrtim1, HRTIM_ADCTRIGGER_1, 0x00) != HAL_OK)
+  {
+    Error_Handler();
+  }
   pTimeBaseCfg.Period = 0xFFDF;
   pTimeBaseCfg.RepetitionCounter = 0x00;
   pTimeBaseCfg.PrescalerRatio = HRTIM_PRESCALERRATIO_MUL32;
@@ -588,6 +624,8 @@ static void MX_HRTIM1_Init(void)
     Error_Handler();
   }
   pTimerCtl.UpDownMode = HRTIM_TIMERUPDOWNMODE_UP;
+  pTimerCtl.TrigHalf = HRTIM_TIMERTRIGHALF_DISABLED;
+  pTimerCtl.GreaterCMP1 = HRTIM_TIMERGTCMP1_EQUAL;
   pTimerCtl.DualChannelDacEnable = HRTIM_TIMER_DCDE_DISABLED;
   if (HAL_HRTIM_WaveformTimerControl(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A, &pTimerCtl) != HAL_OK)
   {
@@ -611,12 +649,34 @@ static void MX_HRTIM1_Init(void)
   {
     Error_Handler();
   }
+  pCompareCfg.CompareValue = 0xFFDF;
+  if (HAL_HRTIM_WaveformCompareConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A, HRTIM_COMPAREUNIT_1, &pCompareCfg) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  pCompareCfg.AutoDelayedMode = HRTIM_AUTODELAYEDMODE_REGULAR;
+  pCompareCfg.AutoDelayedTimeout = 0x0000;
+
+  if (HAL_HRTIM_WaveformCompareConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A, HRTIM_COMPAREUNIT_2, &pCompareCfg) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  pTimerEventFilteringCfg.Filter = HRTIM_TIMEEVFLT_BLANKINGCMP1;
+  pTimerEventFilteringCfg.Latch = HRTIM_TIMEVENTLATCH_DISABLED;
+  if (HAL_HRTIM_TimerEventFilteringConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A, HRTIM_EVENT_4, &pTimerEventFilteringCfg) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_HRTIM_TimerEventFilteringConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_B, HRTIM_EVENT_4, &pTimerEventFilteringCfg) != HAL_OK)
+  {
+    Error_Handler();
+  }
   pDeadTimeCfg.Prescaler = HRTIM_TIMDEADTIME_PRESCALERRATIO_MUL8;
-  pDeadTimeCfg.RisingValue = 0x000;
+  pDeadTimeCfg.RisingValue = 0x010;
   pDeadTimeCfg.RisingSign = HRTIM_TIMDEADTIME_RISINGSIGN_POSITIVE;
   pDeadTimeCfg.RisingLock = HRTIM_TIMDEADTIME_RISINGLOCK_WRITE;
   pDeadTimeCfg.RisingSignLock = HRTIM_TIMDEADTIME_RISINGSIGNLOCK_WRITE;
-  pDeadTimeCfg.FallingValue = 0x000;
+  pDeadTimeCfg.FallingValue = 0x010;
   pDeadTimeCfg.FallingSign = HRTIM_TIMDEADTIME_FALLINGSIGN_POSITIVE;
   pDeadTimeCfg.FallingLock = HRTIM_TIMDEADTIME_FALLINGLOCK_WRITE;
   pDeadTimeCfg.FallingSignLock = HRTIM_TIMDEADTIME_FALLINGSIGNLOCK_WRITE;
@@ -630,7 +690,7 @@ static void MX_HRTIM1_Init(void)
   }
   pOutputCfg.Polarity = HRTIM_OUTPUTPOLARITY_HIGH;
   pOutputCfg.SetSource = HRTIM_OUTPUTSET_TIMPER;
-  pOutputCfg.ResetSource = HRTIM_OUTPUTSET_EEV_4;
+  pOutputCfg.ResetSource = HRTIM_OUTPUTSET_EEV_4|HRTIM_OUTPUTRESET_TIMCMP2;
   pOutputCfg.IdleMode = HRTIM_OUTPUTIDLEMODE_NONE;
   pOutputCfg.IdleLevel = HRTIM_OUTPUTIDLELEVEL_INACTIVE;
   pOutputCfg.FaultLevel = HRTIM_OUTPUTFAULTLEVEL_NONE;
@@ -640,7 +700,7 @@ static void MX_HRTIM1_Init(void)
   {
     Error_Handler();
   }
-  pOutputCfg.SetSource = HRTIM_OUTPUTSET_EEV_4;
+  pOutputCfg.SetSource = HRTIM_OUTPUTSET_EEV_4|HRTIM_OUTPUTSET_TIMCMP2;
   pOutputCfg.ResetSource = HRTIM_OUTPUTRESET_TIMPER;
   if (HAL_HRTIM_WaveformOutputConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_B, HRTIM_OUTPUT_TB1, &pOutputCfg) != HAL_OK)
   {
@@ -661,6 +721,15 @@ static void MX_HRTIM1_Init(void)
     Error_Handler();
   }
   if (HAL_HRTIM_WaveformTimerControl(&hhrtim1, HRTIM_TIMERINDEX_TIMER_B, &pTimerCtl) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_HRTIM_WaveformCompareConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_B, HRTIM_COMPAREUNIT_1, &pCompareCfg) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  if (HAL_HRTIM_WaveformCompareConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_B, HRTIM_COMPAREUNIT_2, &pCompareCfg) != HAL_OK)
   {
     Error_Handler();
   }
@@ -987,11 +1056,47 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+/**
+ * @brief  FreeRTOS stack overflow hook (configCHECK_FOR_STACK_OVERFLOW = 2).
+ *         Called by the FreeRTOS kernel when a task's stack has been corrupted.
+ *         Halts here — inspect xTask / pcTaskName in the debugger.
+ */
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+    (void)xTask;
+    (void)pcTaskName;
+    __disable_irq();
+    for (;;) {}
+}
+
+/**
+ * @brief  FreeRTOS malloc-failed hook.
+ *         Called when pvPortMalloc() returns NULL (heap exhausted).
+ *         Halts here — increase configTOTAL_HEAP_SIZE if this fires.
+ */
+void vApplicationMallocFailedHook(void)
+{
+    __disable_irq();
+    for (;;) {}
+}
+
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDefaultTask */
 /**
-  * @brief  Function implementing the defaultTask thread.
+  * @brief  Default task: test regulation without PD negotiation.
+  *
+  * Sets a fixed 12 V setpoint, starts the regulator, and monitors the
+  * debug_log circular buffer which is filled by the PID ISR at 20 kHz.
+  *
+  * LPUART1 is claimed by the UCPD peripheral and must not be used for
+  * serial printing during closed-loop operation.  Instead, use a JTAG/SWD
+  * debugger to inspect the "debug_log" global variable in real time:
+  *   - STM32CubeIDE: Expressions window → add "debug_log"
+  *   - STM32CubeIDE: Memory window → address of debug_log
+  *   - Any GDB client: "print debug_log" or "x/NNxw &debug_log"
+  * At 20 kHz, 512 samples = 25.6 ms of continuous capture per wrap.
+  *
   * @param  argument: Not used
   * @retval None
   */
@@ -999,10 +1104,28 @@ static void MX_GPIO_Init(void)
 void StartDefaultTask(void const * argument)
 {
   /* USER CODE BEGIN 5 */
-  /* Infinite loop */
+
+  /* Allow peripheral initialisation (regulator_init, PD stack) to settle. */
+  osDelay(200);
+
+#if !PD_OWNS_VBUS && !(defined(BATTERY_LOAD) && BATTERY_LOAD)
+  /* Set a fixed test voltage and start the regulator without PD negotiation.
+   * Never in the battery-load build: only `bu battery` starts it there. */
+  regulator_set_target_voltage(DEFAULT_TASK_TEST_VOLTAGE_MV);
+  regulator_start();
+#endif /* With PD_OWNS_VBUS the regulator output is the Type-C VBUS and only
+        * starts when a sink attaches (pd_vbus.c, BSP_USBPD_PWR_VBUSOn). */
+
+  /* Infinite loop: service debugger commands (regulator_debug mailbox,
+   * used by tools/bringup to clear faults / stop).  The debug buffer is
+   * filled at 20 kHz by the TIM7 PID ISR. */
   for(;;)
   {
-    osDelay(1);
+    osDelay(10);
+    regulator_debug_poll();
+#if PD_OWNS_VBUS
+    pd_vbus_poll();
+#endif
   }
   /* USER CODE END 5 */
 }
@@ -1025,7 +1148,17 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
-
+  if (htim->Instance == TIM2)
+  {
+    /* USB-PD policy-engine and protocol-layer timers, 1 ms.  ST's stack only
+     * counts them down here; FreeRTOS owns SysTick and there is no tick hook,
+     * so without this call no PE timer ever expired (2026-10-06 bench: one
+     * Source_Capabilities burst and no resends, and after Accept no PS_RDY:
+     * the PE waited forever for tSrcTransition).                           */
+#if !(defined(BATTERY_LOAD) && BATTERY_LOAD)   /* no USB-PD stack */
+    USBPD_DPM_TimerCounter();
+#endif
+  }
   /* USER CODE END Callback 1 */
 }
 

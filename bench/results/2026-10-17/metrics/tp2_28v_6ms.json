@@ -1,0 +1,358 @@
+{
+ "record": {
+  "samples": 1200000,
+  "sample_us": 0.02,
+  "t_start_ms": -13.5,
+  "t_end_ms": 10.5,
+  "codes_used": 85,
+  "quantum_v": 0.103,
+  "lowest_v": 22.542,
+  "highest_v": 31.394
+ },
+ "baseline": {
+  "window_ms": [
+   -12,
+   -7
+  ],
+  "mean_v": 28.054,
+  "raw_sd_v": 0.628,
+  "raw_pp_v": 6.485
+ },
+ "undershoot_by_averaging_window": {
+  "1_us": {
+   "min_v": 25.041,
+   "at_us_after_trigger": 26.1,
+   "dv_us_v": 3.014,
+   "dv_us_pct": 10.7
+  },
+  "2.5_us": {
+   "min_v": 25.154,
+   "at_us_after_trigger": 26.0,
+   "dv_us_v": 2.901,
+   "dv_us_pct": 10.3
+  },
+  "5_us": {
+   "min_v": 25.382,
+   "at_us_after_trigger": 19.5,
+   "dv_us_v": 2.672,
+   "dv_us_pct": 9.5
+  },
+  "10_us": {
+   "min_v": 25.391,
+   "at_us_after_trigger": 21.8,
+   "dv_us_v": 2.664,
+   "dv_us_pct": 9.5
+  },
+  "20_us": {
+   "min_v": 25.425,
+   "at_us_after_trigger": 26.7,
+   "dv_us_v": 2.629,
+   "dv_us_pct": 9.4
+  },
+  "50_us": {
+   "min_v": 25.553,
+   "at_us_after_trigger": 32.6,
+   "dv_us_v": 2.502,
+   "dv_us_pct": 8.9
+  }
+ },
+ "recovery_5us_mean": {
+  "within_2_pct_ms_after_trigger": 0.211,
+  "band_2_pct_v": 0.561,
+  "within_1_pct_ms_after_trigger": 0.261,
+  "band_1_pct_v": 0.281
+ },
+ "windowed_ripple_0p5ms": [
+  {
+   "from_ms": -13.0,
+   "pp_5us_mean_v": 0.174,
+   "sd_5us_mean_v": 0.046,
+   "raw_sd_v": 0.621,
+   "raw_pp_v": 6.28
+  },
+  {
+   "from_ms": -12.5,
+   "pp_5us_mean_v": 0.137,
+   "sd_5us_mean_v": 0.03,
+   "raw_sd_v": 0.636,
+   "raw_pp_v": 6.18
+  },
+  {
+   "from_ms": -12.0,
+   "pp_5us_mean_v": 0.149,
+   "sd_5us_mean_v": 0.043,
+   "raw_sd_v": 0.621,
+   "raw_pp_v": 5.66
+  },
+  {
+   "from_ms": -11.5,
+   "pp_5us_mean_v": 0.059,
+   "sd_5us_mean_v": 0.012,
+   "raw_sd_v": 0.633,
+   "raw_pp_v": 6.28
+  },
+  {
+   "from_ms": -11.0,
+   "pp_5us_mean_v": 0.13,
+   "sd_5us_mean_v": 0.032,
+   "raw_sd_v": 0.626,
+   "raw_pp_v": 6.07
+  },
+  {
+   "from_ms": -10.5,
+   "pp_5us_mean_v": 0.144,
+   "sd_5us_mean_v": 0.047,
+   "raw_sd_v": 0.617,
+   "raw_pp_v": 6.18
+  },
+  {
+   "from_ms": -10.0,
+   "pp_5us_mean_v": 0.182,
+   "sd_5us_mean_v": 0.052,
+   "raw_sd_v": 0.627,
+   "raw_pp_v": 6.48
+  },
+  {
+   "from_ms": -9.5,
+   "pp_5us_mean_v": 0.169,
+   "sd_5us_mean_v": 0.045,
+   "raw_sd_v": 0.622,
+   "raw_pp_v": 6.07
+  },
+  {
+   "from_ms": -9.0,
+   "pp_5us_mean_v": 0.128,
+   "sd_5us_mean_v": 0.033,
+   "raw_sd_v": 0.626,
+   "raw_pp_v": 6.07
+  },
+  {
+   "from_ms": -8.5,
+   "pp_5us_mean_v": 0.124,
+   "sd_5us_mean_v": 0.031,
+   "raw_sd_v": 0.623,
+   "raw_pp_v": 6.18
+  },
+  {
+   "from_ms": -8.0,
+   "pp_5us_mean_v": 0.216,
+   "sd_5us_mean_v": 0.053,
+   "raw_sd_v": 0.638,
+   "raw_pp_v": 6.28
+  },
+  {
+   "from_ms": -7.5,
+   "pp_5us_mean_v": 0.218,
+   "sd_5us_mean_v": 0.064,
+   "raw_sd_v": 0.636,
+   "raw_pp_v": 6.28
+  },
+  {
+   "from_ms": -7.0,
+   "pp_5us_mean_v": 0.225,
+   "sd_5us_mean_v": 0.06,
+   "raw_sd_v": 0.622,
+   "raw_pp_v": 6.18
+  },
+  {
+   "from_ms": -6.5,
+   "pp_5us_mean_v": 0.162,
+   "sd_5us_mean_v": 0.046,
+   "raw_sd_v": 0.632,
+   "raw_pp_v": 6.69
+  },
+  {
+   "from_ms": -6.0,
+   "pp_5us_mean_v": 0.27,
+   "sd_5us_mean_v": 0.093,
+   "raw_sd_v": 0.627,
+   "raw_pp_v": 6.48
+  },
+  {
+   "from_ms": -5.5,
+   "pp_5us_mean_v": 0.138,
+   "sd_5us_mean_v": 0.025,
+   "raw_sd_v": 0.637,
+   "raw_pp_v": 6.18
+  },
+  {
+   "from_ms": -5.0,
+   "pp_5us_mean_v": 0.142,
+   "sd_5us_mean_v": 0.043,
+   "raw_sd_v": 0.63,
+   "raw_pp_v": 6.18
+  },
+  {
+   "from_ms": -4.5,
+   "pp_5us_mean_v": 0.551,
+   "sd_5us_mean_v": 0.128,
+   "raw_sd_v": 0.649,
+   "raw_pp_v": 6.59
+  },
+  {
+   "from_ms": -4.0,
+   "pp_5us_mean_v": 0.222,
+   "sd_5us_mean_v": 0.056,
+   "raw_sd_v": 0.618,
+   "raw_pp_v": 5.87
+  },
+  {
+   "from_ms": -3.5,
+   "pp_5us_mean_v": 0.225,
+   "sd_5us_mean_v": 0.06,
+   "raw_sd_v": 0.611,
+   "raw_pp_v": 6.28
+  },
+  {
+   "from_ms": -3.0,
+   "pp_5us_mean_v": 0.132,
+   "sd_5us_mean_v": 0.038,
+   "raw_sd_v": 0.616,
+   "raw_pp_v": 6.07
+  },
+  {
+   "from_ms": -2.5,
+   "pp_5us_mean_v": 0.22,
+   "sd_5us_mean_v": 0.07,
+   "raw_sd_v": 0.6,
+   "raw_pp_v": 6.07
+  },
+  {
+   "from_ms": -2.0,
+   "pp_5us_mean_v": 0.808,
+   "sd_5us_mean_v": 0.165,
+   "raw_sd_v": 0.555,
+   "raw_pp_v": 6.59
+  },
+  {
+   "from_ms": -1.5,
+   "pp_5us_mean_v": 0.839,
+   "sd_5us_mean_v": 0.184,
+   "raw_sd_v": 0.552,
+   "raw_pp_v": 6.48
+  },
+  {
+   "from_ms": -1.0,
+   "pp_5us_mean_v": 0.965,
+   "sd_5us_mean_v": 0.223,
+   "raw_sd_v": 0.554,
+   "raw_pp_v": 7.2
+  },
+  {
+   "from_ms": -0.5,
+   "pp_5us_mean_v": 1.954,
+   "sd_5us_mean_v": 0.296,
+   "raw_sd_v": 0.577,
+   "raw_pp_v": 7.0
+  }
+ ],
+ "ripple_onset_0p1ms": {
+  "quiet_windows_ms": [
+   -13.0,
+   -3.0
+  ],
+  "quiet_pp_5us_mean_v": {
+   "median": 0.065,
+   "p90": 0.119,
+   "max": 0.551,
+   "n": 100
+  },
+  "windows": [
+   {
+    "from_ms": -2.4,
+    "pp_5us_mean_v": 0.043,
+    "sd_5us_mean_v": 0.011
+   },
+   {
+    "from_ms": -2.3,
+    "pp_5us_mean_v": 0.041,
+    "sd_5us_mean_v": 0.01
+   },
+   {
+    "from_ms": -2.2,
+    "pp_5us_mean_v": 0.145,
+    "sd_5us_mean_v": 0.041
+   },
+   {
+    "from_ms": -2.1,
+    "pp_5us_mean_v": 0.045,
+    "sd_5us_mean_v": 0.011
+   },
+   {
+    "from_ms": -2.0,
+    "pp_5us_mean_v": 0.032,
+    "sd_5us_mean_v": 0.007
+   },
+   {
+    "from_ms": -1.9,
+    "pp_5us_mean_v": 0.105,
+    "sd_5us_mean_v": 0.025
+   },
+   {
+    "from_ms": -1.8,
+    "pp_5us_mean_v": 0.181,
+    "sd_5us_mean_v": 0.047
+   },
+   {
+    "from_ms": -1.7,
+    "pp_5us_mean_v": 0.634,
+    "sd_5us_mean_v": 0.132
+   },
+   {
+    "from_ms": -1.6,
+    "pp_5us_mean_v": 0.297,
+    "sd_5us_mean_v": 0.078
+   },
+   {
+    "from_ms": -1.5,
+    "pp_5us_mean_v": 0.694,
+    "sd_5us_mean_v": 0.118
+   },
+   {
+    "from_ms": -1.4,
+    "pp_5us_mean_v": 0.277,
+    "sd_5us_mean_v": 0.074
+   },
+   {
+    "from_ms": -1.3,
+    "pp_5us_mean_v": 0.721,
+    "sd_5us_mean_v": 0.195
+   },
+   {
+    "from_ms": -1.2,
+    "pp_5us_mean_v": 0.721,
+    "sd_5us_mean_v": 0.191
+   },
+   {
+    "from_ms": -1.1,
+    "pp_5us_mean_v": 0.689,
+    "sd_5us_mean_v": 0.153
+   },
+   {
+    "from_ms": -1.0,
+    "pp_5us_mean_v": 0.817,
+    "sd_5us_mean_v": 0.247
+   }
+  ]
+ },
+ "regulator_trace": {
+  "v0_mv": 27993,
+  "reconnect_sample_ms": 6.0,
+  "pulse_us_measured": 6001.38,
+  "skipping_samples_ms": [
+   5.9
+  ],
+  "railed_samples": 1,
+  "i_cmd_max_ma": 1843,
+  "v_out_mv_5p95_to_6p30_ms": [
+   27837,
+   28251,
+   26509,
+   25491,
+   26371,
+   26923,
+   27423,
+   27681
+  ]
+ }
+}

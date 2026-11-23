@@ -1,0 +1,6 @@
+[toolchain]
+# fixed 1.31 (Cargo.lock) needs rustc 1.93+, let-chains 1.88+; pinned so the
+# bench builds the same on every machine.
+channel = "1.99.0"
+profile = "minimal"
+targets = ["thumbv6m-none-eabi", "thumbv7em-none-eabihf"]

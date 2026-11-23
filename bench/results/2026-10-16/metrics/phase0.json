@@ -1,0 +1,533 @@
+{
+ "source": "bench/results/2026-10-16/scripts/phase0_log.py; bench readings typed in from the user's meters and the supply display, board reads averaged by the script",
+ "fields": "bench: vin_v (PSU setpoint 24.56 V), iin_a (supply display), vbus_v and iout_a (user's meters; iout_a null = V/R), temps_c (IR or tape+IR); p_in_w, p_out_w, eff_pct, loss_w from those (loss includes the board's housekeeping); adc_mean/adc_sd: board reads (IS_MON and ID_MON are single samples at one phase of the period, see README)",
+ "steps": [
+  {
+   "label": "5V sr0, QT Py on VBUS",
+   "time": "2026-10-16 22:05:43",
+   "n": 20,
+   "note": "user: about 50 mA in (supply display), 280 mA out incl. the QT Py buck",
+   "bench": {
+    "vin_v": 24.56,
+    "iin_a": 0.05,
+    "vbus_v": 5.17,
+    "iout_a": 0.28,
+    "r_ohm": 25.0,
+    "idle_w": 0.0,
+    "temps_c": {}
+   },
+   "mode": [
+    "BUCK"
+   ],
+   "sr": [
+    [
+     0,
+     0
+    ]
+   ],
+   "p_in_w": 1.23,
+   "p_out_w": 1.45,
+   "eff_pct": 117.9,
+   "loss_w": -0.22,
+   "cmd_over_load": 1.279,
+   "adc_mean": {
+    "v_in_mv": 24171.1,
+    "v_out_mv": 5010.6,
+    "i_in_ma": 0.0,
+    "i_out_ma": 0.0,
+    "i_inductor_ma": 154.8,
+    "vin_filtered_mv": 24165.0,
+    "i_cmd_ma": 358.2,
+    "i_max_ma": 1849.7,
+    "i_pk_ma": 1832.7,
+    "on_time_ns": 448.9,
+    "sr_on_ns": 0.0,
+    "sr_off_ns": 0.0
+   },
+   "adc_sd": {
+    "v_in_mv": 70.2,
+    "v_out_mv": 52.5,
+    "i_in_ma": 0.0,
+    "i_out_ma": 0.0,
+    "i_inductor_ma": 54.1,
+    "vin_filtered_mv": 11.6,
+    "i_cmd_ma": 1.8,
+    "i_max_ma": 1.8,
+    "i_pk_ma": 4.2,
+    "on_time_ns": 1.0,
+    "sr_on_ns": 0.0,
+    "sr_off_ns": 0.0
+   }
+  },
+  {
+   "label": "15V sr0, QT Py on VBUS",
+   "time": "2026-10-16 22:18:10",
+   "n": 20,
+   "note": "user: 680 mA out at 15.17 V, 80 mA of it the QT Py buck (1.21 W); 560 mA in; vin assumed = the 5 V point's 24.56 V; IS_MON pin (A3/PB0) 0.128 V on the meter = 512 mA",
+   "bench": {
+    "vin_v": 24.56,
+    "iin_a": 0.56,
+    "vbus_v": 15.17,
+    "iout_a": 0.68,
+    "r_ohm": 25.0,
+    "idle_w": 0.0,
+    "temps_c": {}
+   },
+   "mode": [
+    "BUCK"
+   ],
+   "sr": [
+    [
+     0,
+     0
+    ]
+   ],
+   "p_in_w": 13.75,
+   "p_out_w": 10.32,
+   "eff_pct": 75.1,
+   "loss_w": 3.43,
+   "cmd_over_load": 1.142,
+   "adc_mean": {
+    "v_in_mv": 24105.9,
+    "v_out_mv": 14996.0,
+    "i_in_ma": 0.0,
+    "i_out_ma": 0.0,
+    "i_inductor_ma": 1497.4,
+    "vin_filtered_mv": 24104.8,
+    "i_cmd_ma": 776.6,
+    "i_max_ma": 2427.9,
+    "i_pk_ma": 3088.3,
+    "on_time_ns": 1592.2,
+    "sr_on_ns": 0.0,
+    "sr_off_ns": 0.0
+   },
+   "adc_sd": {
+    "v_in_mv": 20.9,
+    "v_out_mv": 31.1,
+    "i_in_ma": 0.0,
+    "i_out_ma": 0.0,
+    "i_inductor_ma": 145.7,
+    "vin_filtered_mv": 3.6,
+    "i_cmd_ma": 3.5,
+    "i_max_ma": 3.1,
+    "i_pk_ma": 8.2,
+    "on_time_ns": 2.0,
+    "sr_on_ns": 0.0,
+    "sr_off_ns": 0.0
+   }
+  },
+  {
+   "label": "15V sr0, after ADC fix",
+   "time": "2026-10-16 22:23:14",
+   "n": 20,
+   "note": "bench readings carried over from the 15V point before the flash (same contract and load); ADC currents now converted",
+   "bench": {
+    "vin_v": 24.56,
+    "iin_a": 0.56,
+    "vbus_v": 15.17,
+    "iout_a": 0.68,
+    "r_ohm": 25.0,
+    "idle_w": 0.0,
+    "temps_c": {}
+   },
+   "mode": [
+    "BUCK"
+   ],
+   "sr": [
+    [
+     0,
+     0
+    ]
+   ],
+   "p_in_w": 13.75,
+   "p_out_w": 10.32,
+   "eff_pct": 75.1,
+   "loss_w": 3.43,
+   "cmd_over_load": 1.131,
+   "adc_mean": {
+    "v_in_mv": 24083.8,
+    "v_out_mv": 14953.9,
+    "i_in_ma": 827.5,
+    "i_out_ma": 1496.1,
+    "i_inductor_ma": 378.9,
+    "vin_filtered_mv": 24073.5,
+    "i_cmd_ma": 769.2,
+    "i_max_ma": 2421.7,
+    "i_pk_ma": 3069.8,
+    "on_time_ns": 1588.8,
+    "sr_on_ns": 0.0,
+    "sr_off_ns": 0.0
+   },
+   "adc_sd": {
+    "v_in_mv": 13.6,
+    "v_out_mv": 41.0,
+    "i_in_ma": 91.6,
+    "i_out_ma": 55.8,
+    "i_inductor_ma": 123.2,
+    "vin_filtered_mv": 1.5,
+    "i_cmd_ma": 3.6,
+    "i_max_ma": 2.0,
+    "i_pk_ma": 8.7,
+    "on_time_ns": 2.6,
+    "sr_on_ns": 0.0,
+    "sr_off_ns": 0.0
+   }
+  },
+  {
+   "label": "28V sr0, QT Py on VBUS",
+   "time": "2026-10-16 22:25:08",
+   "n": 20,
+   "note": "user: 1.19 A out at 27.87 V (25 ohm + QT Py), 1.74 A in; vin = PSU setpoint 24.56 V; QT Py share from R = 25.3 ohm: about 88 mA, 2.5 W",
+   "bench": {
+    "vin_v": 24.56,
+    "iin_a": 1.74,
+    "vbus_v": 27.87,
+    "iout_a": 1.19,
+    "r_ohm": 25.0,
+    "idle_w": 0.0,
+    "temps_c": {}
+   },
+   "mode": [
+    "BUCK_BOOST"
+   ],
+   "sr": [
+    [
+     0,
+     0
+    ]
+   ],
+   "p_in_w": 42.73,
+   "p_out_w": 33.17,
+   "eff_pct": 77.6,
+   "loss_w": 9.56,
+   "cmd_over_load": 1.237,
+   "adc_mean": {
+    "v_in_mv": 24014.1,
+    "v_out_mv": 27959.2,
+    "i_in_ma": 2470.8,
+    "i_out_ma": 0.8,
+    "i_inductor_ma": 6161.6,
+    "vin_filtered_mv": 24010.5,
+    "i_cmd_ma": 1472.5,
+    "i_max_ma": 1598.4,
+    "i_pk_ma": 9597.0,
+    "on_time_ns": 1877.0,
+    "sr_on_ns": 0.0,
+    "sr_off_ns": 0.0
+   },
+   "adc_sd": {
+    "v_in_mv": 34.0,
+    "v_out_mv": 87.8,
+    "i_in_ma": 118.3,
+    "i_out_ma": 3.5,
+    "i_inductor_ma": 177.3,
+    "vin_filtered_mv": 4.9,
+    "i_cmd_ma": 10.0,
+    "i_max_ma": 2.3,
+    "i_pk_ma": 15.0,
+    "on_time_ns": 5.0,
+    "sr_on_ns": 0.0,
+    "sr_off_ns": 0.0
+   }
+  },
+  {
+   "label": "28V sr1, QT Py on VBUS",
+   "time": "2026-10-16 22:30:43",
+   "n": 20,
+   "note": "user: 1.48 A in, VBUS 28.05 V, coil whine noticeable; iout not measured: 28.05/25.3 ohm + 90 mA QT Py",
+   "bench": {
+    "vin_v": 24.56,
+    "iin_a": 1.48,
+    "vbus_v": 28.05,
+    "iout_a": 1.199,
+    "r_ohm": 25.0,
+    "idle_w": 0.0,
+    "temps_c": {}
+   },
+   "mode": [
+    "BUCK_BOOST"
+   ],
+   "sr": [
+    [
+     1,
+     2000
+    ]
+   ],
+   "p_in_w": 36.35,
+   "p_out_w": 33.63,
+   "eff_pct": 92.5,
+   "loss_w": 2.72,
+   "cmd_over_load": 1.143,
+   "adc_mean": {
+    "v_in_mv": 24007.3,
+    "v_out_mv": 27902.2,
+    "i_in_ma": 849.5,
+    "i_out_ma": 331.2,
+    "i_inductor_ma": 3.2,
+    "vin_filtered_mv": 24010.6,
+    "i_cmd_ma": 1370.0,
+    "i_max_ma": 1677.9,
+    "i_pk_ma": 9040.1,
+    "on_time_ns": 1767.8,
+    "sr_on_ns": 2067.4,
+    "sr_off_ns": 3264.5
+   },
+   "adc_sd": {
+    "v_in_mv": 53.5,
+    "v_out_mv": 133.3,
+    "i_in_ma": 86.0,
+    "i_out_ma": 117.2,
+    "i_inductor_ma": 6.1,
+    "vin_filtered_mv": 13.0,
+    "i_cmd_ma": 6.1,
+    "i_max_ma": 1.3,
+    "i_pk_ma": 41.8,
+    "on_time_ns": 6.8,
+    "sr_on_ns": 2.1,
+    "sr_off_ns": 3.1
+   }
+  },
+  {
+   "label": "28V sr1 thermal t0",
+   "time": "2026-10-16 22:33:49",
+   "n": 10,
+   "note": "first thermal reading; supply readings carried from the 28V sr1 point; board history: about 5 min at 28V sr0 (9.6 W) before the HW_FLT1 trip",
+   "bench": {
+    "vin_v": 24.56,
+    "iin_a": 1.48,
+    "vbus_v": 28.05,
+    "iout_a": 1.199,
+    "r_ohm": 25.0,
+    "idle_w": 0.0,
+    "temps_c": {
+     "Q34_hot": 64.0,
+     "Q12_hot": 55.0,
+     "amb": 21.4
+    }
+   },
+   "mode": [
+    "BUCK_BOOST"
+   ],
+   "sr": [
+    [
+     1,
+     2000
+    ]
+   ],
+   "p_in_w": 36.35,
+   "p_out_w": 33.63,
+   "eff_pct": 92.5,
+   "loss_w": 2.72,
+   "cmd_over_load": 1.144,
+   "adc_mean": {
+    "v_in_mv": 24003.9,
+    "v_out_mv": 27909.1,
+    "i_in_ma": 804.6,
+    "i_out_ma": 277.6,
+    "i_inductor_ma": 5.5,
+    "vin_filtered_mv": 23999.0,
+    "i_cmd_ma": 1371.8,
+    "i_max_ma": 1677.1,
+    "i_pk_ma": 9030.8,
+    "on_time_ns": 1766.7,
+    "sr_on_ns": 2067.9,
+    "sr_off_ns": 3267.3
+   },
+   "adc_sd": {
+    "v_in_mv": 35.7,
+    "v_out_mv": 141.7,
+    "i_in_ma": 91.3,
+    "i_out_ma": 119.4,
+    "i_inductor_ma": 6.5,
+    "vin_filtered_mv": 4.9,
+    "i_cmd_ma": 8.3,
+    "i_max_ma": 1.9,
+    "i_pk_ma": 23.3,
+    "on_time_ns": 3.6,
+    "sr_on_ns": 3.1,
+    "sr_off_ns": 7.0
+   }
+  },
+  {
+   "label": "28V sr1 thermal t1",
+   "time": "2026-10-16 22:40:52",
+   "n": 10,
+   "note": "about 2 min after t0; L1 by IR on a reflective surface (reads low); L1 heat blurs the FET spots",
+   "bench": {
+    "vin_v": 24.56,
+    "iin_a": 1.48,
+    "vbus_v": 28.05,
+    "iout_a": 1.199,
+    "r_ohm": 25.0,
+    "idle_w": 0.0,
+    "temps_c": {
+     "Q34_hot": 65.0,
+     "Q12_hot": 55.0,
+     "L1": 63.0,
+     "amb": 21.4
+    }
+   },
+   "mode": [
+    "BUCK_BOOST"
+   ],
+   "sr": [
+    [
+     1,
+     2000
+    ]
+   ],
+   "p_in_w": 36.35,
+   "p_out_w": 33.63,
+   "eff_pct": 92.5,
+   "loss_w": 2.72,
+   "cmd_over_load": 1.142,
+   "adc_mean": {
+    "v_in_mv": 24026.0,
+    "v_out_mv": 27935.0,
+    "i_in_ma": 864.9,
+    "i_out_ma": 391.5,
+    "i_inductor_ma": 0.0,
+    "vin_filtered_mv": 24001.1,
+    "i_cmd_ma": 1369.2,
+    "i_max_ma": 1677.3,
+    "i_pk_ma": 9030.6,
+    "on_time_ns": 1767.6,
+    "sr_on_ns": 2071.7,
+    "sr_off_ns": 3275.1
+   },
+   "adc_sd": {
+    "v_in_mv": 56.9,
+    "v_out_mv": 89.9,
+    "i_in_ma": 92.4,
+    "i_out_ma": 134.6,
+    "i_inductor_ma": 0.0,
+    "vin_filtered_mv": 4.4,
+    "i_cmd_ma": 22.0,
+    "i_max_ma": 1.0,
+    "i_pk_ma": 10.6,
+    "on_time_ns": 4.8,
+    "sr_on_ns": 14.9,
+    "sr_off_ns": 34.3
+   }
+  },
+  {
+   "label": "28V sr1 thermal t2",
+   "time": "2026-10-16 23:17:10",
+   "n": 10,
+   "note": "L1 read on tape; user: the FETs are almost being heated by the inductor; supply readings carried from the 28V sr1 point",
+   "bench": {
+    "vin_v": 24.56,
+    "iin_a": 1.48,
+    "vbus_v": 28.05,
+    "iout_a": 1.199,
+    "r_ohm": 25.0,
+    "idle_w": 0.0,
+    "temps_c": {
+     "Q34_hot": 68.9,
+     "Q12_hot": 65.2,
+     "L1_tape": 66.6,
+     "amb": 21.4
+    }
+   },
+   "mode": [
+    "BUCK_BOOST"
+   ],
+   "sr": [
+    [
+     1,
+     2000
+    ]
+   ],
+   "p_in_w": 36.35,
+   "p_out_w": 33.63,
+   "eff_pct": 92.5,
+   "loss_w": 2.72,
+   "cmd_over_load": 1.161,
+   "adc_mean": {
+    "v_in_mv": 23998.8,
+    "v_out_mv": 27941.7,
+    "i_in_ma": 742.4,
+    "i_out_ma": 236.3,
+    "i_inductor_ma": 1.2,
+    "vin_filtered_mv": 24003.4,
+    "i_cmd_ma": 1391.5,
+    "i_max_ma": 1677.3,
+    "i_pk_ma": 9047.6,
+    "on_time_ns": 1769.8,
+    "sr_on_ns": 2069.3,
+    "sr_off_ns": 3269.4
+   },
+   "adc_sd": {
+    "v_in_mv": 43.1,
+    "v_out_mv": 44.6,
+    "i_in_ma": 114.9,
+    "i_out_ma": 80.5,
+    "i_inductor_ma": 2.0,
+    "vin_filtered_mv": 7.8,
+    "i_cmd_ma": 38.9,
+    "i_max_ma": 1.8,
+    "i_pk_ma": 26.2,
+    "on_time_ns": 3.3,
+    "sr_on_ns": 6.5,
+    "sr_off_ns": 10.4
+   }
+  },
+  {
+   "label": "28V sr1 thermal t3 (power)",
+   "time": "2026-10-16 23:20:21",
+   "n": 10,
+   "note": "measured output current (25 ohm + QT Py), board hot; first sr1 point used an estimated 1.199 A",
+   "bench": {
+    "vin_v": 24.56,
+    "iin_a": 1.48,
+    "vbus_v": 28.14,
+    "iout_a": 1.23,
+    "r_ohm": 25.0,
+    "idle_w": 0.0,
+    "temps_c": {}
+   },
+   "mode": [
+    "BUCK_BOOST"
+   ],
+   "sr": [
+    [
+     1,
+     2000
+    ]
+   ],
+   "p_in_w": 36.35,
+   "p_out_w": 34.61,
+   "eff_pct": 95.2,
+   "loss_w": 1.74,
+   "cmd_over_load": 1.103,
+   "adc_mean": {
+    "v_in_mv": 24022.5,
+    "v_out_mv": 27964.2,
+    "i_in_ma": 703.7,
+    "i_out_ma": 1200.3,
+    "i_inductor_ma": 3.2,
+    "vin_filtered_mv": 23998.3,
+    "i_cmd_ma": 1357.2,
+    "i_max_ma": 1682.1,
+    "i_pk_ma": 9062.4,
+    "on_time_ns": 1772.9,
+    "sr_on_ns": 2070.6,
+    "sr_off_ns": 3270.7
+   },
+   "adc_sd": {
+    "v_in_mv": 99.2,
+    "v_out_mv": 49.4,
+    "i_in_ma": 96.3,
+    "i_out_ma": 342.7,
+    "i_inductor_ma": 6.4,
+    "vin_filtered_mv": 12.4,
+    "i_cmd_ma": 14.6,
+    "i_max_ma": 11.0,
+    "i_pk_ma": 53.2,
+    "on_time_ns": 12.6,
+    "sr_on_ns": 12.3,
+    "sr_off_ns": 29.0
+   }
+  }
+ ]
+}

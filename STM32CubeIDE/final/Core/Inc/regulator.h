@@ -1,0 +1,762 @@
+/**
+ * @file    regulator.h
+ * @brief   Buck-boost voltage regulator state machine and public API (NLSpec §4–§12).
+ *
+ * Owns the regulator state machine (INIT → IDLE → RUNNING → FAULT), the
+ * HRTIM post-init configuration, the PID execution ISR (TIM7), the HRTIM
+ * period ISR (for DAC Y-intercept reload), and the HRTIM fault ISR.
+ *
+ * Architecture overview (§1):
+ *   - The USB PD stack runs under FreeRTOS (handled by X-CUBE-TCPP).
+ *   - The regulator control loop runs outside FreeRTOS, driven by hardware
+ *     timer ISRs at priorities 0–2 (below FreeRTOS mask of 5).
+ *   - Communication between the two sides is through shared volatile state
+ *     in pd_interface.h (§9.1) and the function API below (§9.2).
+ *
+ * Public API (§9.2, Appendix G):
+ *   regulator_init()                — one-time hardware configuration
+ *   regulator_start()               — IDLE → RUNNING (with soft-start)
+ *   regulator_stop()                — RUNNING → IDLE
+ *   regulator_clear_fault()         — FAULT → IDLE (after HW fault deasserts)
+ *   regulator_set_target_voltage()  — update PID setpoint (wraps pd_interface)
+ *   regulator_get_state()           — read current FSM state
+ *   regulator_get_mode()            — read current operating mode
+ *
+ * ISR ownership (Appendix G):
+ *   TIM6_DAC_IRQHandler            — slope compensation (priority 0)
+ *   HRTIM1_TIMA_IRQHandler         — DAC Y-intercept reload + backstop count (priority 1)
+ *   HRTIM1_FLT_IRQHandler          — fault handling (priority 1)
+ *   TIM7_DAC_IRQHandler            — PID computation (priority 2)
+ *
+ * NLSpec conformance: v0.1.2j §4–§12
+ */
+
+#ifndef REGULATOR_H
+#define REGULATOR_H
+
+#include <stdint.h>
+#include <stdbool.h>
+#include "regulator_config.h"
+#include "pid_controller.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* =========================================================================
+ * Enumerations
+ * =========================================================================*/
+
+/**
+ * RegulatorState — top-level state machine states (§4).
+ *
+ * Transition diagram:
+ *   INIT → IDLE → RUNNING → FAULT
+ *                 ↑         |
+ *                 └─────────┘  (fault-clear → IDLE)
+ */
+typedef enum
+{
+    REGULATOR_STATE_INIT    = 0, /**< Power-on: peripheral init in progress */
+    REGULATOR_STATE_IDLE    = 1, /**< Ready; all FETs off; PID not running   */
+    REGULATOR_STATE_RUNNING = 2, /**< Actively switching; PID + slope comp active */
+    REGULATOR_STATE_FAULT   = 3  /**< Latched fault; all FETs off            */
+} RegulatorState;
+
+/**
+ * RegulatorMode — operating sub-mode when in RUNNING state (§5).
+ */
+typedef enum
+{
+    REGULATOR_MODE_BUCK      = 0, /**< V_in > V_out: Timer A switches, Timer B static */
+    REGULATOR_MODE_BOOST     = 1, /**< V_in < V_out: Timer B switches, Timer A static */
+    REGULATOR_MODE_BUCK_BOOST = 2 /**< V_in ≈ V_out: Q1 and Q4 pulse together (BUCK_BOOST_ENABLED) */
+} RegulatorMode;
+
+/**
+ * RegulatorFaultSource — bitmask for the source of the last fault (§10.1).
+ * Multiple bits may be set simultaneously.
+ */
+typedef enum
+{
+    REGULATOR_FAULT_NONE            = 0x00u,
+    REGULATOR_FAULT_HW_FLT1        = 0x01u, /**< Hardware fault FLT1 (VS_GOOD) */
+    REGULATOR_FAULT_HW_FLT2        = 0x02u, /**< Hardware fault FLT2 (IS_GOOD) */
+    REGULATOR_FAULT_SW_OVP         = 0x04u, /**< Software overvoltage protection */
+    REGULATOR_FAULT_SW_UVP         = 0x08u, /**< Software undervoltage protection */
+    REGULATOR_FAULT_SW_VIN_RANGE   = 0x10u, /**< V_in out of range for mode */
+    REGULATOR_FAULT_SW_BACKSTOP    = 0x20u, /**< Too many consecutive backstop events */
+    REGULATOR_FAULT_SW_OCP         = 0x40u, /**< Buck CCM: regulator_ccm_i_avg_ma over regulator_ccm_ocp_ma */
+    REGULATOR_FAULT_SW_VIN_RISE    = 0x80u  /**< Battery load: V_in rose BATTERY_VIN_RISE_MV over its start value */
+} RegulatorFaultSource;
+
+/**
+ * RegulatorClearResult — outcome of regulator_clear_fault().
+ */
+typedef enum
+{
+    REGULATOR_CLEAR_OK                = 0u, /**< FAULT released; now IDLE          */
+    REGULATOR_CLEAR_NOT_IN_FAULT      = 1u, /**< Nothing to clear                  */
+    REGULATOR_CLEAR_INPUT_NOT_GOOD    = 2u, /**< VS_GOOD never rose: no/low VIN,
+                                                 VIN over-voltage, or VS shorted   */
+    REGULATOR_CLEAR_INPUT_OVERCURRENT = 3u  /**< IS_GOOD low after re-enable:
+                                                 ADM1270 tripped again             */
+} RegulatorClearResult;
+
+/* =========================================================================
+ * Runtime-mutable parameters (§15.2)
+ *
+ * These variables are declared here so that the debug/diagnostic interface
+ * can read and write them directly.  The PID ISR reads them on every cycle.
+ * =========================================================================*/
+
+/**
+ * pid_kp, pid_ki, pid_kd — Voltage-loop gains in use (telemetry since
+ * 2026-10-12): kp [mA/mV], ki [mA/(mV s)], recomputed every PID cycle from
+ * the loop crossover and the output capacitance.  Tune these instead:
+ *   regulator_loop_fc_hz  crossover [Hz]      (LOOP_CROSSOVER_HZ)
+ *   regulator_c_int_uf    C before the output switch [uF] (LOOP_C_INT_UF)
+ *   regulator_c_ext_uf    C after it, counted once it is on (LOOP_C_EXT_UF)
+ */
+extern float pid_kp;
+extern float pid_ki;
+extern float pid_kd;
+extern volatile float regulator_loop_fc_hz;
+extern volatile float regulator_c_int_uf;
+extern volatile float regulator_c_ext_uf;
+
+/** The setpoint the loop regulates to now: target_voltage_mv followed at the
+ *  slew rate (PID ISR step 4a).  Equal to the target once a ramp is done. */
+extern volatile uint32_t regulator_commanded_mv;
+
+/** Predictive synchronous rectification (regulator_config.h, SR_*): runtime
+ *  switch (0/1, SR_ENABLE_DEFAULT at boot) and the window last programmed,
+ *  ns from the period start (0 when not switched). */
+extern volatile uint8_t  regulator_sr_enable;
+extern volatile uint16_t regulator_sr_on_ns;
+extern volatile uint16_t regulator_sr_off_ns;
+
+/** Buck forced CCM and the buck switching frequency (regulator_config.h
+ *  section 6b, plans/ccm-buck-50w.md).  Runtime switches, written over SWD:
+ *    regulator_ccm_enable        0 off, 1 by load, 2 forced (CCM_ENABLE_*);
+ *                                set while IDLE so buck starts at
+ *                                regulator_buck_fsw_khz
+ *    regulator_buck_fsw_khz      200 or 400, taken when buck is entered
+ *    regulator_ccm_deadtime_ns   Q1/Q2 and Q3/Q4 dead time, clamped
+ *    regulator_ccm_ki            integral gain [1/s]
+ *    regulator_ccm_ocp_ma        SW_OCP level on regulator_ccm_i_avg_ma, at
+ *                                most ID_MON's full scale (regulator_ccm_ocp_fs_ma);
+ *                                CCM_OCP_MA_FULL_SCALE (0xFFFF) for that alone
+ *    regulator_ccm_ilim_ramp_ma_s  limit ramp rate [mA/s] toward
+ *                                regulator_ccm_ilim_target_ma, 0 off;
+ *                                cleared at stop and fault (step 5d0)
+ *    regulator_ccm_ilim_ma       current limit in CCM and DCM, 0 off
+ *                                (buck_ccm.h, regulator.c step 5d)
+ *    regulator_ccm_ilim_kl       its integral gain in DCM [V/(A s)]
+ *    regulator_ccm_ilim_kl_ccm   the same in CCM
+ *    regulator_ccm_ilim_slew_ma_ms CCM entry: the limit rises from the
+ *                                measured current at this rate [A/s], 0 off
+ *                                (CCM_ILIM_SLEW_MA_MS_DEFAULT)
+ *    regulator_ccm_ilim_eff_ma   telemetry: the slewed limit while it climbs, else 0
+ *    regulator_ccm_entry_blind   CCM entry: PID cycles of open-loop duty before the
+ *                                law closes, 0 off (CCM_ENTRY_BLIND_DEFAULT)
+ *    regulator_ccm_blind_early   windows ended early by ID_MON over the limit
+ *    regulator_ccm_kind_switch   1: a running CCM goes straight to the next
+ *                                kind on the way up, no DCM between
+ *                                (CCM_KIND_SWITCH_DEFAULT)
+ *    regulator_ccm_down          1: CCM stays through a falling setpoint and
+ *                                hands down kind by kind (CCM_DOWN_DEFAULT)
+ *    regulator_ccm_kind_switches telemetry: such switches since boot;
+ *                                regulator_ccm_kind_switch_last (from << 4) | to
+ *    regulator_ccm_ilim_src      CCM's current (limit, SW_OCP, light-load
+ *                                exit): 1 ID_MON (default, regulator_id_gain/
+ *                                offset applied), 0 IL_MON (regulator_il_ma)
+ *    regulator_ccm_ilim_fast     1: the limit reads ID_MON's newest scan
+ *                                (CCM_ILIM_FAST_DEFAULT), 0: its 8-scan mean
+ *    regulator_ccm_entry_ramp    1: a CCM entry with a limit set starts the
+ *                                reference at V_out (CCM_ENTRY_RAMP_DEFAULT)
+ *    regulator_ccm_peak_ma       peak comparator threshold in CCM, 0 = the
+ *                                9 A backstop (CCM_PEAK_MA_DEFAULT)
+ *    regulator_ccm_handover      1: L1 handed over at buck CCM entry and exit
+ *                                (CCM_HANDOVER_DEFAULT); telemetry: the last
+ *                                entry's / exit's valley estimate
+ *                                regulator_ccm_entry_iv_ma / _exit_iv_ma, the
+ *                                on-time change _entry_dt_ns / _exit_dt_ns,
+ *                                the exit's DCM restart _exit_i0_ma, and
+ *                                regulator_ccm_handover_timeouts
+ *    regulator_cl_uvp_mv         UVP floor while the current limit sets the
+ *                                reference, 0 = the relative UVP; set by the PD
+ *                                layer in a PPS contract (pd_vbus.c)
+ *  Telemetry:
+ *    regulator_fsw_khz           switching frequency in use
+ *    regulator_ccm_active        1 while the buck runs forced CCM
+ *    regulator_ccm_u_mv          the duty law's integrator [mV]
+ *    regulator_ccm_entries / _exits, regulator_ccm_exit_reason (RegulatorCcmExit)
+ *    regulator_ccm_limiting      1 while the current limit sets the
+ *                                reference (CCM or DCM)
+ *    regulator_ccm_v_lim_mv      its voltage reference while it does
+ *    regulator_ccm_i_lim_meas_ma CCM's current this cycle, and
+ *    regulator_ccm_i_avg_ma      filtered (POWER_FILTER_SHIFT)
+ *    regulator_ccm_limit_entries times the limit took over
+ *    regulator_i_out_filt_ma, regulator_i_in_filt_ma, regulator_p_in_mw,
+ *    regulator_p_out_mw          POWER_FILTER_SHIFT low-pass of ID_MON,
+ *                                IS_MON, V_in x IS_MON and V_out x ID_MON */
+typedef enum
+{
+    REGULATOR_CCM_EXIT_NONE       = 0u,
+    REGULATOR_CCM_EXIT_DISABLED   = 1u,  /**< regulator_ccm_enable cleared            */
+    REGULATOR_CCM_EXIT_MODE       = 2u,  /**< left buck                               */
+    REGULATOR_CCM_EXIT_SWITCH     = 3u,  /**< output switch open or soft-start        */
+    REGULATOR_CCM_EXIT_LIGHT_LOAD = 4u,  /**< load under CCM_EXIT_PCT of the DCM ceiling */
+    REGULATOR_CCM_EXIT_OVER_BAND  = 5u,  /**< V_out held over CCM_OVER_BAND_* (2 ms)   */
+    REGULATOR_CCM_EXIT_VIN_RISE   = 6u,  /**< V_in rose CCM_VIN_RISE_MV               */
+    REGULATOR_CCM_EXIT_STOP       = 7u,  /**< stop or fault                           */
+    REGULATOR_CCM_EXIT_BAD_CONFIG = 8u,  /**< timing configuration rejected            */
+    REGULATOR_CCM_EXIT_DUTY       = 9u,  /**< setpoint near V_in x the longest duty     */
+    REGULATOR_CCM_EXIT_RAMP_DOWN  = 10u  /**< downward setpoint transition              */
+} RegulatorCcmExit;
+
+extern volatile uint8_t  regulator_ccm_enable;
+extern volatile uint16_t regulator_buck_fsw_khz;
+extern volatile uint16_t regulator_ccm_deadtime_ns;
+extern volatile float    regulator_ccm_ki;
+extern volatile uint16_t regulator_ccm_ocp_ma;
+extern volatile uint16_t regulator_ccm_refresh_ns;            /**< Q4 refresh length [ns]      */
+extern volatile uint16_t regulator_ccm_refresh_interval_ns;   /**< Timer B period; 0 = each period */
+extern volatile uint16_t regulator_fsw_khz;
+extern volatile uint8_t  regulator_ccm_active;
+extern volatile float    regulator_ccm_u_mv;
+extern volatile uint32_t regulator_ccm_entries;
+extern volatile uint32_t regulator_ccm_exits;
+extern volatile uint8_t  regulator_ccm_exit_reason;
+extern volatile int32_t  regulator_i_out_filt_ma;
+extern volatile int32_t  regulator_i_in_filt_ma;
+extern volatile int32_t  regulator_p_in_mw;
+extern volatile int32_t  regulator_p_out_mw;
+/** IL_MON, the mean over the switching period (adc_monitor.c), after
+ *  regulator_il_gain_permille and regulator_il_offset_ma (bench
+ *  calibration, runtime) and, in CCM, the clipping correction
+ *  (buck_ccm_unclip_a): the average inductor current, which in buck is the
+ *  output current in steady state, in DCM and CCM.  regulator_il_ma per PID
+ *  cycle, regulator_il_avg_ma POWER_FILTER_SHIFT low-pass.               */
+extern volatile int32_t  regulator_il_ma;
+extern volatile int32_t  regulator_il_avg_ma;
+/** Last 8 CCM exits: { uwTick, reason | entries << 8 }, next index.      */
+extern volatile uint32_t regulator_ccm_exit_log[8][2];
+extern volatile uint32_t regulator_ccm_exit_log_index;
+extern volatile int16_t  regulator_il_gain_permille;
+extern volatile int16_t  regulator_il_offset_ma;
+extern volatile int16_t  regulator_id_gain_permille;
+extern volatile int16_t  regulator_id_offset_ma;
+/** IS_MON calibration (runtime): the input current is raw x gain / 1000 +
+ *  offset in step 5a (regulator_i_in_filt_ma, regulator_p_in_mw).       */
+extern volatile int16_t  regulator_is_gain_permille;
+extern volatile int16_t  regulator_is_offset_ma;
+extern volatile uint8_t  regulator_ccm_handover;
+extern volatile int16_t  regulator_ccm_entry_dt_ns;
+extern volatile int16_t  regulator_ccm_entry_iv_ma;
+extern volatile int16_t  regulator_ccm_exit_dt_ns;
+extern volatile int16_t  regulator_ccm_exit_iv_ma;
+extern volatile int16_t  regulator_ccm_exit_i0_ma;
+extern volatile uint32_t regulator_ccm_handover_timeouts;
+extern volatile uint16_t regulator_ccm_ilim_ma;
+extern volatile uint16_t regulator_ccm_ilim_ramp_ma_s;
+extern volatile uint16_t regulator_ccm_ilim_target_ma;
+extern volatile int32_t  regulator_ccm_ocp_fs_ma;
+extern volatile float    regulator_ccm_ilim_kl;
+extern volatile float    regulator_ccm_ilim_kl_ccm;
+extern volatile uint16_t regulator_ccm_ilim_slew_ma_ms;
+extern volatile uint16_t regulator_ccm_ilim_eff_ma;
+extern volatile uint8_t  regulator_ccm_entry_blind;
+extern volatile uint32_t regulator_ccm_blind_early;
+extern volatile uint8_t  regulator_ccm_kind_switch;
+extern volatile uint8_t  regulator_ccm_down;
+extern volatile uint32_t regulator_ccm_kind_switches;
+extern volatile uint8_t  regulator_ccm_kind_switch_last;
+extern volatile uint8_t  regulator_ccm_ilim_src;
+extern volatile uint8_t  regulator_ccm_ilim_fast;
+extern volatile uint8_t  regulator_ccm_entry_ramp;
+extern volatile uint16_t regulator_ccm_peak_ma;
+extern volatile uint8_t  regulator_ccm_limiting;
+extern volatile uint16_t regulator_cl_uvp_mv;
+extern volatile float    regulator_ccm_v_lim_mv;
+extern volatile int32_t  regulator_ccm_i_lim_meas_ma;
+extern volatile int32_t  regulator_ccm_i_avg_ma;
+extern volatile uint32_t regulator_ccm_limit_entries;
+
+/**
+ * max_consecutive_backstops — Consecutive backstop events before fault.
+ * Default: 3 (§10.4).  Range: [1, 10].
+ */
+extern uint8_t max_consecutive_backstops;
+
+/**
+ * pid_integrator_reset_threshold_pct — Setpoint-change threshold for
+ * PID integrator reset.
+ * Default: 20 % (§8.8).  Range: [5, 100].
+ */
+extern uint8_t pid_integrator_reset_threshold_pct;
+
+/**
+ * regulator_integrator_reset_requested — Flag set by pd_interface.c when
+ * a large setpoint change is detected.  The TIM7 ISR clears it after reset.
+ * Volatile: written from FreeRTOS task, read from TIM7 ISR.
+ */
+extern volatile bool regulator_integrator_reset_requested;
+
+/* =========================================================================
+ * Status / telemetry (§15.1)
+ * =========================================================================*/
+
+/**
+ * regulator_last_fault_source — bitmask of the most recent fault cause.
+ * Read from diagnostic interface.  Cleared on regulator_clear_fault().
+ */
+extern RegulatorFaultSource regulator_last_fault_source;
+
+/**
+ * regulator_fault_tick_ms — HAL tick at the most recent enter_fault().
+ * Used to enforce the ADM1270 cool-down before re-enabling the input.
+ */
+extern volatile uint32_t regulator_fault_tick_ms;
+
+/**
+ * regulator_start_low_vin_count / regulator_start_low_vin_mv — starts refused
+ * because V_in read below VIN_START_MIN_MV with the input path on, and the
+ * V_in of the latest one.  The regulator stays IDLE (no fault).
+ */
+extern volatile uint32_t regulator_start_low_vin_count;
+extern volatile uint32_t regulator_start_low_vin_mv;
+
+/**
+ * regulator_start_tim_fail_count — starts refused because the PID timer
+ * (TIM7) would not start; the regulator is stopped (IDLE).
+ */
+extern volatile uint32_t regulator_start_tim_fail_count;
+
+/**
+ * Battery-load build (BATTERY_LOAD, regulator_config.h):
+ * regulator_battery_ceiling_mv — the highest V_out (START / SET_VOLTAGE arg);
+ *   the target moves to it once the output switch closes.
+ * regulator_battery_pack_mv    — the pack as read by the last START (switch
+ *   closed, every FET off).
+ * regulator_battery_keepalive  — the host changes it at least every
+ *   BATTERY_KEEPALIVE_MS while RUNNING, or the regulator stops.
+ * regulator_battery_vin_start_mv — V_in at the start, the SW_VIN_RISE reference.
+ */
+extern volatile uint32_t regulator_battery_ceiling_mv;
+extern volatile uint32_t regulator_battery_pack_mv;
+extern volatile uint32_t regulator_battery_keepalive;
+extern volatile uint32_t regulator_battery_vin_start_mv;
+/** RUNNING stops for a missed keepalive (battery-load build). */
+extern volatile uint32_t regulator_battery_keepalive_stops;
+
+/**
+ * regulator_pid_output_dac_counts — peak-current comparator threshold in DAC
+ * counts (a protection level since 2026-10-12; the on-time ends pulses).
+ * regulator_on_time_ns — charge-pulse on-time this PID period.
+ * regulator_i_cmd_ma / regulator_i_pk_ma / regulator_i_max_ma — the loop's
+ * average output-current command, the peak current it asks of the mode,
+ * and the most the mode can deliver now.  Telemetry, updated by the TIM7 ISR.
+ */
+extern volatile uint16_t regulator_pid_output_dac_counts;
+
+/* Peak current mode, DCM (regulator.c step 6a, plans/peak-current-mode.md). */
+extern volatile uint8_t  regulator_pcmc_dcm;
+extern volatile uint16_t regulator_pcmc_delay_ns;
+extern volatile uint8_t  regulator_pcmc_active;
+extern volatile uint16_t regulator_pcmc_dac_counts;
+extern volatile uint16_t regulator_pcmc_backstop_ns;
+extern volatile uint16_t regulator_pcmc_q1_off_ns;
+extern volatile uint16_t regulator_pcmc_trip_ns;
+/* Peak current mode, buck CCM (regulator.c step 6c). */
+extern volatile uint8_t  regulator_pcmc_ccm;
+extern volatile uint16_t regulator_pcmc_ccm_margin_ns;
+extern volatile uint16_t regulator_pcmc_ccm_delay_ns;   /* CCM peak mode's threshold lead (PCMC_CCM_DELAY_NS) */
+extern volatile uint16_t regulator_pcmc_ccm_leb_max_ns; /* EEV4 keeps the LEB up to this tracked on-time */
+extern volatile uint16_t regulator_pcmc_ccm_slope_pm;   /* slope compensation floor, permille of m2 */
+extern volatile uint8_t  regulator_pcmc_ccm_ramp_track;  /* ramp aligned to the tracked on-time (1) or T V_out/V_in */
+extern volatile float    regulator_pcmc_loop_fc_hz;     /* voltage-loop crossover in PCMC_CCM_ONLY */
+extern volatile uint16_t regulator_il_zero_dac;   /* COMP1's 0 A level in DAC3 codes (measured at a start) */
+extern volatile uint16_t regulator_il_zero_meas;  /* the last measurement, 0 = failed */
+extern volatile uint32_t regulator_sweep_lo_mv;       /* bench triangle sweep of the target (0 rate = off) */
+extern volatile uint32_t regulator_sweep_hi_mv;
+extern volatile uint32_t regulator_sweep_rate_mv_s;
+extern volatile uint8_t  regulator_output_hold_open;  /* bench: step 4c leaves the output switch open */
+extern volatile uint32_t regulator_sweep_mv;
+extern volatile uint32_t regulator_sweep_turns;
+extern volatile uint8_t  regulator_pcmc_ccm_active;
+extern volatile uint16_t regulator_pcmc_ccm_ton_ns;
+extern volatile uint16_t regulator_pcmc_ccm_meas_ns;
+extern volatile float    regulator_pcmc_ccm_ithr_ma;
+extern volatile uint16_t regulator_pcmc_ccm_step;
+extern volatile uint32_t regulator_pcmc_ccm_samples;
+extern volatile uint32_t regulator_pcmc_ccm_bs_hits;
+extern volatile uint16_t regulator_on_time_ns;
+extern volatile float regulator_i_cmd_ma;
+extern volatile float regulator_i_pk_ma;
+extern volatile float regulator_i_max_ma;
+
+/**
+ * regulator_pid_error_mv — latest PID error (setpoint − V_out) in mV.
+ * Telemetry: updated by TIM7 ISR.
+ */
+extern volatile int32_t regulator_pid_error_mv;
+
+/* =========================================================================
+ * Public API
+ * =========================================================================*/
+
+/**
+ * regulator_init — One-time hardware post-init configuration.
+ *
+ * Performs all tasks listed in §4.1 (INIT state):
+ *   1. Reconfigure HRTIM output fault levels to INACTIVE (all FETs off on
+ *      fault).  CubeMX sets FaultLevel = NONE; this corrects it (§5.5).
+ *   2. Enable FLT1 and FLT2 fault response on Timer A and Timer B.
+ *   3. Configure HRTIM compare registers on Timer A and Timer B (§10.3):
+ *        CMP1 = blanking window end (HRTIM_TIMEEVFLT_BLANKINGCMP1)
+ *        CMP2 = hardware backstop max on-time (ends charge phase if EEV4 late)
+ *        CMP3 = bootstrap refresh pulse end (static leg resumes HIGH after LOW)
+ *   4. Set DAC3 CH1 to 0 (zero current setpoint).
+ *   5. Start COMP1 (§6.1).
+ *   6. Configure slope compensation timer TIM6 (slope_comp_init()).
+ *   7. Configure PID timer TIM7 (NVIC priority, period counts).
+ *   8. Initialise PID state and coefficients (§8.7).
+ *   9. Enable HRTIM period and fault interrupts.
+ *  10. Apply forced-HIGH to the static leg for default mode (buck: CHB1 HIGH).
+ *  11. Initialise ADC subsystem (adc_monitor_init() + start DMA).
+ *  12. Initialise PD interface shared state (pd_interface_init()).
+ *  13. Enable HRTIM fault inputs (already done by MX_HRTIM1_Init).
+ *  14. Check for pre-existing fault; transition to IDLE if none.
+ *
+ * Must be called AFTER all MX_*_Init() functions and BEFORE osKernelStart().
+ * Must NOT be called from an ISR.
+ */
+void regulator_init(void);
+
+/**
+ * regulator_start — Transition IDLE → RUNNING with soft-start.
+ *
+ * Preconditions (§4.2):
+ *   - System is in IDLE state.
+ *   - target_voltage_mv is in [SETPOINT_MIN_MV, SETPOINT_MAX_MV].
+ *   - No active hardware fault.
+ *
+ * Actions:
+ *   1. Determine operating mode from V_in vs target_voltage_mv (§5.1).
+ *   2. Enable HRTIM switching outputs for the active leg.
+ *   3. Apply forced-HIGH to the static leg.
+ *   4. Start TIM6 (slope compensation) and TIM7 (PID).
+ *   5. Begin soft-start ramp (§11.2).
+ *
+ * Returns without action if preconditions are not met.  With the input path
+ * up but V_in below VIN_START_MIN_MV it drops the input path again and
+ * stays IDLE (regulator_start_low_vin_count), so a later call can start.
+ */
+void regulator_start(void);
+
+/**
+ * regulator_stop — Controlled shutdown: RUNNING → IDLE.
+ *
+ * Actions (§11.3):
+ *   1. Disarm the HRTIM fault IRQ (dropping INPUT_EN makes VS_GOOD fall).
+ *   2. Disable all HRTIM switching outputs (all FETs off).
+ *   3. Set DAC3 CH1 to 0.
+ *   4. Stop TIM6 (slope compensation) and TIM7 (PID).
+ *   5. Disable the input/output power path.
+ *   6. Transition to IDLE — unless FAULT is latched, which only
+ *      regulator_clear_fault() releases.
+ *
+ * Safe to call from any context.  Non-blocking.
+ */
+void regulator_stop(void);
+
+/**
+ * regulator_clear_fault — Re-arm the ADM1270 and release the FAULT latch.
+ *
+ * The input protection (ADM1270, latch-off mode) only re-arms after its
+ * TIMER_OFF cool-down AND an ENABLE high→low→high toggle, and VS_GOOD can
+ * only be verified with the input path on.  Sequence:
+ *   1. Hold INPUT_EN low until ADM1270_COOLDOWN_MS has elapsed since the
+ *      fault (enter_fault already dropped it).
+ *   2. Assert INPUT_EN (outputs still off, OUTPUT_EN off) and wait up to
+ *      INPUT_PGOOD_TIMEOUT_MS for VS_GOOD; check IS_GOOD.
+ *   3. Drop INPUT_EN again (IDLE keeps the input path off).
+ *   4. On success: clear HRTIM fault flags, reset PID, FAULT → IDLE.
+ *      On failure: stay in FAULT with the input path off.
+ *
+ * Does NOT start the regulator — call regulator_start() afterwards.
+ *
+ * Task context only (blocks for up to ~200 ms).
+ */
+RegulatorClearResult regulator_clear_fault(void);
+
+/**
+ * RegulatorDebugMailbox — command channel written by a debugger over SWD
+ * (tools/bringup `bu regulator ...`) and serviced in task context by
+ * regulator_debug_poll().
+ *
+ * Protocol: wait for request == 0, write request; the firmware executes it,
+ * stores result, increments done_count, then zeroes request.
+ */
+typedef enum
+{
+    REGULATOR_DEBUG_CMD_NONE        = 0u,
+    REGULATOR_DEBUG_CMD_CLEAR_FAULT = 1u, /**< result = RegulatorClearResult */
+    REGULATOR_DEBUG_CMD_STOP        = 2u, /**< result = 0                    */
+    REGULATOR_DEBUG_CMD_BENCH_PWM_ON  = 3u, /**< result = RegulatorBenchResult */
+    REGULATOR_DEBUG_CMD_BENCH_PWM_OFF = 4u, /**< result = RegulatorBenchResult */
+    REGULATOR_DEBUG_CMD_SET_VOLTAGE = 5u, /**< arg = mV; result = RegulatorSetResult */
+    REGULATOR_DEBUG_CMD_START       = 6u, /**< arg = mV; result = RegulatorSetResult */
+    REGULATOR_DEBUG_CMD_SNAPSHOT    = 7u, /**< freeze the VD_MON ring into regulator_snapshot_trace and
+                                               hold pulses off for 2 PID periods as a scope marker;
+                                               result = 0, or 1 if not RUNNING */
+    REGULATOR_DEBUG_CMD_TRACE_ARM   = 8u, /**< arg = trigger | post << 4 | threshold_10mv << 16
+                                               (regulator_trace); result = RegulatorTraceResult */
+    REGULATOR_DEBUG_CMD_SWITCH_PULSE = 9u, /**< arg = us (1..50000) the output switch stays open:
+                                               the PID ISR opens it, TIM4 (one-pulse, 1 us)
+                                               reconnects it; result = RegulatorTraceResult */
+    REGULATOR_DEBUG_CMD_BENCH_CCM_PWM = 10u /**< arg = t_on_ns | fsw_khz << 16: the buck CCM edge
+                                               program at a fixed on-time, unpowered, as bench
+                                               PWM (stop with BENCH_PWM_OFF);
+                                               result = RegulatorBenchResult */
+} RegulatorDebugCmd;
+
+/**
+ * Regulator trace (2026-10-17): one sample per PID cycle into a ring, armed
+ * from the debug mailbox (TRACE_ARM), frozen a set number of samples after a
+ * trigger, and read over SWD (`bu regulator trace`).  It records only while
+ * RUNNING (the PID ISR returns early otherwise).
+ *
+ * Triggers: NOW at the first sample; SWITCH when SWITCH_PULSE opens the output
+ * switch; CEILING when the on-time reaches its window limit (step 6); ERROR
+ * when |setpoint - V_out| exceeds the threshold; CCM on the first forced-CCM
+ * cycle (buck, boost or band); MODE on the first cycle whose regulator mode
+ * (buck / buck-boost / boost) differs from the cycle before (2026-11-13, for
+ * the V_in boundary on a voltage slew).
+ */
+#define REGULATOR_TRACE_LEN 2048u
+
+typedef enum
+{
+    REGULATOR_TRACE_TRIG_NOW     = 0u,
+    REGULATOR_TRACE_TRIG_SWITCH  = 1u,
+    REGULATOR_TRACE_TRIG_CEILING = 2u,
+    REGULATOR_TRACE_TRIG_ERROR   = 3u,
+    REGULATOR_TRACE_TRIG_CCM     = 4u,
+    REGULATOR_TRACE_TRIG_MODE    = 5u,
+    REGULATOR_TRACE_TRIG_AFTER   = 6u,  /**< threshold_mv ms after the start (bench: a settled window)  */
+    REGULATOR_TRACE_TRIG_SWEEP   = 7u   /**< a turnaround of the bench sweep (regulator_sweep_*)        */
+} RegulatorTraceTrigger;
+
+typedef enum
+{
+    REGULATOR_TRACE_IDLE      = 0u,
+    REGULATOR_TRACE_ARMED     = 1u,   /**< recording, waiting for the trigger */
+    REGULATOR_TRACE_TRIGGERED = 2u,   /**< recording the post-trigger samples */
+    REGULATOR_TRACE_DONE      = 3u    /**< frozen until the next TRACE_ARM    */
+} RegulatorTraceState;
+
+typedef enum
+{
+    REGULATOR_TRACE_OK          = 0u,
+    REGULATOR_TRACE_NOT_RUNNING = 1u,  /**< SWITCH_PULSE needs RUNNING                  */
+    REGULATOR_TRACE_SWITCH_BUSY = 2u,  /**< switch not closed yet, or already pulsing   */
+    REGULATOR_TRACE_BAD_ARG     = 3u,  /**< trigger > 4, or pulse outside 1..50000 us   */
+    REGULATOR_TRACE_NO_SWITCH   = 4u   /**< built without OUTPUT_SWITCH_ENABLED         */
+} RegulatorTraceResult;
+
+/** Trace flag bits (RegulatorTraceSample.flags). */
+#define REGULATOR_TRACE_FLAG_MODE_MASK   0x0003u  /**< RegulatorMode                         */
+#define REGULATOR_TRACE_FLAG_SKIPPING    0x0004u  /**< pulses skipped this cycle             */
+#define REGULATOR_TRACE_FLAG_SWITCH_ON   0x0008u  /**< output switch closed                  */
+#define REGULATOR_TRACE_FLAG_RECTIFIER   0x0010u  /**< rectifier blend above 0               */
+#define REGULATOR_TRACE_FLAG_AT_LIMIT    0x0020u  /**< on-time clamped at its window limit   */
+#define REGULATOR_TRACE_FLAG_PULSE_OPEN  0x0040u  /**< SWITCH_PULSE holding the switch open  */
+#define REGULATOR_TRACE_FLAG_TRIGGER     0x0080u  /**< the trigger sample                    */
+#define REGULATOR_TRACE_FLAG_CCM         0x0100u  /**< buck forced CCM: i_cmd_ma holds the
+                                                       current the limit acts on (this
+                                                       cycle's), t_on_ns Q1's on-time,
+                                                       i_max_ma the DCM ceiling               */
+#define REGULATOR_TRACE_FLAG_ILIM        0x0200u  /**< CCM current limit set the duty        */
+
+typedef struct
+{
+    uint16_t v_out_mv;   /**< V_out this cycle (VD_MON trimmed mean) [mV]      */
+    uint16_t i_cmd_ma;   /**< PI output, the average-current command [mA]       */
+    uint16_t i_max_ma;   /**< its ceiling this cycle [mA]                       */
+    uint16_t t_on_ns;    /**< charge pulse programmed [ns]                      */
+    uint16_t flags;      /**< REGULATOR_TRACE_FLAG_*                            */
+    uint16_t v_cmd_mv;   /**< the reference both loops track: the setpoint, or
+                              the current limit's v_lim under it [mV]           */
+    int16_t  u_mv;       /**< the CCM law's integrator (BuckCcmState.u_v) [mV]; in buck CCM peak
+                              current mode the signed command I_cmd [mA], and i_max_ma COMP1's
+                              threshold i_thr [mA]                                */
+} RegulatorTraceSample;  /* 14 bytes */
+
+typedef struct
+{
+    uint32_t state;          /**< RegulatorTraceState                          */
+    uint32_t trigger;        /**< RegulatorTraceTrigger                        */
+    uint32_t post;           /**< samples kept after the trigger sample        */
+    uint32_t threshold_mv;   /**< ERROR trigger threshold                      */
+    uint32_t write_index;    /**< next slot (mod REGULATOR_TRACE_LEN)          */
+    uint32_t trigger_index;  /**< slot of the trigger sample                   */
+    uint32_t count;          /**< samples written since the arm                */
+    uint32_t remaining;      /**< post-trigger samples still to write          */
+    uint32_t pulse_us;       /**< last SWITCH_PULSE: open time requested [us]  */
+    uint32_t pulse_cycles;   /**< its OUTPUT_EN low-to-high time, DWT cycles
+                                  (170 MHz); 0 until TIM4 reconnects           */
+} RegulatorTraceCtl;
+
+extern volatile RegulatorTraceSample regulator_trace[REGULATOR_TRACE_LEN];
+extern volatile RegulatorTraceCtl    regulator_trace_ctl;
+
+/**
+ * RegulatorBenchResult — outcome of regulator_bench_pwm().
+ */
+typedef enum
+{
+    REGULATOR_BENCH_OK              = 0u,
+    REGULATOR_BENCH_NOT_IDLE        = 1u, /**< only allowed from IDLE              */
+    REGULATOR_BENCH_INPUT_PATH_ON   = 2u, /**< INPUT_EN must be low (no power)     */
+    REGULATOR_BENCH_FAULT_LINE_LOW  = 3u, /**< VS_GOOD/IS_GOOD low: HRTIM would
+                                               hold the outputs off               */
+    REGULATOR_BENCH_BAD_ARG         = 4u  /**< BENCH_CCM_PWM: fsw not 200/400 kHz or
+                                               the CCM timing configuration invalid */
+} RegulatorBenchResult;
+
+/**
+ * regulator_bench_pwm — Open-loop gate-signal test for bench validation
+ * without a power stage (Nucleo + scope/analyzer).
+ *
+ * On: from IDLE with INPUT_EN low and both fault lines high, removes the
+ * comparator event (EEV4) from the Timer A/B set/reset sources and enables
+ * TA1/TA2/TB1/TB2 in the buck-mode configuration: TA1 is set at the period
+ * and reset by the CMP2 max-duty backstop, with the configured dead-time;
+ * TB1 is the static leg (CMP3 bootstrap refresh).  The HRTIM fault IRQ is
+ * armed, so a fault line dropping latches FAULT as in RUNNING.
+ * Off (or stop/fault): outputs off, set/reset sources restored.
+ *
+ * The PID and power path are never touched.  regulator_start() refuses
+ * while bench PWM is active.
+ */
+RegulatorBenchResult regulator_bench_pwm(bool on);
+
+/**
+ * regulator_bench_ccm_pwm — Buck forced-CCM gate program (buck_ccm.h) at a
+ * fixed Q1 on-time and switching frequency (200 or 400 kHz), with the
+ * present regulator_ccm_deadtime_ns, under the same conditions as bench PWM
+ * (IDLE, input path off, fault lines high).  For scoping dead times and the
+ * Q4 refresh with the power stage unpowered (hw-bringup rule) before the
+ * first powered CCM run.  regulator_bench_pwm(false) stops it.
+ */
+RegulatorBenchResult regulator_bench_ccm_pwm(uint32_t t_on_ns, uint32_t fsw_khz);
+
+/** True while bench PWM is running (read by tools/bringup). */
+extern volatile bool regulator_bench_pwm_active;
+
+#define REGULATOR_DEBUG_RESULT_UNKNOWN_CMD 0xFFFFFFFFu
+
+/**
+ * RegulatorSetResult — outcome of the SET_VOLTAGE and START mailbox commands.
+ * While running, a new target is followed at SETPOINT_SLEW_UP_MV_PER_CYCLE
+ * or SETPOINT_SLEW_DOWN_MV_PER_CYCLE.
+ */
+typedef enum
+{
+    REGULATOR_SET_OK           = 0u,
+    REGULATOR_SET_OUT_OF_RANGE = 1u, /**< outside SETPOINT_MIN_MV..SETPOINT_MAX_MV */
+    REGULATOR_SET_NOT_IDLE     = 2u, /**< START only from IDLE                     */
+    REGULATOR_SET_START_FAILED = 3u, /**< START left the regulator not RUNNING    */
+    REGULATOR_SET_PD_OWNS_VBUS = 4u, /**< PD_VBUS_PATH_CHARGER build: only a USB-PD
+                                          contract sets the output voltage        */
+    REGULATOR_SET_PACK_AT_CEILING = 5u /**< battery load: the pack read at or above
+                                            the ceiling, so START refused          */
+} RegulatorSetResult;
+
+typedef struct
+{
+    volatile uint32_t request;     /**< RegulatorDebugCmd; 0 = idle       */
+    volatile uint32_t result;      /**< result of the last command        */
+    volatile uint32_t done_count;  /**< incremented after each command    */
+    volatile uint32_t last_cmd;    /**< last command executed             */
+    volatile uint32_t arg;         /**< argument, written before request  */
+} RegulatorDebugMailbox;
+
+extern RegulatorDebugMailbox regulator_debug;
+
+/**
+ * regulator_debug_poll — Service regulator_debug.  Call periodically from a
+ * task (not an ISR); commands may block for up to ~200 ms.
+ */
+void regulator_debug_poll(void);
+
+/**
+ * regulator_set_target_voltage — Update the PID voltage setpoint.
+ *
+ * Thin wrapper around pd_interface_notify_voltage_contract() (§9.2).
+ * Safe to call from any context.  Non-blocking.
+ *
+ * @param voltage_mv  Target output voltage in millivolts.
+ */
+void regulator_set_target_voltage(uint32_t voltage_mv);
+
+/** ADC1 analog watchdog 1 ISR body (pulse skipping), from ADC1_2_IRQHandler. */
+void regulator_adc1_awd_isr(void);
+
+/**
+ * regulator_get_state — Read the current FSM state.
+ *
+ * Thread-safe: reads a single 32-bit enum variable.
+ */
+RegulatorState regulator_get_state(void);
+
+/**
+ * regulator_get_mode — Read the current operating mode.
+ *
+ * Meaningful only when state == REGULATOR_STATE_RUNNING.
+ */
+RegulatorMode regulator_get_mode(void);
+
+/* =========================================================================
+ * ISR handler declarations
+ * (Defined in regulator.c; called from stm32g4xx_it.c)
+ * =========================================================================*/
+
+/**
+ * regulator_hrtim_tima_period_isr — HRTIM Timer A period ISR body.
+ *
+ * Called from HRTIM1_TIMA_IRQHandler.  Reloads DAC3 CH1 with the current
+ * PID peak value (§7.6) and counts CMP2 backstop events (§10.4).
+ */
+void regulator_hrtim_tima_period_isr(void);
+
+/**
+ * regulator_hrtim_fault_isr — HRTIM fault ISR body.
+ *
+ * Called from HRTIM1_FLT_IRQHandler.  Determines fault source, enters
+ * FAULT state, disables timers, zeros DAC (§10.1).
+ */
+void regulator_hrtim_fault_isr(void);
+
+/**
+ * regulator_pid_tim7_isr — PID computation ISR body.
+ *
+ * Called from TIM7_DAC_IRQHandler.  Reads ADC results, runs PID, updates DAC
+ * peak, updates slope step, performs software safety checks (§8, §10.2).
+ */
+void regulator_pid_tim7_isr(void);
+
+/**
+ * regulator_switch_pulse_tim4_isr — SWITCH_PULSE reconnect (TIM4 update,
+ * one-pulse, priority NVIC_PRIORITY_SWITCH_PULSE_TIM4).
+ */
+void regulator_switch_pulse_tim4_isr(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* REGULATOR_H */

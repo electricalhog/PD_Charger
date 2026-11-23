@@ -7,3 +7,19 @@
 #*.elf
 #*.hex
 #*.bin
+
+# Agentic bring-up tools (tools/bringup)
+/bringup_out/
+/tools/bringup/bringup.local.toml
+/tools/bringup/.venv/
+__pycache__/
+.pytest_cache/
+
+# Vendor datasheets: keep local copies out of this public repo (see KiCad/datasheets/README.md)
+/KiCad/datasheets/*.pdf
+
+# Bench raw data (scope captures, load telemetry, traces): local only, see each results README
+/bench/results/*/data/
+
+# ST user manual kept locally (not ours to redistribute)
+/STM32CubeIDE/um2505-stm32g4-nucleo64-boards-mb1367-stmicroelectronics.pdf

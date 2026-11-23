@@ -33,7 +33,11 @@
 #include "string.h"
 #include "gui_api.h"
 /* USER CODE BEGIN Include */
-
+#include "usbpd_dpm_user.h"
+#include "pd_bench_config.h"
+#include "pd_policy.h"
+#include "pd_vbus.h"
+#include "regulator.h"
 /* USER CODE END Include */
 
 /** @addtogroup STM32_USBPD_APPLICATION
@@ -123,9 +127,11 @@ USBPD_StatusTypeDef USBPD_PWR_IF_Init(void)
 /* USER CODE BEGIN USBPD_PWR_IF_Init */
   USBPD_StatusTypeDef _status = USBPD_OK;
 
-  /* Set links to PDO values and number for Port 0 (defined in PDO arrays in H file). */
+  /* Set links to PDO values and number for Port 0 (defined in PDO arrays in H file).
+   * The PDOs actually offered come from pd_policy (pd_bench_config.h). */
   PWR_Port_PDO_Storage[USBPD_PORT_0].SourcePDO.ListOfPDO = (uint32_t *) PORT0_PDO_ListSRC;
   PWR_Port_PDO_Storage[USBPD_PORT_0].SourcePDO.NumberOfPDO = &USBPD_NbPDO[1];
+  pd_policy_init();
 
   return _status;
 /* USER CODE END USBPD_PWR_IF_Init */
@@ -139,16 +145,68 @@ USBPD_StatusTypeDef USBPD_PWR_IF_Init(void)
 USBPD_StatusTypeDef USBPD_PWR_IF_SetProfile(uint8_t PortNum)
 {
 /* USER CODE BEGIN USBPD_PWR_IF_SetProfile */
-  USBPD_PDO_TypeDef        _pdo;
-  USBPD_SNKRDO_TypeDef     _rdo;
-  _rdo.d32 = DPM_Ports[PortNum].DPM_RcvRequestDOMsg;
-  _pdo.d32 = PORT0_PDO_ListSRC[0];
-  return (BSP_ERROR_NONE == BSP_USBPD_PWR_VBUSSetVoltage_Fixed(PortNum,
-                                               _pdo.SRCFixedPDO.VoltageIn50mVunits * 50,
-                                               (_rdo.FixedVariableRDO.OperatingCurrentIn10mAunits * 10),
-                                               (_rdo.FixedVariableRDO.MaxOperatingCurrent10mAunits * 10)
-                                               )? USBPD_OK : USBPD_ERROR);
-
+  /* DPM_RequestedVoltage was set by USBPD_DPM_EvaluateRequest from the PDO
+   * the RDO points to (SPR or, in EPR mode, EPR). */
+  uint32_t _mv = DPM_Ports[PortNum].DPM_RequestedVoltage;
+  const bool _pps = pd_policy_pps_position() != 0u &&
+                    DPM_Ports[PortNum].DPM_RDOPosition == pd_policy_pps_position();
+#if PD_OWNS_VBUS
+  /* PPS: the step size picks tPpsSrcTransSmall or _Large: the larger of the
+   * steps from the setpoint before this request and from V_out, which a
+   * Current Limit fold leaves below it (a request that only raises the
+   * limit is a 0 mV step from the setpoint; bench 2026-11-06). */
+  const uint32_t _prev_mv = regulator_commanded_mv;
+  const uint32_t _prev_out_mv = pd_vbus_get_mv();
+#endif /* PD_OWNS_VBUS */
+  if (_pps)
+  {
+    if (BSP_ERROR_NONE != BSP_USBPD_PWR_VBUSSetVoltage_APDO(PortNum, _mv,
+                              pd_policy_pps_cl_ma(DPM_Ports[PortNum].DPM_RequestedCurrent), 0))
+    {
+      return USBPD_ERROR;
+    }
+  }
+  else if (BSP_ERROR_NONE != BSP_USBPD_PWR_VBUSSetVoltage_Fixed(PortNum, _mv,
+                                                                DPM_Ports[PortNum].DPM_RequestedCurrent,
+                                                                DPM_Ports[PortNum].DPM_RequestedCurrent))
+  {
+    return USBPD_ERROR;
+  }
+#if PD_OWNS_VBUS
+  /* PS_RDY goes out when this returns USBPD_OK, so wait for VBUS to be in
+   * range (vSrcNew) within the sink's tPSTransition.  That is the EPR
+   * value for every request made in EPR mode, SPR positions included. */
+  uint32_t _budget_ms = PD_SPR_TRANSITION_BUDGET_MS;
+  if (DPM_Ports[PortNum].DPM_RDOPosition >= PD_POLICY_FIRST_EPR_POS)
+  {
+    _budget_ms = PD_EPR_TRANSITION_BUDGET_MS;
+  }
+#if defined(USBPDCORE_EPR)
+  if (DPM_Params[PortNum].PowerRange == USBPD_EPR_MODE)
+  {
+    _budget_ms = PD_EPR_TRANSITION_BUDGET_MS;
+  }
+#endif /* USBPDCORE_EPR */
+  if (_pps)
+  {
+    uint32_t _step = (_mv > _prev_mv) ? (_mv - _prev_mv) : (_prev_mv - _mv);
+    const uint32_t _step_out = (_mv > _prev_out_mv) ? (_mv - _prev_out_mv) : (_prev_out_mv - _mv);
+    if (_step_out > _step)
+    {
+      _step = _step_out;
+    }
+    _budget_ms = (_step <= PD_PPS_SMALL_STEP_MV) ? PD_PPS_SMALL_BUDGET_MS : PD_PPS_LARGE_BUDGET_MS;
+  }
+  uint32_t _elapsed = pd_vbus_wait_in_range(_mv, _budget_ms);
+  if (_elapsed == UINT32_MAX)
+  {
+    pd_status.transition_timeouts++;
+    pd_status_event(PD_EV_TRANSITION_TIMEOUT);
+    return USBPD_ERROR;
+  }
+  pd_status.transition_ms = _elapsed;
+#endif /* PD_OWNS_VBUS */
+  return USBPD_OK;
 /* USER CODE END USBPD_PWR_IF_SetProfile */
 }
 
@@ -246,7 +304,11 @@ USBPD_StatusTypeDef USBPD_PWR_IF_ReadVA(uint8_t PortNum, uint16_t *pVoltage, uin
 USBPD_StatusTypeDef USBPD_PWR_IF_Enable_VConn(uint8_t PortNum, CCxPin_TypeDef CC)
 {
 /* USER CODE BEGIN USBPD_PWR_IF_Enable_VConn */
+#if PD_VCONN_ENABLE
+  return (BSP_ERROR_NONE == BSP_USBPD_PWR_VCONNOn(PortNum, (uint32_t)CC)) ? USBPD_OK : USBPD_ERROR;
+#else
   return USBPD_ERROR;
+#endif /* PD_VCONN_ENABLE */
 /* USER CODE END USBPD_PWR_IF_Enable_VConn */
 }
 
@@ -259,7 +321,11 @@ USBPD_StatusTypeDef USBPD_PWR_IF_Enable_VConn(uint8_t PortNum, CCxPin_TypeDef CC
 USBPD_StatusTypeDef USBPD_PWR_IF_Disable_VConn(uint8_t PortNum, CCxPin_TypeDef CC)
 {
 /* USER CODE BEGIN USBPD_PWR_IF_Disable_VConn */
+#if PD_VCONN_ENABLE
+  return (BSP_ERROR_NONE == BSP_USBPD_PWR_VCONNOff(PortNum, (uint32_t)CC)) ? USBPD_OK : USBPD_ERROR;
+#else
   return USBPD_ERROR;
+#endif /* PD_VCONN_ENABLE */
 /* USER CODE END USBPD_PWR_IF_Disable_VConn */
 }
 
@@ -282,83 +348,20 @@ void USBPD_PWR_IF_GetPortPDOs(uint8_t PortNum, USBPD_CORE_DataInfoType_TypeDef D
       memcpy(Ptr,PORT0_PDO_ListSRC, sizeof(uint32_t) * USBPD_NbPDO[1]);
     }
 /* USER CODE BEGIN USBPD_PWR_IF_GetPortPDOs */
-
-  if (DataId == USBPD_CORE_DATATYPE_SRC_PDO)
+  /* The offered PDOs come from pd_policy (pd_bench_config.h), not from the
+   * generated PORT0_PDO_ListSRC copied above.  *Size is the number of PDOs;
+   * USBPD_DPM_GetDataInfo converts it to bytes. */
+  if ((DataId == USBPD_CORE_DATATYPE_SRC_PDO) && USBPD_PORT_IsValid(PortNum))
   {
-#if defined (_GUI_INTERFACE)
-    *Size = USBPD_NbPDO[1];
-    memcpy(Ptr,PORT0_PDO_ListSRC, sizeof(uint32_t) * USBPD_NbPDO[1]);
-#else
-    *Size = PORT0_NB_SOURCEPDO;
-    memcpy(Ptr,PORT0_PDO_ListSRC, sizeof(uint32_t) * PORT0_NB_SOURCEPDO);
-#endif /* _GUI_INTERFACE */
+    uint32_t _bytes;
+    pd_policy_get_spr_pdos(Ptr, &_bytes,
+                           (USBPD_SPECIFICATION_REV2 == DPM_Params[PortNum].PE_SpecRevision));
+    *Size = _bytes / 4u;
   }
   else
   {
-#if defined (_GUI_INTERFACE)
-    *Size = USBPD_NbPDO[0];
-    memcpy(Ptr,PORT0_PDO_ListSNK, sizeof(uint32_t) * USBPD_NbPDO[0]);
-#else
-    *Size = PORT0_NB_SINKPDO;
-    memcpy(Ptr,PORT0_PDO_ListSNK, sizeof(uint32_t) * PORT0_NB_SINKPDO);
-#endif /* _GUI_INTERFACE */
+    *Size = 0u;
   }
-
-  uint32_t   nbpdo, index, nb_valid_pdo = 0;
-  uint32_t   *ptpdoarray = NULL;
-  USBPD_PDO_TypeDef pdo_first;
-  USBPD_PDO_TypeDef pdo;
-
-  /* Check if valid port */
-  if (USBPD_PORT_IsValid(PortNum))
-  {
-    /* According to type of PDO to be read, set pointer on values and nb of elements */
-    switch (DataId)
-    {
-      case USBPD_CORE_DATATYPE_SRC_PDO :
-        nbpdo = *PWR_Port_PDO_Storage[PortNum].SourcePDO.NumberOfPDO;
-        ptpdoarray = PWR_Port_PDO_Storage[PortNum].SourcePDO.ListOfPDO;
-        /* Save the 1st PDO */
-        pdo_first.d32 = *ptpdoarray;
-        /* Reset unchunked bit if current revision is PD2.0*/
-        if (USBPD_SPECIFICATION_REV2 == DPM_Params[PortNum].PE_SpecRevision)
-        {
-          pdo_first.SRCFixedPDO.UnchunkedExtendedMessage  = USBPD_PDO_SRC_FIXED_UNCHUNK_NOT_SUPPORTED;
-        }
-        break;
-
-      default:
-        nbpdo = 0;
-        break;
-    }
-    /* Copy PDO data in output buffer */
-    for (index = 0; index < nbpdo; index++)
-    {
-      pdo.d32 = *ptpdoarray;
-      /* Copy only PDO (and not APDO in case of current revision is PD2.0) */
-      if ((USBPD_SPECIFICATION_REV2 == DPM_Params[PortNum].PE_SpecRevision)
-         && (pdo.GenericPDO.PowerObject == USBPD_CORE_PDO_TYPE_APDO))
-      {
-      }
-      else
-      {
-        /* Copy 1st PDO as potentially FRS or UNCHUNKED bits have been reset */
-        if (0 == index)
-        {
-          (void)memcpy(Ptr, (uint8_t*)&pdo_first.d32, 4u);
-        }
-        else
-        {
-          (void)memcpy((Ptr + (nb_valid_pdo * 4u)), (uint8_t*)ptpdoarray, 4u);
-        }
-        nb_valid_pdo++;
-      }
-      ptpdoarray++;
-    }
-    /* Set nb of read PDO (nb of u32 elements); */
-    *Size = nb_valid_pdo;
-  }
-
 /* USER CODE END USBPD_PWR_IF_GetPortPDOs */
 }
 
@@ -374,14 +377,8 @@ void USBPD_PWR_IF_GetPortPDOs(uint8_t PortNum, USBPD_CORE_DataInfoType_TypeDef D
 USBPD_StatusTypeDef USBPD_PWR_IF_SearchRequestedPDO(uint8_t PortNum, uint32_t RdoPosition, uint32_t *Pdo)
 {
 /* USER CODE BEGIN USBPD_PWR_IF_SearchRequestedPDO */
-  if((RdoPosition == 0) || (RdoPosition > *PWR_Port_PDO_Storage[PortNum].SourcePDO.NumberOfPDO))
-  {
-    /* Invalid PDO index */
-    return USBPD_FAIL;
-  }
-  *Pdo = PWR_Port_PDO_Storage[PortNum].SourcePDO.ListOfPDO[RdoPosition - 1];
-  return USBPD_OK;
-
+  /* Object positions 1..7 are SPR PDOs, 8..13 EPR PDOs (pd_policy.h). */
+  return pd_policy_lookup(RdoPosition, Pdo) ? USBPD_OK : USBPD_FAIL;
 /* USER CODE END USBPD_PWR_IF_SearchRequestedPDO */
 }
 

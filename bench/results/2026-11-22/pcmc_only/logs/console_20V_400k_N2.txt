@@ -1,0 +1,11 @@
+pre: IDLE   fsw 400 kHz  N 2 (refresh every 5000 ns)  sweep 0..0 @ 0 mV/s  hold_open 0
+ok True ended RUNNING fault [] error None
+n 20 v 19523 20162 19954 i 762 784 icmd 32 88 ccm [1] pcmc [1] vin 24565 24599
+V_out - commanded (switch closed or sweeping): min -477 max 162 mean -46
+first {'regulator_sweep_mv': 0, 'regulator_pcmc_ccm_active': 1, 'regulator_pcmc_ccm_ton_ns': 1870, 'regulator_pcmc_ccm_meas_ns': 1898, 'regulator_pcmc_ccm_ithr_ma': 1046.979, 'regulator_i_cmd_ma': 32.455, 'regulator_pcmc_ccm_samples': 1336907, 'regulator_pcmc_ccm_bs_hits': 770, 'regulator_ccm_entries': 12, 'regulator_ccm_exits': 11, 'regulator_ccm_exit_reason': 7}
+last {'regulator_sweep_mv': 0, 'regulator_pcmc_ccm_active': 1, 'regulator_pcmc_ccm_ton_ns': 1881, 'regulator_pcmc_ccm_meas_ns': 1904, 'regulator_pcmc_ccm_ithr_ma': 1098.661, 'regulator_i_cmd_ma': 83.181, 'regulator_pcmc_ccm_samples': 1447909, 'regulator_pcmc_ccm_bs_hits': 770, 'regulator_ccm_entries': 12, 'regulator_ccm_exits': 11, 'regulator_ccm_exit_reason': 7}
+trace bringup_out/20261122-214000_regulator_trace.csv DONE 82000 47 {'min': 18782, 'max': 20351, 'first': 19937, 'last': 18851}
+exits [(140497, 7, 9), (152319, 7, 10), (164114, 7, 11), (176230, 7, 12), (93048, 7, 5), (104943, 7, 6), (116785, 7, 7), (128641, 7, 8)]
+periods 9 median period us 2.500
+ refresh 0 n 4 width 1892+-18 [1864,1912] il_on 1.624+-0.000 il_off 1.793+-0.011 il_min 1.094
+ refresh 1 n 5 width 1876+-0 [1876,1876] il_on 1.629+-0.017 il_off 1.656+-0.011 il_min 1.638

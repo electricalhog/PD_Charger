@@ -1,0 +1,29 @@
+{
+ "ok": true,
+ "ceiling_mv": 12000,
+ "above_pack_mv": null,
+ "pack_read_mv": null,
+ "battery": {
+  "ceiling_mv": 12000,
+  "pack_mv": 0,
+  "keepalive": 69,
+  "vin_start_mv": 24634,
+  "keepalive_stops": 0,
+  "ilim_ma": 2000
+ },
+ "samples": 31,
+ "stopped_early": false,
+ "ended": "RUNNING",
+ "end_state": "IDLE",
+ "end_fault": [],
+ "tail_mean": {
+  "v_out_mv": 12066,
+  "i_out_ma": 470,
+  "v_in_mv": 24603,
+  "i_in_ma": 306,
+  "is_raw_ma": 305
+ },
+ "watch_tail": null,
+ "limiting_frac": 0.0,
+ "log": "bringup_out/20261122-095442_battery_run.json"
+}

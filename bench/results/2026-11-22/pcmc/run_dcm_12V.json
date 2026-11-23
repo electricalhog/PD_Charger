@@ -1,0 +1,80 @@
+{
+ "ok": true,
+ "ceiling_mv": 12000,
+ "above_pack_mv": null,
+ "pack_read_mv": null,
+ "battery": {
+  "ceiling_mv": 12000,
+  "pack_mv": 0,
+  "keepalive": 38,
+  "vin_start_mv": 24651,
+  "keepalive_stops": 0,
+  "ilim_ma": 2000
+ },
+ "samples": 30,
+ "stopped_early": false,
+ "ended": "RUNNING",
+ "end_state": "IDLE",
+ "end_fault": [],
+ "tail_mean": {
+  "v_out_mv": 12011,
+  "i_out_ma": 469,
+  "v_in_mv": 24609,
+  "i_in_ma": 303,
+  "is_raw_ma": 286
+ },
+ "watch_tail": [
+  {
+   "regulator_pcmc_active": 1,
+   "regulator_pcmc_dac_counts": 2247,
+   "regulator_pcmc_backstop_ns": 1151,
+   "regulator_on_time_ns": 832,
+   "regulator_pcmc_q1_off_ns": 1220,
+   "regulator_pcmc_trip_ns": 1538,
+   "regulator_i_pk_ma": 2021.941,
+   "regulator_i_cmd_ma": 300.634
+  },
+  {
+   "regulator_pcmc_active": 1,
+   "regulator_pcmc_dac_counts": 2239,
+   "regulator_pcmc_backstop_ns": 1065,
+   "regulator_on_time_ns": 853,
+   "regulator_pcmc_q1_off_ns": 1079,
+   "regulator_pcmc_trip_ns": 1150,
+   "regulator_i_pk_ma": 2067.99,
+   "regulator_i_cmd_ma": 314.381
+  },
+  {
+   "regulator_pcmc_active": 1,
+   "regulator_pcmc_dac_counts": 2226,
+   "regulator_pcmc_backstop_ns": 1093,
+   "regulator_on_time_ns": 808,
+   "regulator_pcmc_q1_off_ns": 1126,
+   "regulator_pcmc_trip_ns": 1567,
+   "regulator_i_pk_ma": 1988.343,
+   "regulator_i_cmd_ma": 343.085
+  },
+  {
+   "regulator_pcmc_active": 1,
+   "regulator_pcmc_dac_counts": 2223,
+   "regulator_pcmc_backstop_ns": 1083,
+   "regulator_on_time_ns": 785,
+   "regulator_pcmc_q1_off_ns": 1161,
+   "regulator_pcmc_trip_ns": 1155,
+   "regulator_i_pk_ma": 2294.243,
+   "regulator_i_cmd_ma": 303.865
+  },
+  {
+   "regulator_pcmc_active": 1,
+   "regulator_pcmc_dac_counts": 2252,
+   "regulator_pcmc_backstop_ns": 1162,
+   "regulator_on_time_ns": 774,
+   "regulator_pcmc_q1_off_ns": 1085,
+   "regulator_pcmc_trip_ns": 1150,
+   "regulator_i_pk_ma": 2107.511,
+   "regulator_i_cmd_ma": 346.548
+  }
+ ],
+ "limiting_frac": 0.0,
+ "log": "bringup_out/20261122-095200_battery_run.json"
+}
